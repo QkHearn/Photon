@@ -1,0 +1,22 @@
+{
+    "llm": {
+        "api_key": "your_api_key_here",
+        "base_url": "api.openai.com",
+        "model": "gpt-4o-mini",
+        "system_role": "You are a helpful assistant that can search and read files to answer questions."
+    },
+    "agent": {
+        "context_threshold": 5000,
+        "file_extensions": [".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json", ".cmake", ".yml", ".yaml"]
+    },
+    "mcp_servers": [
+        {
+            "name": "filesystem",
+            "command": "npx -y @modelcontextprotocol/server-filesystem /path/to/search"
+        },
+        {
+            "name": "document-reader",
+            "command": "npx -y @modelcontextprotocol/server-markitdown"
+        }
+    ]
+}
