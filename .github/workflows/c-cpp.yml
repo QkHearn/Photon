@@ -16,82 +16,19 @@ jobs:
       with:
         submodules: 'recursive'
 
-    - name: Install system build dependencies
+    - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake pkg-config python3 python3-pip
-        # 根据 README 中的要求调整/添加系统包，例如 libssl-dev、libcurl4-openssl-dev 等
+        sudo apt-get install -y build-essential cmake libssl-dev libnlohmann-json-dev libgtest-dev
 
-    - name: Install Conan (if used)
+    - name: Configure and Build
       run: |
-        if [ -f conanfile.txt ] || [ -f conanfile.py ]; then
-          python3 -m pip install --upgrade pip
-          pip install conan
-          conan profile new default --detect || true
-          conan install . --build=missing
-        else
-          echo "No conanfile found, skipping conan install"
-        fi
-
-    - name: Prepare submodules or other deps (README 指定的步骤)
-      run: |
-        # 如果 README 指定使用子模块或其它脚本来获取依赖，请在这里添加命令
-        git submodule update --init --recursive || true
-
-    - name: Configure / run project build script
-      run: |
-        if [ -x ./build.sh ]; then
-          ./build.sh
-        else
-          echo "No executable build.sh found, skipping"
-        fi
-
-    - name: Build
-      run: |
+        mkdir build
+        cd build
+        cmake ..
         make -j$(nproc)
 
-    - name: Run tests and collect JUnit XML reports
+    - name: Run Unit Tests
       run: |
-        set -e
-        mkdir -p test-results
-        # Prefer ctest if project is CMake-based
-        if command -v ctest >/dev/null 2>&1 && [ -f CMakeLists.txt ]; then
-          echo "Running ctest (CMake project)..."
-          if ctest --help | grep -q -- '--test-output-junit'; then
-            ctest --output-on-failure --test-output-junit test-results/ctest-results.xml || true
-          else
-            ctest --output-on-failure || true
-          fi
-        else
-          echo "No CMake/ctest detected, trying to run test binaries (GoogleTest style)..."
-          find . -type f -perm /111 -iname '*test*' -print0 | while IFS= read -r -d '' bin; do
-            echo "Attempting to run $bin"
-            "$bin" --gtest_output=xml:test-results/$(basename "$bin").xml || true
-          done
-        fi
-
-        # Fallback: try make check
-        if [ -z "$(ls -A test-results 2>/dev/null)" ]; then
-          echo "No test results found yet, attempting 'make check'..."
-          make check || true
-          find . -type f -name '*.xml' -path '*test*' -exec cp {} test-results/ \; || true
-        fi
-
-        ls -la test-results || true
-
-    - name: Upload test reports to GitHub Checks (JUnit)
-      uses: dorny/test-reporter@v1
-      if: always()
-      with:
-        name: Unit tests
-        path: test-results/*.xml
-        reporter: junit
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload test-results artifact
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: test-results
-        path: test-results
+        cd build
+        ctest --output-on-failure
