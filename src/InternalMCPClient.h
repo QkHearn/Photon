@@ -17,8 +17,11 @@ public:
     nlohmann::json listTools() override;
     nlohmann::json callTool(const std::string& name, const nlohmann::json& arguments) override;
 
+    std::string getLastFile() const override { return lastFile; }
+
 private:
     std::string rootPath;
+    std::string lastFile;
 
     nlohmann::json fileSearch(const nlohmann::json& args);
     nlohmann::json fileRead(const nlohmann::json& args);
@@ -30,6 +33,17 @@ private:
     nlohmann::json webFetch(const nlohmann::json& args);
     nlohmann::json webSearch(const nlohmann::json& args);
     nlohmann::json harmonySearch(const nlohmann::json& args);
+    nlohmann::json grepSearch(const nlohmann::json& args);
+    nlohmann::json readFileLines(const nlohmann::json& args);
+    nlohmann::json listDirTree(const nlohmann::json& args);
+    nlohmann::json diffApply(const nlohmann::json& args);
+    nlohmann::json fileUndo(const nlohmann::json& args);
+    nlohmann::json memoryStore(const nlohmann::json& args);
+    nlohmann::json memoryRetrieve(const nlohmann::json& args);
     
     std::string executeCommand(const std::string& cmd);
+    bool shouldIgnore(const fs::path& path);
+    std::string cleanHtml(const std::string& html);
+    void backupFile(const std::string& relPath);
+    void ensurePhotonDirs();
 };

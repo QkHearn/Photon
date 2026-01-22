@@ -6,7 +6,7 @@
         "system_role": "You are a helpful assistant that can search and read files to answer questions."
     },
     "agent": {
-        "context_threshold": 5000,
+        "context_threshold": 50000,
         "file_extensions": [".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json", ".cmake", ".yml", ".yaml"],
         "use_builtin_tools": true
     },

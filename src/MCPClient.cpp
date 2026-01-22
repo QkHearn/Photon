@@ -1,11 +1,16 @@
 #include "MCPClient.h"
 #include <sstream>
+#include <iostream>
+
+#ifndef _WIN32
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <iostream>
+#else
+#include <windows.h>
+#endif
 
 MCPClient::MCPClient(const std::string& command) : serverCommand(command) {}
 
@@ -13,6 +18,8 @@ MCPClient::~MCPClient() {
     stopProcess();
 }
 
+#ifndef _WIN32
+// POSIX Implementation
 bool MCPClient::startProcess() {
     if (pipe(readPipe) == -1 || pipe(writePipe) == -1) {
         return false;
@@ -30,7 +37,6 @@ bool MCPClient::startProcess() {
         close(writePipe[1]);
         close(readPipe[0]);
         
-        // Execute the command using sh -c
         execl("/bin/sh", "sh", "-c", serverCommand.c_str(), (char*)NULL);
         _exit(1);
     } else { // Parent
@@ -65,9 +71,8 @@ nlohmann::json MCPClient::sendRequest(const std::string& method, const nlohmann:
     };
 
     std::string reqStr = request.dump() + "\n";
-    write(writePipe[1], reqStr.c_str(), reqStr.length());
+    if (write(writePipe[1], reqStr.c_str(), reqStr.length()) <= 0) return nlohmann::json::object();
 
-    // Read response (line by line)
     std::string responseLine;
     char buffer[1];
     while (read(readPipe[0], buffer, 1) > 0) {
@@ -75,9 +80,7 @@ nlohmann::json MCPClient::sendRequest(const std::string& method, const nlohmann:
         responseLine += buffer[0];
     }
 
-    if (responseLine.empty()) {
-        return nlohmann::json::object();
-    }
+    if (responseLine.empty()) return nlohmann::json::object();
 
     try {
         return nlohmann::json::parse(responseLine);
@@ -86,6 +89,17 @@ nlohmann::json MCPClient::sendRequest(const std::string& method, const nlohmann:
         return nlohmann::json::object();
     }
 }
+#else
+// Windows Stubs (To allow building, full implementation requires CreateProcess/Pipe)
+bool MCPClient::startProcess() {
+    std::cerr << "External MCP servers via stdio not yet fully implemented on Windows." << std::endl;
+    return false;
+}
+void MCPClient::stopProcess() {}
+nlohmann::json MCPClient::sendRequest(const std::string& method, const nlohmann::json& params) {
+    return {{"error", "External MCP not supported on Windows yet"}};
+}
+#endif
 
 bool MCPClient::initialize() {
     nlohmann::json params = {

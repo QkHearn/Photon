@@ -49,6 +49,13 @@ public:
         return {{"error", "Server not found"}};
     }
 
+    std::string getLastModifiedFile(const std::string& serverName) {
+        if (clients.count(serverName)) {
+            return clients[serverName]->getLastFile();
+        }
+        return "";
+    }
+
 private:
     std::map<std::string, std::unique_ptr<IMCPClient>> clients;
 };
