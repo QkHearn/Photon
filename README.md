@@ -20,7 +20,7 @@ Photon 是一个专为开发者设计的本地代码库助手。它基于 C++17 
 ### 1. 准备依赖
 - **macOS**: `brew install nlohmann-json openssl googletest`
 - **Windows**: 安装 [vcpkg](https://github.com/microsoft/vcpkg) 并安装 `nlohmann-json`, `openssl`, `gtest`
-- **Linux**: `sudo apt install libssl-dev libnlohmann-json-dev`
+- **Linux**: `sudo apt install libssl-dev nlohmann-json3-dev libgtest-dev`
 
 ### 2. 构建与运行
 在项目根目录下，我们提供了自动检测环境的构建脚本：
