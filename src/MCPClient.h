@@ -14,10 +14,17 @@
     #include <unistd.h>
 #endif
 
-class MCPClient {
+class IMCPClient {
+public:
+    virtual ~IMCPClient() = default;
+    virtual nlohmann::json listTools() = 0;
+    virtual nlohmann::json callTool(const std::string& name, const nlohmann::json& arguments) = 0;
+};
+
+class MCPClient : public IMCPClient {
 public:
     MCPClient(const std::string& serverCommand);
-    ~MCPClient();
+    ~MCPClient() override;
 
     // 初始化 MCP 服务器
     bool initialize();
@@ -26,20 +33,22 @@ public:
     nlohmann::json listResources();
 
     // 列出工具
-    nlohmann::json listTools();
+    nlohmann::json listTools() override;
 
     // 读取资源
     std::string readResource(const std::string& uri);
 
     // 调用工具
-    nlohmann::json callTool(const std::string& name, const nlohmann::json& arguments);
+    nlohmann::json callTool(const std::string& name, const nlohmann::json& arguments) override;
 
 private:
     std::string serverCommand;
     int requestId = 0;
+    int readPipe[2];
+    int writePipe[2];
+    pid_t childPid = -1;
     
+    bool startProcess();
+    void stopProcess();
     nlohmann::json sendRequest(const std::string& method, const nlohmann::json& params);
-    
-    // 注意：在实际复杂的 C++ 生产环境中，需要使用更健壮的异步 IPC（如 boost::process 或 uvw）
-    // 这里使用基础的 popen/stdio 演示 MCP 的 JSON-RPC 交互原理
 };

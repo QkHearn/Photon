@@ -3,10 +3,18 @@
 #include <memory>
 #include <map>
 #include "MCPClient.h"
+#include "InternalMCPClient.h"
 #include "ConfigManager.h"
 
 class MCPManager {
 public:
+    // 初始化内置工具
+    void initBuiltin(const std::string& rootPath) {
+        auto client = std::make_unique<InternalMCPClient>(rootPath);
+        clients["builtin"] = std::move(client);
+        std::cout << "[MCPManager] Built-in tools initialized." << std::endl;
+    }
+
     // 根据配置初始化所有服务器
     void initFromConfig(const std::vector<Config::MCPServerConfig>& configs) {
         for (const auto& cfg : configs) {
@@ -42,5 +50,5 @@ public:
     }
 
 private:
-    std::map<std::string, std::unique_ptr<MCPClient>> clients;
+    std::map<std::string, std::unique_ptr<IMCPClient>> clients;
 };

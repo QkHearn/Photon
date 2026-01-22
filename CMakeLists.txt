@@ -23,6 +23,7 @@ add_executable(photon
     src/LLMClient.cpp 
     src/ContextManager.cpp
     src/MCPClient.cpp
+    src/InternalMCPClient.cpp
 )
 
 target_link_libraries(photon PRIVATE nlohmann_json::nlohmann_json)
@@ -36,6 +37,7 @@ add_library(agent_lib
     src/LLMClient.cpp 
     src/ContextManager.cpp
     src/MCPClient.cpp
+    src/InternalMCPClient.cpp
 )
 target_link_libraries(agent_lib PRIVATE nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto)
 

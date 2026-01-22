@@ -38,7 +38,7 @@ fi
 CXXFLAGS="-std=c++17 -O3 -Wall $INCLUDES"
 
 # 源文件列表
-SRCS="src/main.cpp src/FileManager.cpp src/LLMClient.cpp src/ContextManager.cpp src/MCPClient.cpp"
+SRCS="src/main.cpp src/FileManager.cpp src/LLMClient.cpp src/ContextManager.cpp src/MCPClient.cpp src/InternalMCPClient.cpp"
 
 # 执行编译
 echo "正在执行: $CXX $SRCS $CXXFLAGS $LIBS -o photon"

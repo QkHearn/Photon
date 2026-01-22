@@ -1,11 +1,62 @@
 #include "MCPClient.h"
 #include <sstream>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <iostream>
 
 MCPClient::MCPClient(const std::string& command) : serverCommand(command) {}
 
-MCPClient::~MCPClient() {}
+MCPClient::~MCPClient() {
+    stopProcess();
+}
+
+bool MCPClient::startProcess() {
+    if (pipe(readPipe) == -1 || pipe(writePipe) == -1) {
+        return false;
+    }
+
+    childPid = fork();
+    if (childPid == -1) {
+        return false;
+    }
+
+    if (childPid == 0) { // Child
+        dup2(writePipe[0], STDIN_FILENO);
+        dup2(readPipe[1], STDOUT_FILENO);
+        
+        close(writePipe[1]);
+        close(readPipe[0]);
+        
+        // Execute the command using sh -c
+        execl("/bin/sh", "sh", "-c", serverCommand.c_str(), (char*)NULL);
+        _exit(1);
+    } else { // Parent
+        close(writePipe[0]);
+        close(readPipe[1]);
+        return true;
+    }
+}
+
+void MCPClient::stopProcess() {
+    if (childPid != -1) {
+        close(writePipe[1]);
+        close(readPipe[0]);
+        kill(childPid, SIGTERM);
+        waitpid(childPid, NULL, 0);
+        childPid = -1;
+    }
+}
 
 nlohmann::json MCPClient::sendRequest(const std::string& method, const nlohmann::json& params) {
+    if (childPid == -1) {
+        if (!startProcess()) {
+            return {{"error", "Failed to start process"}};
+        }
+    }
+
     nlohmann::json request = {
         {"jsonrpc", "2.0"},
         {"id", ++requestId},
@@ -13,13 +64,27 @@ nlohmann::json MCPClient::sendRequest(const std::string& method, const nlohmann:
         {"params", params}
     };
 
-    // 演示用途：由于 C++ 标准库不直接支持双向管道 popen，
-    // 实际实现通常需要 fork/execve 或第三方库。
-    // 这里展示 JSON-RPC 的封装逻辑。
-    std::cout << "[MCP Debug] Sending Request: " << request.dump() << std::endl;
-    
-    // 模拟返回（实际应从服务器标准输出读取）
-    return {{"result", {{"status", "connected"}}}};
+    std::string reqStr = request.dump() + "\n";
+    write(writePipe[1], reqStr.c_str(), reqStr.length());
+
+    // Read response (line by line)
+    std::string responseLine;
+    char buffer[1];
+    while (read(readPipe[0], buffer, 1) > 0) {
+        if (buffer[0] == '\n') break;
+        responseLine += buffer[0];
+    }
+
+    if (responseLine.empty()) {
+        return nlohmann::json::object();
+    }
+
+    try {
+        return nlohmann::json::parse(responseLine);
+    } catch (...) {
+        std::cerr << "Failed to parse MCP response: " << responseLine << std::endl;
+        return nlohmann::json::object();
+    }
 }
 
 bool MCPClient::initialize() {
@@ -29,7 +94,17 @@ bool MCPClient::initialize() {
         {"clientInfo", {{"name", "Photon-Agent-CPP"}, {"version", "1.0.0"}}}
     };
     auto res = sendRequest("initialize", params);
-    return !res.is_null();
+    
+    // Send notifications if needed (initialized)
+    nlohmann::json notification = {
+        {"jsonrpc", "2.0"},
+        {"method", "notifications/initialized"},
+        {"params", {}}
+    };
+    std::string reqStr = notification.dump() + "\n";
+    write(writePipe[1], reqStr.c_str(), reqStr.length());
+
+    return !res.is_null() && res.contains("result");
 }
 
 nlohmann::json MCPClient::listResources() {
@@ -49,5 +124,9 @@ std::string MCPClient::readResource(const std::string& uri) {
 }
 
 nlohmann::json MCPClient::callTool(const std::string& name, const nlohmann::json& arguments) {
-    return sendRequest("tools/call", {{"name", name}, {"arguments", arguments}});
+    auto res = sendRequest("tools/call", {{"name", name}, {"arguments", arguments}});
+    if (res.contains("result")) {
+        return res["result"];
+    }
+    return res;
 }

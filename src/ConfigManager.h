@@ -15,6 +15,7 @@ struct Config {
     struct Agent {
         size_t contextThreshold;
         std::vector<std::string> fileExtensions;
+        bool useBuiltinTools;
     } agent;
 
     struct MCPServerConfig {
@@ -35,6 +36,7 @@ struct Config {
         
         cfg.agent.contextThreshold = j["agent"]["context_threshold"];
         cfg.agent.fileExtensions = j["agent"]["file_extensions"].get<std::vector<std::string>>();
+        cfg.agent.useBuiltinTools = j["agent"].value("use_builtin_tools", true);
         
         if (j.contains("mcp_servers")) {
             for (auto& item : j["mcp_servers"]) {
