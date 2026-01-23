@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <filesystem>
 #include <nlohmann/json.hpp>
 
 struct Config {
@@ -39,7 +40,7 @@ struct Config {
         try {
             j = nlohmann::json::parse(content);
         } catch (const nlohmann::json::parse_error& e) {
-            throw std::runtime_error("JSON Parse Error in " + path + ": " + e.what());
+            throw std::runtime_error("JSON Parse Error in " + path.string() + ": " + e.what());
         }
         
         Config cfg;
