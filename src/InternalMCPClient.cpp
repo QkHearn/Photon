@@ -137,160 +137,6 @@ bool InternalMCPClient::shouldIgnore(const fs::path& path) {
     return false;
 }
 
-// Helper to extract tag name from a tag string (e.g., "div class='foo'" -> "div")
-std::string getTagName(const std::string& tag) {
-    std::string name = tag;
-    size_t space = name.find_first_of(" \t\r\n/");
-    if (space != std::string::npos) name = name.substr(0, space);
-    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-    if (!name.empty() && name[0] == '/') name = name.substr(1);
-    return name;
-}
-
-std::string InternalMCPClient::cleanHtml(const std::string& html) {
-    std::string result;
-    result.reserve(html.length());
-    
-    bool inTag = false;
-    bool inScriptOrStyle = false;
-    std::string currentTag;
-
-    for (size_t i = 0; i < html.length(); ++i) {
-        char c = html[i];
-
-        if (c == '<') {
-            inTag = true;
-            currentTag.clear();
-            continue;
-        }
-        
-        if (inTag) {
-            if (c == '>') {
-                inTag = false;
-                std::string tagName = getTagName(currentTag);
-                bool isClosing = (!currentTag.empty() && currentTag[0] == '/');
-                
-                if (tagName == "script" || tagName == "style") {
-                    inScriptOrStyle = !isClosing;
-                } else if (tagName == "p" || tagName == "div" || tagName == "br" || tagName == "li" || tagName == "tr" || tagName == "h1" || tagName == "h2" || tagName == "h3") {
-                    if (!result.empty() && result.back() != '\n') result += '\n';
-                }
-                continue;
-            }
-            currentTag += c;
-            continue;
-        }
-
-        if (!inScriptOrStyle) {
-            result += c;
-        }
-    }
-
-    // Fast entity replacement without regex
-    auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
-        size_t pos = 0;
-        while ((pos = s.find(from, pos)) != std::string::npos) {
-            s.replace(pos, from.length(), to);
-            pos += to.length();
-        }
-    };
-
-    replaceAll(result, "&nbsp;", " ");
-    replaceAll(result, "&lt;", "<");
-    replaceAll(result, "&gt;", ">");
-    replaceAll(result, "&amp;", "&");
-    replaceAll(result, "&quot;", "\"");
-    replaceAll(result, "&apos;", "'");
-
-    // Remove excessive newlines
-    static const std::regex multiple_newlines(R"raw(\n{3,})raw");
-    result = std::regex_replace(result, multiple_newlines, "\n\n");
-    
-    // Trim
-    size_t first = result.find_first_not_of(" \n\r\t");
-    if (first == std::string::npos) return "";
-    size_t last = result.find_last_not_of(" \n\r\t");
-    return result.substr(first, (last - first + 1));
-}
-
-std::string InternalMCPClient::htmlToMarkdown(const std::string& html) {
-    std::string result;
-    bool inTag = false;
-    bool inScriptOrStyle = false;
-    std::string currentTag;
-    std::string currentLink;
-    bool inLink = false;
-
-    for (size_t i = 0; i < html.length(); ++i) {
-        char c = html[i];
-
-        if (c == '<') {
-            inTag = true;
-            currentTag.clear();
-            continue;
-        }
-        
-        if (inTag) {
-            if (c == '>') {
-                inTag = false;
-                std::string tagName = getTagName(currentTag);
-                bool isClosing = (!currentTag.empty() && currentTag[0] == '/');
-                
-                if (tagName == "script" || tagName == "style") {
-                    inScriptOrStyle = !isClosing;
-                } else if (tagName == "h1" || tagName == "h2") {
-                    result += isClosing ? "\n" : "\n\n# ";
-                } else if (tagName == "h3" || tagName == "h4") {
-                    result += isClosing ? "\n" : "\n\n## ";
-                } else if (tagName == "p" || tagName == "div" || tagName == "tr") {
-                    if (!isClosing && !result.empty() && result.back() != '\n') result += "\n";
-                } else if (tagName == "br") {
-                    result += "\n";
-                } else if (tagName == "li") {
-                    if (!isClosing) result += "\n* ";
-                } else if (tagName == "a" && !isClosing) {
-                    // Simple href extraction
-                    size_t hrefPos = currentTag.find("href=\"");
-                    if (hrefPos != std::string::npos) {
-                        size_t endQuote = currentTag.find("\"", hrefPos + 6);
-                        if (endQuote != std::string::npos) {
-                            currentLink = currentTag.substr(hrefPos + 6, endQuote - (hrefPos + 6));
-                            result += "[";
-                            inLink = true;
-                        }
-                    }
-                } else if (tagName == "a" && isClosing && inLink) {
-                    result += "](" + currentLink + ")";
-                    inLink = false;
-                }
-                continue;
-            }
-            currentTag += c;
-            continue;
-        }
-
-        if (!inScriptOrStyle) {
-            result += c;
-        }
-    }
-
-    // Entities
-    auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
-        size_t pos = 0;
-        while ((pos = s.find(from, pos)) != std::string::npos) {
-            s.replace(pos, from.length(), to);
-            pos += to.length();
-        }
-    };
-    replaceAll(result, "&nbsp;", " ");
-    replaceAll(result, "&lt;", "<");
-    replaceAll(result, "&gt;", ">");
-    replaceAll(result, "&amp;", "&");
-    replaceAll(result, "&quot;", "\"");
-    
-    return result;
-}
-
 // Helper for URL decoding
 std::string urlDecode(const std::string& value) {
     std::string result;
@@ -831,12 +677,7 @@ nlohmann::json InternalMCPClient::webFetch(const nlohmann::json& args) {
         auto res = cli.Get(path.c_str(), headers);
 
         if (res && res->status == 200) {
-            std::string cleaned = htmlToMarkdown(res->body);
-            std::string body = sanitizeUtf8(cleaned, 20000); // Increased to 20k
-            if (body.length() < 50 && res->body.length() > 100) {
-                // If markdown conversion failed too much, fallback to cleanHtml
-                body = sanitizeUtf8(cleanHtml(res->body), 20000);
-            }
+            std::string body = sanitizeUtf8(res->body, 20000); // Increased to 20k
             return {{"content", {{{"type", "text"}, {"text", body}}}}};
         } else {
             return {{"error", "Failed to fetch (" + (res ? std::to_string(res->status) : "No Response") + "): " + url}};
@@ -881,8 +722,8 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
         for (std::sregex_iterator i = words_begin; i != words_end && count < 5; ++i) {
             std::smatch match = *i;
             std::string rawLink = match[1].str();
-            std::string title = cleanHtml(match[2].str());
-            std::string snippet = cleanHtml(match[3].str());
+            std::string title = match[2].str();
+            std::string snippet = match[3].str();
 
             // Better link cleaning
             std::string link = rawLink;
@@ -909,7 +750,7 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
             for (std::sregex_iterator i = lb; i != words_end && count < 5; ++i) {
                 std::smatch match = *i;
                 std::string rawLink = match[1].str();
-                std::string title = cleanHtml(match[2].str());
+                std::string title = match[2].str();
                 std::string link = rawLink;
                 size_t uddg_pos = link.find("uddg=");
                 if (uddg_pos != std::string::npos) {
@@ -974,7 +815,7 @@ nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
                     std::string link = item.value("url", "");
                     if (!link.empty() && link[0] == '/') link = "https://developer.huawei.com" + link;
                     
-                    std::string digest = cleanHtml(item.value("digest", item.value("content", "")));
+                    std::string digest = item.value("digest", item.value("content", ""));
                     
                     summaryStr += "*   **[" + sanitizeUtf8(title, 200) + "](" + link + ")**\n";
                     if (!digest.empty()) summaryStr += "    " + sanitizeUtf8(digest, 800) + "\n\n";
