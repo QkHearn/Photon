@@ -54,6 +54,8 @@ private:
     
     std::string executeCommand(const std::string& cmd);
     bool shouldIgnore(const fs::path& path);
+    std::string cleanHtml(const std::string& html);
+    std::string htmlToMarkdown(const std::string& html);
     void backupFile(const std::string& relPath);
     void ensurePhotonDirs();
     bool isCommandSafe(const std::string& cmd);

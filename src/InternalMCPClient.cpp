@@ -65,6 +65,198 @@ bool InternalMCPClient::isBinary(const fs::path& path) {
     return false;
 }
 
+// Helper to extract tag name from a tag string (e.g., "div class='foo'" -> "div")
+std::string getTagName(const std::string& tag) {
+    std::string name = tag;
+    size_t space = name.find_first_of(" \t\r\n/");
+    if (space != std::string::npos) name = name.substr(0, space);
+    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+    if (!name.empty() && name[0] == '/') name = name.substr(1);
+    return name;
+}
+
+std::string InternalMCPClient::cleanHtml(const std::string& html) {
+    std::string result;
+    result.reserve(html.length());
+    
+    bool inTag = false;
+    bool inScriptOrStyle = false;
+    std::string currentTag;
+
+    for (size_t i = 0; i < html.length(); ++i) {
+        char c = html[i];
+
+        if (c == '<') {
+            inTag = true;
+            currentTag.clear();
+            continue;
+        }
+        
+        if (inTag) {
+            if (c == '>') {
+                inTag = false;
+                std::string tagName = getTagName(currentTag);
+                bool isClosing = (!currentTag.empty() && currentTag[0] == '/');
+                
+                if (tagName == "script" || tagName == "style") {
+                    inScriptOrStyle = !isClosing;
+                } else if (tagName == "p" || tagName == "div" || tagName == "br" || tagName == "li" || tagName == "tr" || tagName == "h1" || tagName == "h2" || tagName == "h3") {
+                    if (!result.empty() && result.back() != '\n') result += '\n';
+                }
+                continue;
+            }
+            currentTag += c;
+            continue;
+        }
+
+        if (!inScriptOrStyle) {
+            result += c;
+        }
+    }
+
+    // Fast entity replacement
+    auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
+        size_t pos = 0;
+        while ((pos = s.find(from, pos)) != std::string::npos) {
+            s.replace(pos, from.length(), to);
+            pos += to.length();
+        }
+    };
+
+    replaceAll(result, "&nbsp;", " ");
+    replaceAll(result, "&lt;", "<");
+    replaceAll(result, "&gt;", ">");
+    replaceAll(result, "&amp;", "&");
+    replaceAll(result, "&quot;", "\"");
+    replaceAll(result, "&apos;", "'");
+
+    // Remove excessive newlines
+    static const std::regex multiple_newlines(R"raw(\n{3,})raw");
+    result = std::regex_replace(result, multiple_newlines, "\n\n");
+    
+    // Trim
+    size_t first = result.find_first_not_of(" \n\r\t");
+    if (first == std::string::npos) return "";
+    size_t last = result.find_last_not_of(" \n\r\t");
+    return result.substr(first, (last - first + 1));
+}
+
+std::string InternalMCPClient::htmlToMarkdown(const std::string& html) {
+    std::string result;
+    bool inTag = false;
+    bool inScriptOrStyle = false;
+    std::string currentTag;
+    std::string currentLink;
+    bool inLink = false;
+
+    for (size_t i = 0; i < html.length(); ++i) {
+        char c = html[i];
+
+        if (c == '<') {
+            inTag = true;
+            currentTag.clear();
+            continue;
+        }
+        
+        if (inTag) {
+            if (c == '>') {
+                inTag = false;
+                std::string tagName = getTagName(currentTag);
+                bool isClosing = (!currentTag.empty() && currentTag[0] == '/');
+                
+                if (tagName == "script" || tagName == "style") {
+                    inScriptOrStyle = !isClosing;
+                } else if (tagName == "h1" || tagName == "h2") {
+                    result += isClosing ? "\n" : "\n\n# ";
+                } else if (tagName == "h3" || tagName == "h4") {
+                    result += isClosing ? "\n" : "\n\n## ";
+                } else if (tagName == "p" || tagName == "div" || tagName == "tr") {
+                    if (!isClosing && !result.empty() && result.back() != '\n') result += "\n";
+                } else if (tagName == "br") {
+                    result += "\n";
+                } else if (tagName == "li") {
+                    if (!isClosing) result += "\n* ";
+                } else if (tagName == "a" && !isClosing) {
+                    // Simple href extraction, protecting the URL
+                    size_t hrefPos = currentTag.find("href=\"");
+                    if (hrefPos == std::string::npos) hrefPos = currentTag.find("href='");
+                    
+                    if (hrefPos != std::string::npos) {
+                        char quote = currentTag[hrefPos + 5];
+                        size_t endQuote = currentTag.find(quote, hrefPos + 6);
+                        if (endQuote != std::string::npos) {
+                            currentLink = currentTag.substr(hrefPos + 6, endQuote - (hrefPos + 6));
+                            if (currentLink.find("http") == 0 || currentLink.find("/") == 0) {
+                                result += "[";
+                                inLink = true;
+                            }
+                        }
+                    }
+                } else if (tagName == "a" && isClosing && inLink) {
+                    result += "](" + currentLink + ")";
+                    inLink = false;
+                }
+                continue;
+            }
+            currentTag += c;
+            continue;
+        }
+
+        if (!inScriptOrStyle) {
+            result += c;
+        }
+    }
+
+    // Entities
+    auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
+        size_t pos = 0;
+        while ((pos = s.find(from, pos)) != std::string::npos) {
+            s.replace(pos, from.length(), to);
+            pos += to.length();
+        }
+    };
+    replaceAll(result, "&nbsp;", " ");
+    replaceAll(result, "&lt;", "<");
+    replaceAll(result, "&gt;", ">");
+    replaceAll(result, "&amp;", "&");
+    replaceAll(result, "&quot;", "\"");
+    
+    return result;
+}
+
+// Minimal HTML tag stripping and entity decoding to keep search results readable
+std::string minimalStrip(const std::string& input) {
+    if (input.empty()) return "";
+    // Remove tags but protect common structure
+    std::string s = std::regex_replace(input, std::regex("<[^>]*>"), "");
+    
+    // Quick entity replacement
+    auto replaceAll = [](std::string& str, const std::string& from, const std::string& to) {
+        size_t pos = 0;
+        while ((pos = str.find(from, pos)) != std::string::npos) {
+            str.replace(pos, from.length(), to);
+            pos += to.length();
+        }
+    };
+    replaceAll(s, "&nbsp;", " ");
+    replaceAll(s, "&lt;", "<");
+    replaceAll(s, "&gt;", ">");
+    replaceAll(s, "&amp;", "&");
+    replaceAll(s, "&quot;", "\"");
+    replaceAll(s, "&apos;", "'");
+    
+    // Replace newlines/tabs with spaces to avoid breaking Markdown structure
+    for (char& c : s) {
+        if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    }
+    
+    // Trim
+    size_t first = s.find_first_not_of(" ");
+    if (first == std::string::npos) return "";
+    size_t last = s.find_last_not_of(" ");
+    return s.substr(first, (last - first + 1));
+}
+
 // Helper for URL encoding
 std::string urlEncode(const std::string& value) {
     std::ostringstream escaped;
@@ -677,7 +869,11 @@ nlohmann::json InternalMCPClient::webFetch(const nlohmann::json& args) {
         auto res = cli.Get(path.c_str(), headers);
 
         if (res && res->status == 200) {
-            std::string body = sanitizeUtf8(res->body, 20000); // Increased to 20k
+            std::string cleaned = htmlToMarkdown(res->body);
+            std::string body = sanitizeUtf8(cleaned, 30000); 
+            if (body.length() < 100 && res->body.length() > 500) {
+                body = sanitizeUtf8(cleanHtml(res->body), 30000);
+            }
             return {{"content", {{{"type", "text"}, {"text", body}}}}};
         } else {
             return {{"error", "Failed to fetch (" + (res ? std::to_string(res->status) : "No Response") + "): " + url}};
@@ -690,89 +886,77 @@ nlohmann::json InternalMCPClient::webFetch(const nlohmann::json& args) {
 nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
     std::string query = args["query"];
     
-    // DuckDuckGo HTML version
-    std::string host = "html.duckduckgo.com";
-    std::string path = "/html/?q=" + urlEncode(query); 
-
-    try {
-        httplib::Client cli(host);
-        cli.set_follow_location(true);
-        cli.set_connection_timeout(10);
-        cli.set_read_timeout(15);
-        
-        httplib::Headers headers = {
-            {"User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-        };
-        
-        auto res = cli.Get(path.c_str(), headers);
-        if (!res || res->status != 200) {
-            return {{"error", "Failed to reach search engine (" + (res ? std::to_string(res->status) : "No Response") + ")"}};
-        }
-
-        std::string html = res->body;
-        std::string results = "Web Search Results for: " + query + "\n\n";
-        
-        // Robust extraction for modern DuckDuckGo layout
-        static const std::regex entry_regex(R"raw(<a class="result__a" href="([^"]+)">([\s\S]*?)</a>[\s\S]*?<a class="result__snippet"[^>]*>([\s\S]*?)</a>)raw");
-        
-        auto words_begin = std::sregex_iterator(html.begin(), html.end(), entry_regex);
-        auto words_end = std::sregex_iterator();
-
-        int count = 0;
-        for (std::sregex_iterator i = words_begin; i != words_end && count < 5; ++i) {
-            std::smatch match = *i;
-            std::string rawLink = match[1].str();
-            std::string title = match[2].str();
-            std::string snippet = match[3].str();
-
-            // Better link cleaning
-            std::string link = rawLink;
-            size_t uddg_pos = link.find("uddg=");
-            if (uddg_pos != std::string::npos) {
-                link = link.substr(uddg_pos + 5);
-                size_t amp_pos = link.find("&");
-                if (amp_pos != std::string::npos) link = link.substr(0, amp_pos);
-                link = urlDecode(link);
-            }
+    auto trySearch = [&](const std::string& host, const std::string& pathTemplate) -> nlohmann::json {
+        try {
+            httplib::Client cli("https://" + host);
+            cli.set_follow_location(true);
+            cli.set_decompress(true);
+            cli.set_connection_timeout(10);
+            cli.set_read_timeout(15);
             
-            if (link.find("http") != 0) continue;
+            httplib::Headers headers = {
+                {"User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+                {"Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"},
+                {"Accept-Language", "en-US,en;q=0.5"}
+            };
+            
+            std::string path = pathTemplate;
+            size_t qpos = path.find("{q}");
+            if (qpos != std::string::npos) path.replace(qpos, 3, urlEncode(query));
 
-            results += "### [" + title + "](" + link + ")\n";
-            if (!snippet.empty()) results += snippet + "\n";
-            results += "\n";
-            count++;
-        }
+            auto res = cli.Get(path.c_str(), headers);
+            if (!res || res->status != 200) return nullptr;
 
-        if (count == 0) {
-            // Fallback: try finding just links if snippets are missing
-            static const std::regex link_only_regex(R"raw(<a class="result__a" href="([^"]+)">([\s\S]*?)</a>)raw");
-            auto lb = std::sregex_iterator(html.begin(), html.end(), link_only_regex);
-            for (std::sregex_iterator i = lb; i != words_end && count < 5; ++i) {
-                std::smatch match = *i;
-                std::string rawLink = match[1].str();
-                std::string title = match[2].str();
-                std::string link = rawLink;
-                size_t uddg_pos = link.find("uddg=");
-                if (uddg_pos != std::string::npos) {
-                    link = link.substr(uddg_pos + 5);
-                    size_t amp_pos = link.find("&");
-                    if (amp_pos != std::string::npos) link = link.substr(0, amp_pos);
-                    link = urlDecode(link);
-                }
-                if (link.find("http") != 0) continue;
-                results += "### [" + title + "](" + link + ")\n\n";
-                count++;
+            std::string html = res->body;
+            if (html.find("bots use DuckDuckGo too") != std::string::npos || html.find("CAPTCHA") != std::string::npos) {
+                return nullptr; // Blocked by CAPTCHA
             }
-        }
 
-        if (count == 0) {
-            return {{"content", {{{"type", "text"}, {"text", "No relevant results found. The search engine layout might have changed."}}}}};
-        }
+            std::string results = "Search Results (" + host + ") for: " + query + "\n\n";
+            int count = 0;
 
-        return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 10000)}}}}};
-    } catch (const std::exception& e) {
-        return {{"error", std::string("Search exception: ") + e.what()}};
-    }
+            if (host.find("duckduckgo") != std::string::npos) {
+                static const std::regex entry_regex(R"raw(<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)</a>)raw");
+                auto words_begin = std::sregex_iterator(html.begin(), html.end(), entry_regex);
+                auto words_end = std::sregex_iterator();
+                for (std::sregex_iterator i = words_begin; i != words_end && count < 5; ++i) {
+                    std::smatch match = *i;
+                    std::string link = match[1].str();
+                    size_t uddg_pos = link.find("uddg=");
+                    if (uddg_pos != std::string::npos) {
+                        link = urlDecode(link.substr(uddg_pos + 5));
+                        size_t amp_pos = link.find("&");
+                        if (amp_pos != std::string::npos) link = link.substr(0, amp_pos);
+                    }
+                    results += "### [" + cleanHtml(match[2].str()) + "](" + link + ")\n" + cleanHtml(match[3].str()) + "\n\n";
+                    count++;
+                }
+            } else if (host.find("bing") != std::string::npos) {
+                // Bing Mobile/Lite regex
+                static const std::regex bing_regex(R"raw(<li class="b_algo"><h2><a href="([^"]+)"[^>]*>([\s\S]*?)</a></h2>[\s\S]*?<div class="b_caption"><p[^>]*>([\s\S]*?)</p>)raw");
+                auto words_begin = std::sregex_iterator(html.begin(), html.end(), bing_regex);
+                auto words_end = std::sregex_iterator();
+                for (std::sregex_iterator i = words_begin; i != words_end && count < 5; ++i) {
+                    std::smatch match = *i;
+                    results += "### [" + cleanHtml(match[2].str()) + "](" + match[1].str() + ")\n" + cleanHtml(match[3].str()) + "\n\n";
+                    count++;
+                }
+            }
+
+            if (count > 0) return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 10000)}}}}};
+            return nullptr;
+        } catch (...) { return nullptr; }
+    };
+
+    // Primary: DuckDuckGo
+    nlohmann::json res = trySearch("html.duckduckgo.com", "/html/?q={q}");
+    if (!res.is_null()) return res;
+
+    // Secondary: Bing
+    res = trySearch("www.bing.com", "/search?q={q}");
+    if (!res.is_null()) return res;
+
+    return {{"error", "Search failed: All engines blocked the request or triggered CAPTCHA. Please try again later or use a different query."}};
 }
 
 nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
@@ -794,7 +978,7 @@ nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
         {"deviceId", "ESN"}, {"deviceType", "1"}, {"language", "zh"}, {"country", "CN"},
         {"keyWord", query}, {"requestOrgin", 5}, {"ts", ts},
         {"developerVertical", {{"category", 1}, {"language", "zh"}, {"catalog", "harmonyos-references"}, {"searchSubTitle", 0}, {"scene", 2}, {"subType", 4}}},
-        {"cutPage", {{"offset", 0}, {"length", 5}}}
+        {"cutPage", {{"offset", 0}, {"length", 50}}}
     };
 
     try {
@@ -815,15 +999,15 @@ nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
                     std::string link = item.value("url", "");
                     if (!link.empty() && link[0] == '/') link = "https://developer.huawei.com" + link;
                     
-                    std::string digest = item.value("digest", item.value("content", ""));
+                    std::string digest = cleanHtml(item.value("digest", item.value("content", "")));
                     
-                    summaryStr += "*   **[" + sanitizeUtf8(title, 200) + "](" + link + ")**\n";
-                    if (!digest.empty()) summaryStr += "    " + sanitizeUtf8(digest, 800) + "\n\n";
+                    summaryStr += "*   **[" + sanitizeUtf8(cleanHtml(title), 2000) + "](" + link + ")**\n";
+                    if (!digest.empty()) summaryStr += "    " + sanitizeUtf8(digest, 8000) + "\n\n";
                 }
             } else {
                 summaryStr += "_No technical matches found in HarmonyOS docs._";
             }
-            return {{"content", {{{"type", "text"}, {"text", summaryStr}}}}};
+            return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(summaryStr, 50000)}}}}};
         } else {
             return {{"error", "Huawei API Service Unavailable"}};
         }
