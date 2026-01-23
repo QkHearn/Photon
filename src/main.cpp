@@ -5,6 +5,9 @@
 #include <iomanip>
 #include <regex>
 #include <sstream>
+#ifdef _WIN32
+    #include <winsock2.h>
+#endif
 #include "FileManager.h"
 #include "LLMClient.h"
 #include "ContextManager.h"
@@ -156,6 +159,14 @@ nlohmann::json formatToolsForLLM(const nlohmann::json& mcpTools) {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    // Initialize Winsock
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "Failed to initialize Winsock." << std::endl;
+        return 1;
+    }
+#endif
     std::string path = ".";
     std::string configPath = "config.json"; // Default to current directory
 
@@ -261,7 +272,7 @@ int main(int argc, char* argv[]) {
             nlohmann::json response = llmClient->chatWithTools(messages, llmTools);
             
             if (response.is_null() || !response.contains("choices") || response["choices"].empty()) {
-                std::cerr << RED << "Error: No response from LLM" << RESET << std::endl;
+                // Already handled error printing in LLMClient
                 break;
             }
 
@@ -275,7 +286,12 @@ int main(int argc, char* argv[]) {
                 for (auto& toolCall : message["tool_calls"]) {
                     std::string fullName = toolCall["function"]["name"];
                     std::string argsStr = toolCall["function"]["arguments"];
-                    nlohmann::json args = nlohmann::json::parse(argsStr);
+                    nlohmann::json args;
+                    try {
+                        args = nlohmann::json::parse(argsStr);
+                    } catch (...) {
+                        args = nlohmann::json::object();
+                    }
 
                     // Split server_name__tool_name
                     size_t pos = fullName.find("__");
@@ -303,8 +319,10 @@ int main(int argc, char* argv[]) {
             } else {
                 // No more tool calls, this is the final answer
                 std::cout << "           " << "\r"; // Clear "Thinking..."
-                std::string content = message["content"].get<std::string>();
-                std::cout << MAGENTA << BOLD << "Photon > " << RESET << renderMarkdown(content) << std::endl;
+                if (message.contains("content") && !message["content"].is_null()) {
+                    std::string content = message["content"].get<std::string>();
+                    std::cout << MAGENTA << BOLD << "Photon > " << RESET << renderMarkdown(content) << std::endl;
+                }
                 
                 // Beautiful Context Usage Display
                 size_t currentSize = contextManager.getSize(messages);
@@ -315,5 +333,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return 0;
 }

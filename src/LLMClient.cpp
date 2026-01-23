@@ -1,4 +1,7 @@
 #include "LLMClient.h"
+#ifdef _WIN32
+    #include <winsock2.h>
+#endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.h"
 #include <iostream>
