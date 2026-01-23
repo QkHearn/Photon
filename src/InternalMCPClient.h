@@ -23,7 +23,7 @@ public:
     std::string getLastFile() const override { return lastFile; }
 
 private:
-    std::string rootPath;
+    fs::path rootPath;
     std::string lastFile;
     bool isGitRepo = false;
 

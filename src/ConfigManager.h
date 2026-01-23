@@ -24,10 +24,11 @@ struct Config {
     };
     std::vector<MCPServerConfig> mcpServers;
 
-    static Config load(const std::string& path) {
+    static Config load(const std::string& pathStr) {
+        std::filesystem::path path = std::filesystem::u8path(pathStr);
         std::ifstream f(path);
         if (!f.is_open()) {
-            throw std::runtime_error("Could not open config file: " + path);
+            throw std::runtime_error("Could not open config file: " + pathStr);
         }
         
         // Read the file content into a string first to ensure proper encoding handling

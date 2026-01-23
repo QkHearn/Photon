@@ -193,7 +193,7 @@ int main(int argc, char* argv[]) {
     
     // Check if config.json exists in current directory, if not try parent (for build/ dir runs)
     if (argc < 3) {
-        if (!fs::exists(configPath) && fs::exists("../config.json")) {
+        if (!fs::exists(fs::u8path(configPath)) && fs::exists(fs::u8path("../config.json"))) {
             configPath = "../config.json";
         }
     } else {
@@ -202,7 +202,7 @@ int main(int argc, char* argv[]) {
 
     Config cfg;
     try {
-        if (!fs::exists(configPath)) {
+        if (!fs::exists(fs::u8path(configPath))) {
             throw std::runtime_error("Configuration file not found: " + configPath);
         }
         cfg = Config::load(configPath);
