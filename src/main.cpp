@@ -160,6 +160,10 @@ nlohmann::json formatToolsForLLM(const nlohmann::json& mcpTools) {
 
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
+    // Force UTF-8 encoding for Windows terminal
+    SetConsoleOutputCP(65001);
+    SetConsoleCP(65001);
+
     // Initialize Winsock
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -167,7 +171,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 #endif
-    std::string path = ".";
+
+    // Global exception handler to prevent silent crash
+    try {
+        std::string path = ".";
     std::string configPath = "config.json"; // Default to current directory
 
     if (argc >= 2) {
@@ -336,5 +343,16 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
     WSACleanup();
 #endif
+    } catch (const std::exception& e) {
+        std::cerr << "\n" << RED << BOLD << "█ FATAL ERROR: " << RESET << e.what() << std::endl;
+        std::cerr << "Press Enter to exit..." << std::endl;
+        std::cin.get();
+        return 1;
+    } catch (...) {
+        std::cerr << "\n" << RED << BOLD << "█ UNKNOWN FATAL ERROR" << RESET << std::endl;
+        std::cerr << "Press Enter to exit..." << std::endl;
+        std::cin.get();
+        return 1;
+    }
     return 0;
 }

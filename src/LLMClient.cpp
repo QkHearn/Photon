@@ -43,7 +43,7 @@ std::string LLMClient::chat(const std::string& prompt, const std::string& system
     messages.push_back({{"role", "user"}, {"content", prompt}});
 
     nlohmann::json res = chatWithTools(messages, nlohmann::json::array());
-    if (res.contains("choices") && !res["choices"].empty()) {
+    if (res.is_object() && res.contains("choices") && !res["choices"].empty()) {
         auto& msg = res["choices"][0]["message"];
         if (msg.contains("content") && !msg["content"].is_null()) {
             return msg["content"];
@@ -71,14 +71,26 @@ nlohmann::json LLMClient::chatWithTools(const nlohmann::json& messages, const nl
     std::string bodyStr = body.dump();
 
     httplib::Result res;
-    if (isSsl) {
-        httplib::SSLClient cli(host, port);
-        cli.set_follow_location(true);
-        res = cli.Post(endpoint.c_str(), headers, bodyStr, "application/json");
-    } else {
-        httplib::Client cli(host, port);
-        cli.set_follow_location(true);
-        res = cli.Post(endpoint.c_str(), headers, bodyStr, "application/json");
+    try {
+        if (isSsl) {
+            httplib::SSLClient cli(host, port);
+            cli.set_follow_location(true);
+            cli.set_connection_timeout(10); // 10 seconds timeout
+            cli.set_read_timeout(60);       // 60 seconds timeout
+            res = cli.Post(endpoint.c_str(), headers, bodyStr, "application/json");
+        } else {
+            httplib::Client cli(host, port);
+            cli.set_follow_location(true);
+            cli.set_connection_timeout(10);
+            cli.set_read_timeout(60);
+            res = cli.Post(endpoint.c_str(), headers, bodyStr, "application/json");
+        }
+    } catch (const std::exception& e) {
+        std::cerr << RED << "✖ Network Exception: " << e.what() << RESET << std::endl;
+        return nlohmann::json::object();
+    } catch (...) {
+        std::cerr << RED << "✖ Unknown Network Exception" << RESET << std::endl;
+        return nlohmann::json::object();
     }
 
     if (res && res->status == 200) {
