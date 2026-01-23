@@ -1,6 +1,6 @@
 {
     "llm": {
-        "api_key": "sk-herbySg5bFnh1yginf6xMgFuXetanY2Vz27KpPfOJQMvecH8",
+        "api_key": "",
         "base_url": "https://api.moonshot.cn/v1",
         "model": "kimi-k2-turbo-preview",
         "system_role": "You are a helpful assistant that can search and read files to answer questions."

@@ -1,6 +1,9 @@
 #include "InternalMCPClient.h"
 #include <algorithm>
 #include <regex>
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.h"
 #include <sstream>
@@ -849,7 +852,7 @@ nlohmann::json InternalMCPClient::listDirTree(const nlohmann::json& args) {
     std::string tree;
     for (const auto& entry : fs::recursive_directory_iterator(startPath)) {
         auto rel = fs::relative(entry.path(), startPath);
-        int depth = std::distance(rel.begin(), rel.end());
+        int depth = static_cast<int>(std::distance(rel.begin(), rel.end()));
         if (depth > maxDepth) continue;
 
         // Skip common ignore dirs
@@ -983,7 +986,7 @@ std::string InternalMCPClient::executeCommand(const std::string& cmd) {
     if (!pipe) {
         return "Error: popen() failed!";
     }
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
         result += buffer.data();
     }
     return result;

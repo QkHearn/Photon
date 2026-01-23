@@ -101,21 +101,31 @@ nlohmann::json formatToolsForLLM(const nlohmann::json& mcpTools) {
 
 int main(int argc, char* argv[]) {
     std::string path = ".";
-    std::string configPath = "../config.json";
+    std::string configPath = "config.json"; // Default to current directory
 
     if (argc >= 2) {
         path = argv[1];
     }
-    if (argc >= 3) {
+    
+    // Check if config.json exists in current directory, if not try parent (for build/ dir runs)
+    if (argc < 3) {
+        if (!fs::exists(configPath) && fs::exists("../config.json")) {
+            configPath = "../config.json";
+        }
+    } else {
         configPath = argv[2];
     }
 
     Config cfg;
     try {
+        if (!fs::exists(configPath)) {
+            throw std::runtime_error("Configuration file not found: " + configPath);
+        }
         cfg = Config::load(configPath);
-        std::cout << "Loaded configuration from: " << configPath << std::endl;
+        std::cout << GREEN << "✔ Loaded configuration from: " << BOLD << configPath << RESET << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "Failed to load config: " << e.what() << std::endl;
+        std::cerr << RED << "✖ Failed to load config: " << e.what() << RESET << std::endl;
+        printUsage();
         return 1;
     }
 
