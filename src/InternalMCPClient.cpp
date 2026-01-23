@@ -137,6 +137,16 @@ bool InternalMCPClient::shouldIgnore(const fs::path& path) {
     return false;
 }
 
+// Helper to extract tag name from a tag string (e.g., "div class='foo'" -> "div")
+std::string getTagName(const std::string& tag) {
+    std::string name = tag;
+    size_t space = name.find_first_of(" \t\r\n/");
+    if (space != std::string::npos) name = name.substr(0, space);
+    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+    if (!name.empty() && name[0] == '/') name = name.substr(1);
+    return name;
+}
+
 std::string InternalMCPClient::cleanHtml(const std::string& html) {
     std::string result;
     result.reserve(html.length());
@@ -157,15 +167,13 @@ std::string InternalMCPClient::cleanHtml(const std::string& html) {
         if (inTag) {
             if (c == '>') {
                 inTag = false;
-                std::string tagLower = currentTag;
-                std::transform(tagLower.begin(), tagLower.end(), tagLower.begin(), ::tolower);
+                std::string tagName = getTagName(currentTag);
+                bool isClosing = (!currentTag.empty() && currentTag[0] == '/');
                 
-                if (tagLower == "script" || tagLower == "style") {
-                    inScriptOrStyle = true;
-                } else if (tagLower == "/script" || tagLower == "/style") {
-                    inScriptOrStyle = false;
-                } else if (tagLower == "p" || tagLower == "div" || tagLower == "br" || tagLower == "li" || tagLower == "tr") {
-                    result += '\n';
+                if (tagName == "script" || tagName == "style") {
+                    inScriptOrStyle = !isClosing;
+                } else if (tagName == "p" || tagName == "div" || tagName == "br" || tagName == "li" || tagName == "tr" || tagName == "h1" || tagName == "h2" || tagName == "h3") {
+                    if (!result.empty() && result.back() != '\n') result += '\n';
                 }
                 continue;
             }
@@ -199,10 +207,10 @@ std::string InternalMCPClient::cleanHtml(const std::string& html) {
     result = std::regex_replace(result, multiple_newlines, "\n\n");
     
     // Trim
-    result.erase(0, result.find_first_not_of(" \n\r\t"));
-    result.erase(result.find_last_not_of(" \n\r\t") + 1);
-
-    return result;
+    size_t first = result.find_first_not_of(" \n\r\t");
+    if (first == std::string::npos) return "";
+    size_t last = result.find_last_not_of(" \n\r\t");
+    return result.substr(first, (last - first + 1));
 }
 
 std::string InternalMCPClient::htmlToMarkdown(const std::string& html) {
@@ -225,35 +233,33 @@ std::string InternalMCPClient::htmlToMarkdown(const std::string& html) {
         if (inTag) {
             if (c == '>') {
                 inTag = false;
-                std::string tagLower = currentTag;
-                std::transform(tagLower.begin(), tagLower.end(), tagLower.begin(), ::tolower);
+                std::string tagName = getTagName(currentTag);
+                bool isClosing = (!currentTag.empty() && currentTag[0] == '/');
                 
-                if (tagLower.substr(0, 6) == "script" || tagLower.substr(0, 5) == "style") {
-                    inScriptOrStyle = true;
-                } else if (tagLower == "/script" || tagLower == "/style") {
-                    inScriptOrStyle = false;
-                } else if (tagLower == "h1" || tagLower == "h2") {
-                    result += "\n\n# ";
-                } else if (tagLower == "h3" || tagLower == "h4") {
-                    result += "\n\n## ";
-                } else if (tagLower == "p" || tagLower == "div" || tagLower == "tr") {
+                if (tagName == "script" || tagName == "style") {
+                    inScriptOrStyle = !isClosing;
+                } else if (tagName == "h1" || tagName == "h2") {
+                    result += isClosing ? "\n" : "\n\n# ";
+                } else if (tagName == "h3" || tagName == "h4") {
+                    result += isClosing ? "\n" : "\n\n## ";
+                } else if (tagName == "p" || tagName == "div" || tagName == "tr") {
+                    if (!isClosing && !result.empty() && result.back() != '\n') result += "\n";
+                } else if (tagName == "br") {
                     result += "\n";
-                } else if (tagLower == "br") {
-                    result += "\n";
-                } else if (tagLower == "li") {
-                    result += "\n* ";
-                } else if (tagLower.substr(0, 2) == "a ") {
+                } else if (tagName == "li") {
+                    if (!isClosing) result += "\n* ";
+                } else if (tagName == "a" && !isClosing) {
                     // Simple href extraction
-                    size_t hrefPos = tagLower.find("href=\"");
+                    size_t hrefPos = currentTag.find("href=\"");
                     if (hrefPos != std::string::npos) {
-                        size_t endQuote = tagLower.find("\"", hrefPos + 6);
+                        size_t endQuote = currentTag.find("\"", hrefPos + 6);
                         if (endQuote != std::string::npos) {
-                            currentLink = tagLower.substr(hrefPos + 6, endQuote - (hrefPos + 6));
+                            currentLink = currentTag.substr(hrefPos + 6, endQuote - (hrefPos + 6));
                             result += "[";
                             inLink = true;
                         }
                     }
-                } else if (tagLower == "/a" && inLink) {
+                } else if (tagName == "a" && isClosing && inLink) {
                     result += "](" + currentLink + ")";
                     inLink = false;
                 }
@@ -865,30 +871,45 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
         std::string html = res->body;
         std::string results = "Web Search Results for: " + query + "\n\n";
         
-        // Split HTML into result blocks to avoid regex over-matching
-        size_t lastPos = 0;
+        // Robust extraction for modern DuckDuckGo layout
+        static const std::regex entry_regex(R"raw(<a class="result__a" href="([^"]+)">([\s\S]*?)</a>[\s\S]*?<a class="result__snippet"[^>]*>([\s\S]*?)</a>)raw");
+        
+        auto words_begin = std::sregex_iterator(html.begin(), html.end(), entry_regex);
+        auto words_end = std::sregex_iterator();
+
         int count = 0;
-        static const std::regex block_regex(R"raw(<div class="result results_links results_links_deep web-result[^"]*">([\s\S]*?)</div>\s*</div>)raw");
-        static const std::regex link_regex(R"raw(<a class="result__a" href="([^"]+)">([\s\S]*?)</a>)raw");
-        static const std::regex snippet_regex(R"raw(<a class="result__snippet"[^>]*>([\s\S]*?)</a>)raw");
+        for (std::sregex_iterator i = words_begin; i != words_end && count < 5; ++i) {
+            std::smatch match = *i;
+            std::string rawLink = match[1].str();
+            std::string title = cleanHtml(match[2].str());
+            std::string snippet = cleanHtml(match[3].str());
 
-        auto blocks_begin = std::sregex_iterator(html.begin(), html.end(), block_regex);
-        auto blocks_end = std::sregex_iterator();
-
-        for (std::sregex_iterator i = blocks_begin; i != blocks_end && count < 5; ++i) {
-            std::string block = (*i)[1].str();
-            std::smatch lm, sm;
+            // Better link cleaning
+            std::string link = rawLink;
+            size_t uddg_pos = link.find("uddg=");
+            if (uddg_pos != std::string::npos) {
+                link = link.substr(uddg_pos + 5);
+                size_t amp_pos = link.find("&");
+                if (amp_pos != std::string::npos) link = link.substr(0, amp_pos);
+                link = urlDecode(link);
+            }
             
-            if (std::regex_search(block, lm, link_regex)) {
-                std::string rawLink = lm[1].str();
-                std::string title = cleanHtml(lm[2].str());
-                std::string snippet = "";
-                
-                if (std::regex_search(block, sm, snippet_regex)) {
-                    snippet = cleanHtml(sm[1].str());
-                }
+            if (link.find("http") != 0) continue;
 
-                // Clean DuckDuckGo redirect link
+            results += "### [" + title + "](" + link + ")\n";
+            if (!snippet.empty()) results += snippet + "\n";
+            results += "\n";
+            count++;
+        }
+
+        if (count == 0) {
+            // Fallback: try finding just links if snippets are missing
+            static const std::regex link_only_regex(R"raw(<a class="result__a" href="([^"]+)">([\s\S]*?)</a>)raw");
+            auto lb = std::sregex_iterator(html.begin(), html.end(), link_only_regex);
+            for (std::sregex_iterator i = lb; i != words_end && count < 5; ++i) {
+                std::smatch match = *i;
+                std::string rawLink = match[1].str();
+                std::string title = cleanHtml(match[2].str());
                 std::string link = rawLink;
                 size_t uddg_pos = link.find("uddg=");
                 if (uddg_pos != std::string::npos) {
@@ -897,19 +918,14 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
                     if (amp_pos != std::string::npos) link = link.substr(0, amp_pos);
                     link = urlDecode(link);
                 }
-                
-                // If link is still relative, it's not a real search result link we want
                 if (link.find("http") != 0) continue;
-
-                results += "### [" + title + "](" + link + ")\n";
-                if (!snippet.empty()) results += snippet + "\n";
-                results += "\n";
+                results += "### [" + title + "](" + link + ")\n\n";
                 count++;
             }
         }
 
         if (count == 0) {
-            return {{"content", {{{"type", "text"}, {"text", "No relevant results found. DuckDuckGo might be rate-limiting or blocking the request."}}}}};
+            return {{"content", {{{"type", "text"}, {"text", "No relevant results found. The search engine layout might have changed."}}}}};
         }
 
         return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 10000)}}}}};
