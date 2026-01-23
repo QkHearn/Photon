@@ -23,46 +23,101 @@ const std::string RED = "\033[31m";
 const std::string ITALIC = "\033[3m";
 
 std::string renderMarkdown(const std::string& input) {
-    std::string output = input;
+    std::string output;
+    std::string remaining = input;
     
-    // 1. Code Blocks (MUST be processed first to avoid inner styling)
-    // More robust regex: allows optional language, handles missing newlines gracefully
-    std::regex code_block(R"(```([a-z]*)\s*([\s\S]*?)\s*```)");
-    output = std::regex_replace(output, code_block, YELLOW + "╭────────── $1 ──────────\n$2\n╰────────────────────────" + RESET);
+    // 1. Code Blocks (MUST be processed carefully)
+    // We'll replace code blocks with placeholders to avoid line-by-line processing
+    std::vector<std::string> codeBlocks;
+    std::regex code_block_regex(R"(```([a-z]*)\s*([\s\S]*?)\s*```)");
+    auto words_begin = std::sregex_iterator(remaining.begin(), remaining.end(), code_block_regex);
+    auto words_end = std::sregex_iterator();
 
-    // 2. Horizontal Rules
-    output = std::regex_replace(output, std::regex(R"(^---$)", std::regex_constants::multiline), CYAN + "──────────────────────────────────────────────────" + RESET);
+    std::string placeholder_prefix = "___CODE_BLOCK_";
+    size_t last_pos = 0;
+    std::string text_with_placeholders;
+    int block_idx = 0;
 
-    // 3. Headers
-    output = std::regex_replace(output, std::regex(R"(^# (.*))", std::regex_constants::multiline), BOLD + MAGENTA + "█ $1" + RESET);
-    output = std::regex_replace(output, std::regex(R"(^## (.*))", std::regex_constants::multiline), BOLD + CYAN + "▓ $1" + RESET);
-    output = std::regex_replace(output, std::regex(R"(^### (.*))", std::regex_constants::multiline), BOLD + BLUE + "▒ $1" + RESET);
-    output = std::regex_replace(output, std::regex(R"(^#### (.*))", std::regex_constants::multiline), BOLD + YELLOW + "░ $1" + RESET);
-    
-    // 4. Blockquotes
-    output = std::regex_replace(output, std::regex(R"(^> (.*))", std::regex_constants::multiline), BLUE + "┃ " + RESET + ITALIC + "$1" + RESET);
-    
-    // 5. Bold & Italic
+    for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
+        std::smatch match = *i;
+        text_with_placeholders += remaining.substr(last_pos, match.position() - last_pos);
+        
+        std::string lang = match[1].str();
+        std::string code = match[2].str();
+        std::string rendered = YELLOW + "╭────────── " + (lang.empty() ? "code" : lang) + " ──────────\n" + code + "\n╰────────────────────────" + RESET;
+        
+        codeBlocks.push_back(rendered);
+        text_with_placeholders += placeholder_prefix + std::to_string(block_idx++) + "___";
+        last_pos = match.position() + match.length();
+    }
+    text_with_placeholders += remaining.substr(last_pos);
+
+    // 2. Process line by line for block elements
+    std::stringstream ss(text_with_placeholders);
+    std::string line;
+    std::string processed_text;
+    while (std::getline(ss, line)) {
+        // Horizontal Rules
+        if (std::regex_match(line, std::regex(R"(^---$)"))) {
+            line = CYAN + "──────────────────────────────────────────────────" + RESET;
+        }
+        // Headers
+        else if (std::regex_match(line, std::regex(R"(^# (.*))"))) {
+            line = std::regex_replace(line, std::regex(R"(^# (.*))"), BOLD + MAGENTA + "█ $1" + RESET);
+        }
+        else if (std::regex_match(line, std::regex(R"(^## (.*))"))) {
+            line = std::regex_replace(line, std::regex(R"(^## (.*))"), BOLD + CYAN + "▓ $1" + RESET);
+        }
+        else if (std::regex_match(line, std::regex(R"(^### (.*))"))) {
+            line = std::regex_replace(line, std::regex(R"(^### (.*))"), BOLD + BLUE + "▒ $1" + RESET);
+        }
+        else if (std::regex_match(line, std::regex(R"(^#### (.*))"))) {
+            line = std::regex_replace(line, std::regex(R"(^#### (.*))"), BOLD + YELLOW + "░ $1" + RESET);
+        }
+        // Blockquotes
+        else if (std::regex_match(line, std::regex(R"(^> (.*))"))) {
+            line = std::regex_replace(line, std::regex(R"(^> (.*))"), BLUE + "┃ " + RESET + ITALIC + "$1" + RESET);
+        }
+        // Lists
+        else if (std::regex_search(line, std::regex(R"(^[\s]*- )"))) {
+            line = std::regex_replace(line, std::regex(R"(^([\s]*)- )"), "$1" + CYAN + "•" + RESET + " ");
+        }
+        else if (std::regex_search(line, std::regex(R"(^[\s]*\d+\. )"))) {
+            line = std::regex_replace(line, std::regex(R"(^([\s]*\d+\. ))"), CYAN + "$1" + RESET);
+        }
+        // Tables (Simple check)
+        else if (std::regex_match(line, std::regex(R"(^\|.*\|$)"))) {
+            if (std::regex_match(line, std::regex(R"(^\|[-:| ]+\|.*$)"))) {
+                line = CYAN + line + RESET;
+            } else {
+                // Style table pipes
+                line = std::regex_replace(line, std::regex(R"(\| )"), CYAN + "┃ " + RESET);
+                line = std::regex_replace(line, std::regex(R"( \|)"), " " + CYAN + "┃" + RESET);
+                // Also handle the start/end pipes
+                if (!line.empty() && line[0] == '|') line = CYAN + "┃" + RESET + line.substr(1);
+                if (!line.empty() && line.back() == '|') line = line.substr(0, line.size()-1) + CYAN + "┃" + RESET;
+            }
+        }
+
+        processed_text += line + "\n";
+    }
+
+    // 3. Inline Elements (Bold, Italic, Code, Links)
+    output = processed_text;
     output = std::regex_replace(output, std::regex(R"(\*\*\*(.*?)\*\*\*)"), BOLD + ITALIC + "$1" + RESET);
     output = std::regex_replace(output, std::regex(R"(\*\*(.*?)\*\*)"), BOLD + "$1" + RESET);
     output = std::regex_replace(output, std::regex(R"(\*(.*?)\*)"), ITALIC + "$1" + RESET);
-    
-    // 6. Inline Code (Avoid matching triple backticks)
     output = std::regex_replace(output, std::regex(R"(`([^`]+)`)"), GREEN + " $1 " + RESET);
-    
-    // 7. Links
     output = std::regex_replace(output, std::regex(R"(\[(.*?)\]\((.*?)\))"), BLUE + "$1" + RESET + " (" + CYAN + "$2" + RESET + ")");
-    
-    // 8. Lists
-    output = std::regex_replace(output, std::regex(R"(^[\s]*- )", std::regex_constants::multiline), "  " + CYAN + "•" + RESET + " ");
-    output = std::regex_replace(output, std::regex(R"(^[\s]*\d+\. )", std::regex_constants::multiline), "  " + CYAN + "$&" + RESET);
-    
-    // 9. Tables (Simple terminal styling)
-    // Format separator row |---|---|
-    output = std::regex_replace(output, std::regex(R"(^\|[-:| ]+\|.*$)", std::regex_constants::multiline), CYAN + "$&" + RESET);
-    // Style table pipes
-    output = std::regex_replace(output, std::regex(R"(^\|)", std::regex_constants::multiline), CYAN + "┃" + RESET);
-    output = std::regex_replace(output, std::regex(R"(\|)", std::regex_constants::multiline), CYAN + "┃" + RESET);
+
+    // 4. Restore Code Blocks
+    for (int i = 0; i < block_idx; ++i) {
+        std::string placeholder = placeholder_prefix + std::to_string(i) + "___";
+        size_t pos = output.find(placeholder);
+        if (pos != std::string::npos) {
+            output.replace(pos, placeholder.length(), codeBlocks[i]);
+        }
+    }
 
     return output;
 }
