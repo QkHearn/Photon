@@ -58,4 +58,5 @@ private:
     void backupFile(const std::string& relPath);
     void ensurePhotonDirs();
     bool isCommandSafe(const std::string& cmd);
+    std::string htmlToMarkdown(const std::string& html);
 };

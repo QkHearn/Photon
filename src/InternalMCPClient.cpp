@@ -187,7 +187,7 @@ std::string InternalMCPClient::cleanHtml(const std::string& html) {
     replaceAll(result, "&apos;", "'");
 
     // Remove excessive newlines
-    static const std::regex multiple_newlines(R"(\n{3,})");
+    static const std::regex multiple_newlines(R"raw(\n{3,})raw");
     result = std::regex_replace(result, multiple_newlines, "\n\n");
     
     // Trim
@@ -734,22 +734,16 @@ nlohmann::json InternalMCPClient::codeAstAnalyze(const nlohmann::json& args) {
 
     // More robust regex for C++ and Python
     // C++: handle namespaces, templates, and complex signatures
-    std::regex cppClass(R"((class|struct)\s+([A-Za-z0-9_]+)(\s*:\s*[^{]+)?\s*\{)");
-    std::regex cppFunc(R"(([A-Za-z0-9_<>, :*&]+)\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*(const|override|final|noexcept)*\s*(\{|;))");
+    static const std::regex cppClass(R"raw((class|struct)\s+([A-Za-z0-9_]+)(\s*:\s*[^{]+)?\s*\{)raw");
+    static const std::regex cppFunc(R"raw(([A-Za-z0-9_<>, :*&]+)\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*(const|override|final|noexcept)*\s*(\{|;))raw");
     // Python: handle classes and methods
-    std::regex pyDef(R"(^\s*(def|async def)\s+([A-Za-z0-9_]+)\s*\()");
-    std::regex pyClass(R"(^\s*class\s+([A-Za-z0-9_]+)\s*[:\(])");
+    static const std::regex pyDef(R"raw(^\s*(def|async def)\s+([A-Za-z0-9_]+)\s*\()raw");
+    static const std::regex pyClass(R"raw(^\s*class\s+([A-Za-z0-9_]+)\s*[:\(])raw");
 
     while (std::getline(file, line)) {
         // Simple comment skipping
         if (line.find("//") != std::string::npos && line.find("//") < 5) continue;
         if (line.find("#") != std::string::npos && line.find("#") < 5) continue;
-
-        // Static regex for AST to avoid re-compiling in large file loops
-        static const std::regex cppClass(R"((class|struct)\s+([A-Za-z0-9_]+)(\s*:\s*[^{]+)?\s*\{)");
-        static const std::regex cppFunc(R"(([A-Za-z0-9_<>, :*&]+)\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*(const|override|final|noexcept)*\s*(\{|;))");
-        static const std::regex pyDef(R"(^\s*(def|async def)\s+([A-Za-z0-9_]+)\s*\()");
-        static const std::regex pyClass(R"(^\s*class\s+([A-Za-z0-9_]+)\s*[:\(])");
 
         std::smatch match;
         if (std::regex_search(line, match, cppClass) || std::regex_search(line, match, pyClass)) {
@@ -783,7 +777,7 @@ nlohmann::json InternalMCPClient::webFetch(const nlohmann::json& args) {
     std::string url = args["url"];
     
     // Simple URL parser (only handles https://host/path)
-    std::regex urlRegex(R"(https?://([^/]+)(/.*)?)");
+    static const std::regex urlRegex(R"raw(https?://([^/]+)(/.*)?)raw");
     std::smatch match;
     if (!std::regex_match(url, match, urlRegex)) {
         return {{"error", "Invalid URL format. Use https://host/path"}};
@@ -836,7 +830,7 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
         std::string results = "Web Search Results for: " + query + "\n\n";
         
         // Robust extraction for Title, Link, and Snippet
-        static const std::regex entry_regex(R"(result__a"\s+href="([^"]+)">([\s\S]*?)</a>[\s\S]*?result__snippet"[^>]*>([\s\S]*?)</a>)");
+        static const std::regex entry_regex(R"raw(result__a"\s+href="([^"]+)">([\s\S]*?)</a>[\s\S]*?result__snippet"[^>]*>([\s\S]*?)</a>)raw");
         
         auto words_begin = std::sregex_iterator(html.begin(), html.end(), entry_regex);
         auto words_end = std::sregex_iterator();
@@ -1164,12 +1158,21 @@ void InternalMCPClient::ensurePhotonDirs() {
 std::string InternalMCPClient::executeCommand(const std::string& cmd) {
     std::array<char, 128> buffer;
     std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
-    if (!pipe) {
+#ifdef _WIN32
+    FILE* pipePtr = _popen(cmd.c_str(), "r");
+    auto pipeClose = _pclose;
+#else
+    FILE* pipePtr = popen(cmd.c_str(), "r");
+    auto pipeClose = pclose;
+#endif
+
+    if (!pipePtr) {
         return "Error: popen() failed!";
     }
-    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
+    
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipePtr) != nullptr) {
         result += buffer.data();
     }
+    pipeClose(pipePtr);
     return sanitizeUtf8(result, 30000);
 }

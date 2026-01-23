@@ -135,7 +135,7 @@ void printLogo() {
      | |    | | | | (_) | || (_) | | | |
      |_|    |_| |_|\___/ \__\___/|_| |_|
     )" << RESET << std::endl;
-    std::cout << CYAN << "      --- Quantum-Powered AI Code Agent ---" << RESET << "\n" << std::endl;
+    std::cout << CYAN << "      --- Autonomous Agentic Intelligence ---" << RESET << "\n" << std::endl;
 }
 
 void printUsage() {
@@ -235,10 +235,11 @@ int main(int argc, char* argv[]) {
               << BOLD << "compress" << RESET << " (active summary), " 
               << BOLD << "undo" << RESET << " (revert last file change)" << std::endl;
 
-    // Optimization: Don't load all files. Just tell the LLM the root path.
-    std::string systemPrompt = cfg.llm.systemRole + "\n" +
+    // Optimization: Define the core identity as an Autonomous Agent.
+    std::string systemPrompt = "You are Photon, an autonomous AI agentic intelligence. Your mission is to assist with complex engineering tasks through sensing (tools), reasoning, and acting.\n" +
+                               cfg.llm.systemRole + "\n" +
                                "Current working directory for your tools: " + path + "\n" +
-                               "You can use the provided MCP tools to explore and read files in this directory. " +
+                               "Utilize your MCP tools to perceive the codebase, analyze structures, and execute changes as needed. " +
                                "Always use relative paths from the current working directory.";
     
     nlohmann::json messages = nlohmann::json::array();
