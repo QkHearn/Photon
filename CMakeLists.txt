@@ -1,15 +1,22 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.15)
 project(Photon)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Windows specific global settings
+if(MSVC)
+    # Force static runtime /MT for all targets to match vcpkg's x64-windows-static
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    
+    # Alternative for older CMake or if the above is ignored
+    add_compile_options(
+        $<$<NOT:$<CONFIG:Debug>>:/MT>
+        $<$<CONFIG:Debug>:/MTd>
+    )
+endif()
+
 if(WIN32)
-    # Static link for MSVC runtime (/MT) - MUST be set before any targets
-    if(MSVC)
-        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
     # Force OpenSSL to use static libs
     set(OPENSSL_USE_STATIC_LIBS ON)
 endif()
@@ -55,6 +62,7 @@ target_link_libraries(agent_lib PRIVATE nlohmann_json::nlohmann_json OpenSSL::SS
 target_link_libraries(photon PRIVATE agent_lib)
 
 # Find GTest
+set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
 find_package(GTest REQUIRED)
 
 add_executable(agent_tests 
