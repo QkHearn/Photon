@@ -1,9 +1,9 @@
-#include "InternalMCPClient.h"
-#include <algorithm>
-#include <regex>
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
+#include "InternalMCPClient.h"
+#include <algorithm>
+#include <regex>
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.h"
 #include <sstream>

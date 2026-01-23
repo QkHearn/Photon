@@ -8,8 +8,10 @@
 
 #ifdef _WIN32
     #include <io.h>
+    #include <process.h>
     #define popen _popen
     #define pclose _pclose
+    typedef int pid_t;
 #else
     #include <unistd.h>
 #endif

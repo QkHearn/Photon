@@ -116,7 +116,11 @@ bool MCPClient::initialize() {
         {"params", {}}
     };
     std::string reqStr = notification.dump() + "\n";
+#ifdef _WIN32
+    _write(writePipe[1], reqStr.c_str(), static_cast<unsigned int>(reqStr.length()));
+#else
     write(writePipe[1], reqStr.c_str(), reqStr.length());
+#endif
 
     return !res.is_null() && res.contains("result");
 }
