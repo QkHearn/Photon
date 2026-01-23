@@ -11,7 +11,51 @@
 #include <chrono>
 #include <ctime>
 
-InternalMCPClient::InternalMCPClient(const std::string& rootPath) : rootPath(rootPath) {}
+#include <future>
+#include <thread>
+#include <mutex>
+
+InternalMCPClient::InternalMCPClient(const std::string& rootPath) : rootPath(rootPath) {
+    isGitRepo = checkGitRepo();
+    registerTools();
+}
+
+void InternalMCPClient::registerTools() {
+    toolHandlers["file_search"] = [this](const nlohmann::json& a) { return fileSearch(a); };
+    toolHandlers["file_read"] = [this](const nlohmann::json& a) { return fileRead(a); };
+    toolHandlers["file_write"] = [this](const nlohmann::json& a) { return fileWrite(a); };
+    toolHandlers["python_sandbox"] = [this](const nlohmann::json& a) { return pythonSandbox(a); };
+    toolHandlers["bash_execute"] = [this](const nlohmann::json& a) { return bashExecute(a); };
+    toolHandlers["code_ast_analyze"] = [this](const nlohmann::json& a) { return codeAstAnalyze(a); };
+    toolHandlers["git_operations"] = [this](const nlohmann::json& a) { return gitOperations(a); };
+    toolHandlers["web_fetch"] = [this](const nlohmann::json& a) { return webFetch(a); };
+    toolHandlers["web_search"] = [this](const nlohmann::json& a) { return webSearch(a); };
+    toolHandlers["harmony_search"] = [this](const nlohmann::json& a) { return harmonySearch(a); };
+    toolHandlers["grep_search"] = [this](const nlohmann::json& a) { return grepSearch(a); };
+    toolHandlers["read_file_lines"] = [this](const nlohmann::json& a) { return readFileLines(a); };
+    toolHandlers["list_dir_tree"] = [this](const nlohmann::json& a) { return listDirTree(a); };
+    toolHandlers["diff_apply"] = [this](const nlohmann::json& a) { return diffApply(a); };
+    toolHandlers["file_undo"] = [this](const nlohmann::json& a) { return fileUndo(a); };
+    toolHandlers["memory_store"] = [this](const nlohmann::json& a) { return memoryStore(a); };
+    toolHandlers["memory_retrieve"] = [this](const nlohmann::json& a) { return memoryRetrieve(a); };
+}
+
+bool InternalMCPClient::checkGitRepo() {
+    fs::path gitDir = fs::path(rootPath) / ".git";
+    return fs::exists(gitDir) && fs::is_directory(gitDir);
+}
+
+bool InternalMCPClient::isBinary(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return false;
+    char buffer[1024];
+    file.read(buffer, sizeof(buffer));
+    std::streamsize bytes = file.gcount();
+    for (std::streamsize i = 0; i < bytes; ++i) {
+        if (buffer[i] == '\0') return true;
+    }
+    return false;
+}
 
 // Helper for URL encoding
 std::string urlEncode(const std::string& value) {
@@ -75,12 +119,14 @@ std::string sanitizeUtf8(std::string str, size_t maxLen) {
 }
 
 bool InternalMCPClient::shouldIgnore(const fs::path& path) {
-    std::string p = path.string();
-    return p.find("/.git/") != std::string::npos || 
-           p.find("/node_modules/") != std::string::npos || 
-           p.find("/build/") != std::string::npos ||
-           p.find("/.idea/") != std::string::npos ||
-           p.find("/cmake-build-") != std::string::npos;
+    for (auto it = path.begin(); it != path.end(); ++it) {
+        std::string part = it->string();
+        if (part == ".git" || part == "node_modules" || part == "build" || 
+            part == ".idea" || part == ".photon" || part.find("cmake-build-") == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string InternalMCPClient::cleanHtml(const std::string& html) {
@@ -138,7 +184,96 @@ std::string InternalMCPClient::cleanHtml(const std::string& html) {
     replaceAll(result, "&gt;", ">");
     replaceAll(result, "&amp;", "&");
     replaceAll(result, "&quot;", "\"");
+    replaceAll(result, "&apos;", "'");
 
+    // Remove excessive newlines
+    static const std::regex multiple_newlines(R"(\n{3,})");
+    result = std::regex_replace(result, multiple_newlines, "\n\n");
+    
+    // Trim
+    result.erase(0, result.find_first_not_of(" \n\r\t"));
+    result.erase(result.find_last_not_of(" \n\r\t") + 1);
+
+    return result;
+}
+
+std::string InternalMCPClient::htmlToMarkdown(const std::string& html) {
+    std::string result;
+    bool inTag = false;
+    bool inScriptOrStyle = false;
+    std::string currentTag;
+    std::string currentLink;
+    bool inLink = false;
+
+    for (size_t i = 0; i < html.length(); ++i) {
+        char c = html[i];
+
+        if (c == '<') {
+            inTag = true;
+            currentTag.clear();
+            continue;
+        }
+        
+        if (inTag) {
+            if (c == '>') {
+                inTag = false;
+                std::string tagLower = currentTag;
+                std::transform(tagLower.begin(), tagLower.end(), tagLower.begin(), ::tolower);
+                
+                if (tagLower.substr(0, 6) == "script" || tagLower.substr(0, 5) == "style") {
+                    inScriptOrStyle = true;
+                } else if (tagLower == "/script" || tagLower == "/style") {
+                    inScriptOrStyle = false;
+                } else if (tagLower == "h1" || tagLower == "h2") {
+                    result += "\n\n# ";
+                } else if (tagLower == "h3" || tagLower == "h4") {
+                    result += "\n\n## ";
+                } else if (tagLower == "p" || tagLower == "div" || tagLower == "tr") {
+                    result += "\n";
+                } else if (tagLower == "br") {
+                    result += "\n";
+                } else if (tagLower == "li") {
+                    result += "\n* ";
+                } else if (tagLower.substr(0, 2) == "a ") {
+                    // Simple href extraction
+                    size_t hrefPos = tagLower.find("href=\"");
+                    if (hrefPos != std::string::npos) {
+                        size_t endQuote = tagLower.find("\"", hrefPos + 6);
+                        if (endQuote != std::string::npos) {
+                            currentLink = tagLower.substr(hrefPos + 6, endQuote - (hrefPos + 6));
+                            result += "[";
+                            inLink = true;
+                        }
+                    }
+                } else if (tagLower == "/a" && inLink) {
+                    result += "](" + currentLink + ")";
+                    inLink = false;
+                }
+                continue;
+            }
+            currentTag += c;
+            continue;
+        }
+
+        if (!inScriptOrStyle) {
+            result += c;
+        }
+    }
+
+    // Entities
+    auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
+        size_t pos = 0;
+        while ((pos = s.find(from, pos)) != std::string::npos) {
+            s.replace(pos, from.length(), to);
+            pos += to.length();
+        }
+    };
+    replaceAll(result, "&nbsp;", " ");
+    replaceAll(result, "&lt;", "<");
+    replaceAll(result, "&gt;", ">");
+    replaceAll(result, "&amp;", "&");
+    replaceAll(result, "&quot;", "\"");
+    
     return result;
 }
 
@@ -398,47 +533,13 @@ nlohmann::json InternalMCPClient::listTools() {
 
 nlohmann::json InternalMCPClient::callTool(const std::string& name, const nlohmann::json& arguments) {
     ensurePhotonDirs(); // Ensure .photon directory exists before any tool call
-    auto startTime = std::chrono::high_resolution_clock::now();
-    nlohmann::json result;
-
-    if (name == "file_search") {
-        result = fileSearch(arguments);
-    } else if (name == "file_read") {
-        result = fileRead(arguments);
-    } else if (name == "file_write") {
-        result = fileWrite(arguments);
-    } else if (name == "python_sandbox") {
-        result = pythonSandbox(arguments);
-    } else if (name == "bash_execute") {
-        result = bashExecute(arguments);
-    } else if (name == "code_ast_analyze") {
-        result = codeAstAnalyze(arguments);
-    } else if (name == "git_operations") {
-        result = gitOperations(arguments);
-    } else if (name == "web_fetch") {
-        result = webFetch(arguments);
-    } else if (name == "web_search") {
-        result = webSearch(arguments);
-    } else if (name == "harmony_search") {
-        result = harmonySearch(arguments);
-    } else if (name == "grep_search") {
-        result = grepSearch(arguments);
-    } else if (name == "read_file_lines") {
-        result = readFileLines(arguments);
-    } else if (name == "list_dir_tree") {
-        result = listDirTree(arguments);
-    } else if (name == "diff_apply") {
-        result = diffApply(arguments);
-    } else if (name == "file_undo") {
-        result = fileUndo(arguments);
-    } else if (name == "memory_store") {
-        result = memoryStore(arguments);
-    } else if (name == "memory_retrieve") {
-        result = memoryRetrieve(arguments);
-    } else {
-        return {{"error", "Tool not found"}};
+    auto it = toolHandlers.find(name);
+    if (it == toolHandlers.end()) {
+        return {{"error", "Tool not found: " + name}};
     }
 
+    auto startTime = std::chrono::high_resolution_clock::now();
+    nlohmann::json result = it->second(arguments);
     auto endTime = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
 
@@ -458,33 +559,37 @@ nlohmann::json InternalMCPClient::fileSearch(const nlohmann::json& args) {
     std::string query = args["query"];
     std::vector<std::string> matches;
 
+    // Use Git if available for much faster file listing
+    if (isGitRepo) {
+        std::string output = executeCommand("git -C " + rootPath + " ls-files | grep -i \"" + query + "\"");
+        std::stringstream ss(output);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (!line.empty()) matches.push_back(line);
+        }
+        if (!matches.empty()) {
+            return {{"content", {{{"type", "text"}, {"text", nlohmann::json(matches).dump(2)}}}}};
+        }
+    }
+
     try {
-        for (const auto& entry : fs::recursive_directory_iterator(rootPath)) {
-            if (shouldIgnore(entry.path())) continue;
+        auto iter = fs::recursive_directory_iterator(rootPath, fs::directory_options::skip_permission_denied);
+        for (const auto& entry : iter) {
+            if (shouldIgnore(entry.path())) {
+                if (entry.is_directory()) iter.disable_recursion_pending();
+                continue;
+            }
+            
+            std::string relPath = fs::relative(entry.path(), rootPath).generic_string();
+            
             if (entry.is_regular_file()) {
-                std::string relPath = fs::relative(entry.path(), rootPath).string();
-                
-                // Search in filename
                 if (relPath.find(query) != std::string::npos) {
                     matches.push_back(relPath);
-                    continue;
-                }
-
-                // Search in content (simple text search)
-                std::ifstream file(entry.path());
-                if (file.is_open()) {
-                    std::string line;
-                    while (std::getline(file, line)) {
-                        if (line.find(query) != std::string::npos) {
-                            matches.push_back(relPath);
-                            break;
-                        }
-                    }
                 }
             }
         }
     } catch (const std::exception& e) {
-        return {{"error", e.what()}};
+        return {{"error", std::string("Search failed: ") + e.what()}};
     }
 
     return {{"content", {{{"type", "text"}, {"text", nlohmann::json(matches).dump(2)}}}}};
@@ -504,7 +609,7 @@ nlohmann::json InternalMCPClient::fileRead(const nlohmann::json& args) {
     }
 
     std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    return {{"content", {{{"type", "text"}, {"text", content}}}}};
+    return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(content, 100000)}}}}};
 }
 
 nlohmann::json InternalMCPClient::fileWrite(const nlohmann::json& args) {
@@ -531,8 +636,45 @@ nlohmann::json InternalMCPClient::fileWrite(const nlohmann::json& args) {
     }
 }
 
+bool InternalMCPClient::isCommandSafe(const std::string& cmd) {
+    std::string lowerCmd = cmd;
+    std::transform(lowerCmd.begin(), lowerCmd.end(), lowerCmd.begin(), ::tolower);
+
+    // 1. Dangerous Commands Blacklist
+    static const std::vector<std::string> dangerous = {
+        "rm ", "rd ", "del ", "format ", "mkfs", "dd ", "> /dev/", 
+        "shutdown", "reboot", "passwd", "chown", "chmod", "sudo ", 
+        "runas ", "net user", "net localgroup", "reg ", "kill "
+    };
+
+    for (const auto& d : dangerous) {
+        if (lowerCmd.find(d) != std::string::npos) return false;
+    }
+
+    // 2. Path Escape Detection
+    if (lowerCmd.find("../") != std::string::npos || lowerCmd.find("..\\") != std::string::npos) {
+        return false;
+    }
+
+    // 3. Sensitive System Dirs (Cross-platform)
+    static const std::vector<std::string> systemDirs = {
+        "/etc/", "/dev/", "/proc/", "/sys/", "/var/", "/root/", "/home/",
+        "c:\\windows", "c:\\users", "c:\\program files"
+    };
+
+    for (const auto& dir : systemDirs) {
+        if (lowerCmd.find(dir) != std::string::npos) return false;
+    }
+
+    return true;
+}
+
 nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
     std::string code = args["code"];
+    
+    if (!isCommandSafe(code)) {
+        return {{"error", "Security Alert: Python code contains potentially dangerous patterns or system path access."}};
+    }
     
     // Create a temporary python file
     std::string tmpFile = "tmp_sandbox.py";
@@ -559,6 +701,11 @@ nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
 
 nlohmann::json InternalMCPClient::bashExecute(const nlohmann::json& args) {
     std::string command = args["command"];
+
+    if (!isCommandSafe(command)) {
+        return {{"error", "Security Alert: Command blocked by Photon Guard. Restricted keywords or paths detected."}};
+    }
+
 #ifdef _WIN32
     // On Windows, bash might not be available. Try to use cmd /c if it looks like a simple command,
     // but the tool is called 'bash_execute', so we'll try to use 'sh -c' or 'bash -c' first.
@@ -648,19 +795,22 @@ nlohmann::json InternalMCPClient::webFetch(const nlohmann::json& args) {
     try {
         httplib::Client cli("https://" + host);
         cli.set_follow_location(true);
+        cli.set_connection_timeout(5);
+        cli.set_read_timeout(10);
+        
         auto res = cli.Get(path.c_str());
 
         if (res && res->status == 200) {
-            // Clean HTML and return sanitized body
-            std::string cleaned = cleanHtml(res->body);
+            // Use new htmlToMarkdown for better structure
+            std::string cleaned = htmlToMarkdown(res->body);
             // Increased limit to 15000 chars for richer context
             std::string body = sanitizeUtf8(cleaned, 15000);
             return {{"content", {{{"type", "text"}, {"text", body}}}}};
         } else {
-            return {{"error", "Failed to fetch: " + (res ? std::to_string(res->status) : "Unknown error")}};
+            return {{"error", "Failed to fetch: " + (res ? std::to_string(res->status) : "Connection failed")}};
         }
     } catch (const std::exception& e) {
-        return {{"error", e.what()}};
+        return {{"error", std::string("Fetch exception: ") + e.what()}};
     }
 }
 
@@ -674,18 +824,19 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
     try {
         httplib::Client cli(host);
         cli.set_follow_location(true);
+        cli.set_connection_timeout(5);
+        cli.set_read_timeout(10);
         
         auto res = cli.Get(path.c_str());
         if (!res || res->status != 200) {
-            return {{"error", "Failed to reach DuckDuckGo"}};
+            return {{"error", "Failed to reach search engine"}};
         }
 
         std::string html = res->body;
-        std::string results;
+        std::string results = "Web Search Results for: " + query + "\n\n";
         
-        // Static regex compiled only once for extreme performance
-        static const std::regex entry_regex("result__a\"\\s+href=\"([^\"]+)\">([\\s\\S]*?)</a>[\\s\\S]*?result__snippet\"[^>]*>([\\s\\S]*?)</a>");
-        static const std::regex fallback_regex("result__a\"\\s+href=\"([^\"]+)\">([^<]+)</a>");
+        // Robust extraction for Title, Link, and Snippet
+        static const std::regex entry_regex(R"(result__a"\s+href="([^"]+)">([\s\S]*?)</a>[\s\S]*?result__snippet"[^>]*>([\s\S]*?)</a>)");
         
         auto words_begin = std::sregex_iterator(html.begin(), html.end(), entry_regex);
         auto words_end = std::sregex_iterator();
@@ -693,55 +844,38 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
         int count = 0;
         for (std::sregex_iterator i = words_begin; i != words_end && count < 5; ++i) {
             std::smatch match = *i;
-            std::string link = match[1].str();
+            std::string rawLink = match[1].str();
             std::string title = cleanHtml(match[2].str());
             std::string snippet = cleanHtml(match[3].str());
 
-            // Clean DuckDuckGo redirect links
+            // Better link cleaning
+            std::string link = rawLink;
             size_t uddg_pos = link.find("uddg=");
             if (uddg_pos != std::string::npos) {
                 link = link.substr(uddg_pos + 5);
                 size_t amp_pos = link.find("&");
-                if (amp_pos != std::string::npos) {
-                    link = link.substr(0, amp_pos);
-                }
-                // Decode the extracted link
-                try {
-                    link = urlDecode(link);
-                } catch (...) {}
+                if (amp_pos != std::string::npos) link = link.substr(0, amp_pos);
+                link = urlDecode(link);
             }
 
-            results += "Title: " + sanitizeUtf8(title, 300) + "\n";
-            results += "Link: " + link + "\n";
-            results += "Snippet: " + sanitizeUtf8(snippet, 1000) + "\n\n";
+            results += "### [" + title + "](" + link + ")\n";
+            results += snippet + "\n\n";
             count++;
         }
 
-        if (results.empty()) {
-            // Fallback to simpler regex if snippet regex fails
-            auto simple_begin = std::sregex_iterator(html.begin(), html.end(), fallback_regex);
-            for (std::sregex_iterator i = simple_begin; i != words_end && count < 5; ++i) {
-                std::smatch match = *i;
-                results += "Title: " + sanitizeUtf8(match[2].str(), 200) + "\n";
-                results += "Link: " + match[1].str() + "\n\n";
-                count++;
-            }
+        if (count == 0) {
+            return {{"content", {{{"type", "text"}, {"text", "No relevant results found."}}}}};
         }
 
-        if (results.empty()) {
-            return {{"content", {{{"type", "text"}, {"text", "No results found or parsing failed."}}}}};
-        }
-
-        return {{"content", {{{"type", "text"}, {"text", results}}}}};
+        return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 10000)}}}}};
     } catch (const std::exception& e) {
-        return {{"error", e.what()}};
+        return {{"error", std::string("Search exception: ") + e.what()}};
     }
 }
 
 nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
     std::string query = args["query"];
     
-    // Generate timestamp YYYYMMDDHHMMSS
     auto now = std::chrono::system_clock::now();
     auto in_time_t = std::chrono::system_clock::to_time_t(now);
     std::stringstream ss;
@@ -755,96 +889,110 @@ nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
     std::string ts = ss.str();
 
     nlohmann::json body = {
-        {"deviceId", "ESN"},
-        {"deviceType", "1"},
-        {"language", "zh"},
-        {"country", "CN"},
-        {"keyWord", query},
-        {"requestOrgin", 5},
-        {"ts", ts},
-        {"developerVertical", {
-            {"category", 1},
-            {"language", "zh"},
-            {"catalog", "harmonyos-references"},
-            {"searchSubTitle", 0},
-            {"scene", 2},
-            {"subType", 4}
-        }},
-        {"cutPage", {
-            {"offset", 0},
-            {"length", 5}
-        }}
+        {"deviceId", "ESN"}, {"deviceType", "1"}, {"language", "zh"}, {"country", "CN"},
+        {"keyWord", query}, {"requestOrgin", 5}, {"ts", ts},
+        {"developerVertical", {{"category", 1}, {"language", "zh"}, {"catalog", "harmonyos-references"}, {"searchSubTitle", 0}, {"scene", 2}, {"subType", 4}}},
+        {"cutPage", {{"offset", 0}, {"length", 5}}}
     };
 
     try {
         httplib::Client cli("https://svc-drcn.developer.huawei.com");
         cli.set_follow_location(true);
+        cli.set_connection_timeout(5);
+        cli.set_read_timeout(10);
         
-        auto res = cli.Post("/community/servlet/consumer/partnerCommunityService/developer/search", 
-                           body.dump(), "application/json");
+        auto res = cli.Post("/community/servlet/consumer/partnerCommunityService/developer/search", body.dump(), "application/json");
 
         if (res && res->status == 200) {
             auto jsonRes = nlohmann::json::parse(res->body);
-            std::string summaryStr = "HarmonyOS Search Results for '" + query + "':\n\n";
+            std::string summaryStr = "## HarmonyOS Developer Search: " + query + "\n\n";
             
             if (jsonRes.contains("data") && jsonRes["data"].contains("list") && jsonRes["data"]["list"].is_array()) {
                 for (const auto& item : jsonRes["data"]["list"]) {
-                    std::string title = item.value("name", ""); 
-                    if (title.empty()) title = item.value("title", "No Title");
-                    
-                    title = sanitizeUtf8(title, 200);
-                    
+                    std::string title = item.value("name", item.value("title", "Untitled"));
                     std::string link = item.value("url", "");
-                    if (!link.empty() && link[0] == '/') {
-                        link = "https://developer.huawei.com" + link;
-                    }
-
-                    std::string digest = item.value("digest", "");
-                    if (digest.empty()) digest = item.value("content", "");
-                    digest = cleanHtml(digest); // Use improved cleaner
-                    digest = sanitizeUtf8(digest, 1000);
+                    if (!link.empty() && link[0] == '/') link = "https://developer.huawei.com" + link;
                     
-                    summaryStr += "Title: " + title + "\n";
-                    summaryStr += "Link: " + link + "\n";
-                    if (!digest.empty()) summaryStr += "Snippet: " + digest + "\n";
-                    summaryStr += "\n";
+                    std::string digest = cleanHtml(item.value("digest", item.value("content", "")));
+                    
+                    summaryStr += "*   **[" + sanitizeUtf8(title, 200) + "](" + link + ")**\n";
+                    if (!digest.empty()) summaryStr += "    " + sanitizeUtf8(digest, 800) + "\n\n";
                 }
             } else {
-                summaryStr += "No results found or unexpected response format.";
+                summaryStr += "_No technical matches found in HarmonyOS docs._";
             }
             return {{"content", {{{"type", "text"}, {"text", summaryStr}}}}};
         } else {
-            return {{"error", "Failed to fetch HarmonyOS results: " + (res ? std::to_string(res->status) : "Unknown error")}};
+            return {{"error", "Huawei API Service Unavailable"}};
         }
     } catch (const std::exception& e) {
-        return {{"error", e.what()}};
+        return {{"error", std::string("Harmony search exception: ") + e.what()}};
     }
 }
 
 nlohmann::json InternalMCPClient::grepSearch(const nlohmann::json& args) {
     std::string patternStr = args["pattern"];
     std::string results;
+
+    if (isGitRepo) {
+        // Use Git Grep for extremely fast content search
+        std::string cmd = "git -C " + rootPath + " grep -n -i -I --context=1 \"" + patternStr + "\"";
+        results = executeCommand(cmd);
+        if (!results.empty()) {
+            return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 8000)}}}}};
+        }
+    }
+
+    // Fallback: Parallel search using std::async
+    std::vector<fs::path> targetFiles;
     try {
-        // Use static cache or at least compile pattern once outside the loop
-        std::regex pattern(patternStr, std::regex::icase);
-        for (const auto& entry : fs::recursive_directory_iterator(rootPath)) {
-            if (shouldIgnore(entry.path())) continue;
+        auto iter = fs::recursive_directory_iterator(rootPath, fs::directory_options::skip_permission_denied);
+        for (const auto& entry : iter) {
+            if (shouldIgnore(entry.path())) {
+                if (entry.is_directory()) iter.disable_recursion_pending();
+                continue;
+            }
             if (entry.is_regular_file()) {
-                std::ifstream file(entry.path());
+                targetFiles.push_back(entry.path());
+            }
+        }
+    } catch (...) {}
+
+    std::mutex resultsMutex;
+    std::vector<std::future<void>> futures;
+    std::regex pattern(patternStr, std::regex::icase);
+
+    // Process files in parallel
+    size_t numThreads = std::thread::hardware_concurrency();
+    if (numThreads == 0) numThreads = 2;
+    size_t chunkSize = (targetFiles.size() + numThreads - 1) / numThreads;
+
+    for (size_t i = 0; i < numThreads; ++i) {
+        futures.push_back(std::async(std::launch::async, [&, i, chunkSize]() {
+            size_t start = i * chunkSize;
+            size_t end = std::min(start + chunkSize, targetFiles.size());
+
+            for (size_t j = start; j < end; ++j) {
+                const auto& filePath = targetFiles[j];
+                if (isBinary(filePath)) continue;
+
+                std::ifstream file(filePath);
                 std::string line;
                 int lineNum = 1;
                 while (std::getline(file, line)) {
                     if (std::regex_search(line, pattern)) {
-                        results += fs::relative(entry.path(), rootPath).string() + ":" + std::to_string(lineNum) + ":" + line + "\n";
+                        std::lock_guard<std::mutex> lock(resultsMutex);
+                        results += fs::relative(filePath, rootPath).generic_string() + ":" + std::to_string(lineNum) + ":" + line + "\n";
                     }
                     lineNum++;
                 }
             }
-        }
-    } catch (const std::exception& e) {
-        return {{"error", e.what()}};
+        }));
     }
-    return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 5000)}}}}};
+
+    for (auto& f : futures) f.wait();
+
+    return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 8000)}}}}};
 }
 
 nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
@@ -877,17 +1025,24 @@ nlohmann::json InternalMCPClient::listDirTree(const nlohmann::json& args) {
     if (!fs::exists(startPath)) return {{"error", "Path not found"}};
 
     std::string tree;
-    for (const auto& entry : fs::recursive_directory_iterator(startPath)) {
-        auto rel = fs::relative(entry.path(), startPath);
-        int depth = static_cast<int>(std::distance(rel.begin(), rel.end()));
-        if (depth > maxDepth) continue;
+    try {
+        auto iter = fs::recursive_directory_iterator(startPath, fs::directory_options::skip_permission_denied);
+        for (const auto& entry : iter) {
+            auto rel = fs::relative(entry.path(), startPath);
+            int depth = static_cast<int>(std::distance(rel.begin(), rel.end()));
+            if (depth > maxDepth) continue;
 
-        // Skip common ignore dirs
-        std::string name = entry.path().filename().string();
-        if (name == ".git" || name == "build" || name == ".idea" || name == "node_modules") continue;
+            if (shouldIgnore(entry.path())) {
+                if (entry.is_directory()) iter.disable_recursion_pending();
+                continue;
+            }
 
-        for (int i = 0; i < depth - 1; ++i) tree += "  ";
-        tree += (depth > 0 ? "└── " : "") + name + (entry.is_directory() ? "/" : "") + "\n";
+            std::string name = entry.path().filename().string();
+            for (int i = 0; i < depth - 1; ++i) tree += "  ";
+            tree += (depth > 0 ? "└── " : "") + name + (entry.is_directory() ? "/" : "") + "\n";
+        }
+    } catch (const std::exception& e) {
+        return {{"error", std::string("List tree failed: ") + e.what()}};
     }
     return {{"content", {{{"type", "text"}, {"text", tree}}}}};
 }
@@ -1016,5 +1171,5 @@ std::string InternalMCPClient::executeCommand(const std::string& cmd) {
     while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
         result += buffer.data();
     }
-    return result;
+    return sanitizeUtf8(result, 30000);
 }

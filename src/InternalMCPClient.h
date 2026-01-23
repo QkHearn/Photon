@@ -8,6 +8,9 @@
 #include <cstdio>
 #include "MCPClient.h"
 
+#include <functional>
+#include <map>
+
 namespace fs = std::filesystem;
 
 class InternalMCPClient : public IMCPClient {
@@ -22,6 +25,14 @@ public:
 private:
     std::string rootPath;
     std::string lastFile;
+    bool isGitRepo = false;
+
+    using ToolHandler = std::function<nlohmann::json(const nlohmann::json&)>;
+    std::map<std::string, ToolHandler> toolHandlers;
+
+    void registerTools();
+    bool checkGitRepo();
+    bool isBinary(const fs::path& path);
 
     nlohmann::json fileSearch(const nlohmann::json& args);
     nlohmann::json fileRead(const nlohmann::json& args);
@@ -46,4 +57,5 @@ private:
     std::string cleanHtml(const std::string& html);
     void backupFile(const std::string& relPath);
     void ensurePhotonDirs();
+    bool isCommandSafe(const std::string& cmd);
 };
