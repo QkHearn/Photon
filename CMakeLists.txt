@@ -59,6 +59,20 @@ add_test(NAME AgentTests COMMAND agent_tests)
 find_package(OpenSSL REQUIRED)
 target_link_libraries(photon PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
+# On Windows, we need to link against ws2_32 and crypt32
+if(WIN32)
+    # Static link for MSVC runtime
+    if(MSVC)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+    
+    # Static link for OpenSSL if using vcpkg
+    set(OPENSSL_USE_STATIC_LIBS ON)
+    
+    target_link_libraries(photon PRIVATE ws2_32 crypt32 bcrypt)
+    target_link_libraries(agent_lib PRIVATE ws2_32 crypt32 bcrypt)
+endif()
+
 # Link pthread if needed
 find_package(Threads REQUIRED)
 target_link_libraries(photon PRIVATE Threads::Threads)

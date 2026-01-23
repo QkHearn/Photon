@@ -26,17 +26,25 @@ struct Config {
 
     static Config load(const std::string& path) {
         std::ifstream f(path);
-        nlohmann::json j = nlohmann::json::parse(f);
+        if (!f.is_open()) {
+            throw std::runtime_error("Could not open config file: " + path);
+        }
+        nlohmann::json j;
+        try {
+            j = nlohmann::json::parse(f);
+        } catch (const nlohmann::json::parse_error& e) {
+            throw std::runtime_error("JSON Parse Error in " + path + ": " + e.what());
+        }
         
         Config cfg;
-        cfg.llm.apiKey = j["llm"]["api_key"];
-        cfg.llm.baseUrl = j["llm"]["base_url"];
-        cfg.llm.model = j["llm"]["model"];
-        cfg.llm.systemRole = j["llm"]["system_role"];
+        cfg.llm.apiKey = j.at("llm").at("api_key").get<std::string>();
+        cfg.llm.baseUrl = j.at("llm").at("base_url").get<std::string>();
+        cfg.llm.model = j.at("llm").at("model").get<std::string>();
+        cfg.llm.systemRole = j.at("llm").at("system_role").get<std::string>();
         
-        cfg.agent.contextThreshold = j["agent"]["context_threshold"];
-        cfg.agent.fileExtensions = j["agent"]["file_extensions"].get<std::vector<std::string>>();
-        cfg.agent.useBuiltinTools = j["agent"].value("use_builtin_tools", true);
+        cfg.agent.contextThreshold = j.at("agent").at("context_threshold").get<size_t>();
+        cfg.agent.fileExtensions = j.at("agent").at("file_extensions").get<std::vector<std::string>>();
+        cfg.agent.useBuiltinTools = j.at("agent").value("use_builtin_tools", true);
         
         if (j.contains("mcp_servers")) {
             for (auto& item : j["mcp_servers"]) {
