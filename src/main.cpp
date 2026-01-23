@@ -4,6 +4,7 @@
 #include <vector>
 #include <iomanip>
 #include <regex>
+#include <sstream>
 #include "FileManager.h"
 #include "LLMClient.h"
 #include "ContextManager.h"
