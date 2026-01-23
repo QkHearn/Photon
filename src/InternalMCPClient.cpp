@@ -540,7 +540,16 @@ nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
     out << code;
     out.close();
 
-    std::string output = executeCommand("python3 " + tmpFile + " 2>&1");
+    std::string pythonCmd = "python3";
+#ifdef _WIN32
+    // Check if python3 exists, if not fallback to python on Windows
+    if (executeCommand("python3 --version").find("not found") != std::string::npos || 
+        executeCommand("python3 --version").empty()) {
+        pythonCmd = "python";
+    }
+#endif
+
+    std::string output = executeCommand(pythonCmd + " " + tmpFile + " 2>&1");
     
     // Clean up
     fs::remove(tmpFile);
@@ -550,7 +559,19 @@ nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
 
 nlohmann::json InternalMCPClient::bashExecute(const nlohmann::json& args) {
     std::string command = args["command"];
+#ifdef _WIN32
+    // On Windows, bash might not be available. Try to use cmd /c if it looks like a simple command,
+    // but the tool is called 'bash_execute', so we'll try to use 'sh -c' or 'bash -c' first.
+    std::string shellCmd = "sh -c \"" + command + "\"";
+    // Check if sh exists
+    if (executeCommand("sh --version").find("not found") != std::string::npos || 
+        executeCommand("sh --version").empty()) {
+        shellCmd = "cmd /c " + command;
+    }
+    std::string output = executeCommand(shellCmd + " 2>&1");
+#else
     std::string output = executeCommand(command + " 2>&1");
+#endif
     return {{"content", {{{"type", "text"}, {"text", output}}}}};
 }
 

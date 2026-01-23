@@ -7,6 +7,10 @@
 #include <iostream>
 #include <regex>
 
+// ANSI Color Codes
+static const std::string RED = "\033[31m";
+static const std::string RESET = "\033[0m";
+
 LLMClient::LLMClient(const std::string& apiKey, const std::string& baseUrl, const std::string& model) 
     : apiKey(apiKey), baseUrl(baseUrl), modelName(model) {
     parseBaseUrl(baseUrl);

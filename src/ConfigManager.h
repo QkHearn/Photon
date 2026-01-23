@@ -29,9 +29,14 @@ struct Config {
         if (!f.is_open()) {
             throw std::runtime_error("Could not open config file: " + path);
         }
+        
+        // Read the file content into a string first to ensure proper encoding handling
+        std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        f.close();
+
         nlohmann::json j;
         try {
-            j = nlohmann::json::parse(f);
+            j = nlohmann::json::parse(content);
         } catch (const nlohmann::json::parse_error& e) {
             throw std::runtime_error("JSON Parse Error in " + path + ": " + e.what());
         }
