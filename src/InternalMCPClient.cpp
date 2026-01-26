@@ -50,6 +50,7 @@ void InternalMCPClient::registerTools() {
     toolHandlers["memory_store"] = [this](const nlohmann::json& a) { return memoryStore(a); };
     toolHandlers["memory_retrieve"] = [this](const nlohmann::json& a) { return memoryRetrieve(a); };
     toolHandlers["resolve_relative_date"] = [this](const nlohmann::json& a) { return resolveRelativeDate(a); };
+    toolHandlers["skill_read"] = [this](const nlohmann::json& a) { return skillRead(a); };
 }
 
 bool InternalMCPClient::checkGitRepo() {
@@ -624,6 +625,19 @@ nlohmann::json InternalMCPClient::listTools() {
                 {"key", {{"type", "string"}, {"description", "The key to search for"}}}
             }},
             {"required", {"key"}}
+        }}
+    });
+
+    // Skill Read Tool
+    tools.push_back({
+        {"name", "skill_read"},
+        {"description", "Read the full content of a specialized skill."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"name", {{"type", "string"}, {"description", "The name of the skill to read (e.g., 'skill-creator')"}}}
+            }},
+            {"required", {"name"}}
         }}
     });
 
@@ -1493,6 +1507,15 @@ nlohmann::json InternalMCPClient::resolveRelativeDate(const nlohmann::json& args
         return {{"content", {{{"type", "text"}, {"text", formatDate(&timeinfo)}}}}};
     }
     return {{"error", "Could not resolve relative date: " + fuzzyDateStr}};
+}
+
+nlohmann::json InternalMCPClient::skillRead(const nlohmann::json& args) {
+    if (!skillManager) {
+        return {{"error", "Skill Manager not initialized"}};
+    }
+    std::string name = args["name"];
+    std::string content = skillManager->getSkillContent(name);
+    return {{"content", {{{"type", "text"}, {"text", content}}}}};
 }
 
 std::string InternalMCPClient::executeCommand(const std::string& cmd) {

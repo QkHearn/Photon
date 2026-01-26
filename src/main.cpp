@@ -14,6 +14,7 @@
 #include "ConfigManager.h"
 #include "MCPClient.h"
 #include "MCPManager.h"
+#include "SkillManager.h"
 
 // ANSI Color Codes
 const std::string RESET = "\033[0m";
@@ -132,13 +133,14 @@ std::string renderMarkdown(const std::string& input) {
 
 void printLogo() {
     std::cout << "\n";
-    std::cout << GOLD << BOLD << "      _      " << RESET << std::endl;
-    std::cout << GOLD << BOLD << "     / \\     " << RESET << PURPLE << BOLD << "  ____  _   _  ____  _____  ____  _   _ " << RESET << std::endl;
-    std::cout << GOLD << BOLD << "    / ^ \\    " << RESET << PURPLE << BOLD << " |  _\\| | | |/    \\|_   _\\|    \\| \\ | |" << RESET << std::endl;
-    std::cout << GOLD << BOLD << "   /_/ \\_\\   " << RESET << PURPLE << BOLD << " |  _/| |_| |  ()  | | |  |  ()  |  \\| |" << RESET << std::endl;
-    std::cout << GOLD << BOLD << "     | |     " << RESET << PURPLE << BOLD << " |_|  |_| |_|\\____/  |_|  |____/|_|\\___|" << RESET << std::endl;
-    std::cout << GOLD << BOLD << "     |_|     " << RESET << std::endl;
-    std::cout << GRAY << "      ─── " << ITALIC << "The Native Agentic Core v1.0 [Cyber Falcon Edition]" << RESET << GRAY << " ───\n" << std::endl;
+    std::cout << CYAN << "   ___________________________________________________________________" << RESET << std::endl;
+    std::cout << CYAN << BOLD << R"(         ____    __  __  ____   ______  ____    _   __)" << RESET << std::endl;
+    std::cout << CYAN << BOLD << R"(        / __ \  / / / / / __ \ /_  __/ / __ \  / | / /)" << RESET << std::endl;
+    std::cout << CYAN << BOLD << R"(       / /_/ / / /_/ / / / / /  / /   / / / / /  |/ / )" << RESET << std::endl;
+    std::cout << CYAN << BOLD << R"(      / ____/ / __  / / /_/ /  / /   / /_/ / / /|  /  )" << RESET << std::endl;
+    std::cout << CYAN << BOLD << R"(     /_/     /_/ /_/  \____/  /_/    \____/ /_/ |_/   )" << RESET << std::endl;
+    std::cout << CYAN << "   ___________________________________________________________________" << RESET << std::endl;
+    std::cout << GRAY << "        ─── " << ITALIC << "The Native Agentic Core v1.0 [Cyber Falcon Edition]" << RESET << GRAY << " ───\n" << std::endl;
 }
 
 void printUsage() {
@@ -228,13 +230,25 @@ int main(int argc, char* argv[]) {
     
     std::cout << GRAY << "  [2/2] Connecting to external MCP servers..." << RESET << "\r" << std::flush;
     int externalCount = mcpManager.initFromConfig(cfg.mcpServers);
+
+    // Initialize Skill Manager
+    SkillManager skillManager;
+    // Always attempt to load local skills, even if no global roots are configured
+    std::cout << GRAY << "  [3/3] Syncing & Loading specialized skills..." << RESET << "\r" << std::flush;
+    skillManager.syncAndLoad(cfg.agent.skillRoots, path);
     
+    // Inject SkillManager into Builtin Tools
+    if (auto* builtin = dynamic_cast<InternalMCPClient*>(mcpManager.getClient("builtin"))) {
+        builtin->setSkillManager(&skillManager);
+    }
+
     std::cout << GREEN << "  ✔ Engine active. " 
               << BOLD << (cfg.agent.useBuiltinTools ? "Built-in" : "") 
               << (cfg.agent.useBuiltinTools && externalCount > 0 ? " + " : "")
               << (externalCount > 0 ? std::to_string(externalCount) + " External" : "") 
-              << " toolsets loaded." << RESET << "          " << std::endl;
-    
+              << (skillManager.getCount() > 0 ? " + " + std::to_string(skillManager.getCount()) + " Skills" : "")
+              << " loaded." << RESET << "          " << std::endl;
+
     // Get all available tools and format them for the LLM
     auto mcpTools = mcpManager.getAllTools();
     nlohmann::json llmTools = formatToolsForLLM(mcpTools);
@@ -247,10 +261,12 @@ int main(int argc, char* argv[]) {
     
     std::cout << "\n  " << YELLOW << "Shortcuts:" << RESET << std::endl;
     std::cout << GRAY << "  ┌──────────────────────────────────────────────────────────┐" << RESET << std::endl;
-    std::cout << GRAY << "  │ " << RESET << BOLD << "tools" << RESET << GRAY << "    List all sensors  " 
-              << "│ " << RESET << BOLD << "undo" << RESET << GRAY << "     Revert change    " << "│" << RESET << std::endl;
-    std::cout << GRAY << "  │ " << RESET << BOLD << "clear" << RESET << GRAY << "    Reset context     " 
-              << "│ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory   " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "tools   " << RESET << GRAY << " List all sensors   " 
+              << "│ " << RESET << BOLD << "undo    " << RESET << GRAY << " Revert change     " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "skills  " << RESET << GRAY << " List active skills " 
+              << "│ " << RESET << BOLD << "clear   " << RESET << GRAY << " Reset context     " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory     " 
+              << "│ " << RESET << BOLD << "exit    " << RESET << GRAY << " Terminate agent   " << "│" << RESET << std::endl;
     std::cout << GRAY << "  └──────────────────────────────────────────────────────────┘" << RESET << std::endl;
 
     // Optimization: Define the core identity as an Autonomous Agent.
@@ -267,6 +283,7 @@ int main(int argc, char* argv[]) {
 
     std::string systemPrompt = "You are Photon, an autonomous AI agentic intelligence. Your mission is to assist with complex engineering tasks through sensing (tools), reasoning, and acting.\n" +
                                cfg.llm.systemRole + "\n" +
+                               skillManager.getSystemPromptAddition() + "\n" +
                                "Current working directory for your tools: " + path + "\n" +
                                "Current system time: " + date_ss.str() + "\n" +
                                "Utilize your MCP tools (especially resolve_relative_date) to perceive the codebase, analyze structures, and execute changes as needed. " +
@@ -305,6 +322,20 @@ int main(int argc, char* argv[]) {
                 std::cout << "  " << desc << std::endl;
             }
             std::cout << CYAN << "-----------------------\n" << RESET << std::endl;
+            continue;
+        }
+
+        if (userInput == "skills") {
+            std::cout << CYAN << "\n--- Loaded Skills ---" << RESET << std::endl;
+            if (skillManager.getCount() == 0) {
+                std::cout << GRAY << "  (No skills loaded)" << RESET << std::endl;
+            } else {
+                for (const auto& [name, skill] : skillManager.getSkills()) {
+                    std::cout << PURPLE << BOLD << "  • " << name << RESET << std::endl;
+                    std::cout << GRAY << "    Source: " << skill.path << RESET << std::endl;
+                }
+            }
+            std::cout << CYAN << "---------------------\n" << RESET << std::endl;
             continue;
         }
 

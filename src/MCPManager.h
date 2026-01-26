@@ -64,6 +64,13 @@ public:
         return "";
     }
 
+    IMCPClient* getClient(const std::string& name) {
+        if (clients.count(name)) {
+            return clients[name].get();
+        }
+        return nullptr;
+    }
+
 private:
     std::map<std::string, std::unique_ptr<IMCPClient>> clients;
 };

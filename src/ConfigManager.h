@@ -18,6 +18,7 @@ struct Config {
         std::vector<std::string> fileExtensions;
         bool useBuiltinTools;
         std::string searchApiKey;
+        std::vector<std::string> skillRoots; // Directories to search for skills
     } agent;
 
     struct MCPServerConfig {
@@ -54,6 +55,9 @@ struct Config {
         cfg.agent.fileExtensions = j.at("agent").at("file_extensions").get<std::vector<std::string>>();
         cfg.agent.useBuiltinTools = j.at("agent").value("use_builtin_tools", true);
         cfg.agent.searchApiKey = j.at("agent").value("search_api_key", "");
+        if (j.at("agent").contains("skill_roots")) {
+            cfg.agent.skillRoots = j.at("agent")["skill_roots"].get<std::vector<std::string>>();
+        }
         
         if (j.contains("mcp_servers")) {
             for (auto& item : j["mcp_servers"]) {

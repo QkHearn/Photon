@@ -9,7 +9,8 @@
         "context_threshold": 50000,
         "file_extensions": [".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json", ".cmake", ".yml", ".yaml"],
         "use_builtin_tools": true,
-        "search_api_key": ""
+        "search_api_key": "",
+        "skill_roots": []
     },
     "mcp_servers": [
         {

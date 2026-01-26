@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <map>
+#include "SkillManager.h"
 
 namespace fs = std::filesystem;
 
@@ -21,6 +22,10 @@ public:
         this->searchApiKey = key;
     }
     
+    void setSkillManager(SkillManager* mgr) {
+        this->skillManager = mgr;
+    }
+
     nlohmann::json listTools() override;
     nlohmann::json callTool(const std::string& name, const nlohmann::json& arguments) override;
 
@@ -31,6 +36,7 @@ private:
     std::string lastFile;
     bool isGitRepo = false;
     std::string searchApiKey;
+    SkillManager* skillManager = nullptr;
 
     using ToolHandler = std::function<nlohmann::json(const nlohmann::json&)>;
     std::map<std::string, ToolHandler> toolHandlers;
@@ -60,6 +66,7 @@ private:
     nlohmann::json memoryStore(const nlohmann::json& args);
     nlohmann::json memoryRetrieve(const nlohmann::json& args);
     nlohmann::json resolveRelativeDate(const nlohmann::json& args);
+    nlohmann::json skillRead(const nlohmann::json& args);
     
     std::string executeCommand(const std::string& cmd);
     bool shouldIgnore(const fs::path& path);
