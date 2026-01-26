@@ -18,13 +18,17 @@
 // ANSI Color Codes
 const std::string RESET = "\033[0m";
 const std::string BOLD = "\033[1m";
-const std::string CYAN = "\033[36m";
-const std::string MAGENTA = "\033[35m";
-const std::string YELLOW = "\033[33m";
-const std::string GREEN = "\033[32m";
-const std::string BLUE = "\033[34m";
-const std::string RED = "\033[31m";
+const std::string RED = "\033[38;5;196m";
+const std::string GREEN = "\033[38;5;46m";
+const std::string YELLOW = "\033[38;5;226m";
+const std::string BLUE = "\033[38;5;33m";
+const std::string MAGENTA = "\033[38;5;201m";
+const std::string CYAN = "\033[38;5;51m";
 const std::string ITALIC = "\033[3m";
+const std::string PURPLE = "\033[38;5;141m";
+const std::string ORANGE = "\033[38;5;208m";
+const std::string GRAY = "\033[38;5;242m";
+const std::string GOLD = "\033[38;5;220m";
 
 std::string renderMarkdown(const std::string& input) {
     std::string output;
@@ -127,15 +131,14 @@ std::string renderMarkdown(const std::string& input) {
 }
 
 void printLogo() {
-    std::cout << GREEN << BOLD << R"(
-      _____  _           _              
-     |  __ \| |         | |             
-     | |__) | |__   ___ | |_ ___  _ __  
-     |  ___/| '_ \ / _ \| __/ _ \| '_ \ 
-     | |    | | | | (_) | || (_) | | | |
-     |_|    |_| |_|\___/ \__\___/|_| |_|
-    )" << RESET << std::endl;
-    std::cout << CYAN << "      --- Autonomous Agentic Intelligence ---" << RESET << "\n" << std::endl;
+    std::cout << "\n";
+    std::cout << GOLD << BOLD << "      _      " << RESET << std::endl;
+    std::cout << GOLD << BOLD << "     / \\     " << RESET << PURPLE << BOLD << "  ____  _   _  ____  _____  ____  _   _ " << RESET << std::endl;
+    std::cout << GOLD << BOLD << "    / ^ \\    " << RESET << PURPLE << BOLD << " |  _\\| | | |/    \\|_   _\\|    \\| \\ | |" << RESET << std::endl;
+    std::cout << GOLD << BOLD << "   /_/ \\_\\   " << RESET << PURPLE << BOLD << " |  _/| |_| |  ()  | | |  |  ()  |  \\| |" << RESET << std::endl;
+    std::cout << GOLD << BOLD << "     | |     " << RESET << PURPLE << BOLD << " |_|  |_| |_|\\____/  |_|  |____/|_|\\___|" << RESET << std::endl;
+    std::cout << GOLD << BOLD << "     |_|     " << RESET << std::endl;
+    std::cout << GRAY << "      ─── " << ITALIC << "The Native Agentic Core v1.0 [Cyber Falcon Edition]" << RESET << GRAY << " ───\n" << std::endl;
 }
 
 void printUsage() {
@@ -219,24 +222,36 @@ int main(int argc, char* argv[]) {
     // Initialize MCP Manager and connect all servers
     MCPManager mcpManager;
     if (cfg.agent.useBuiltinTools) {
+        std::cout << GRAY << "  [1/2] Initializing built-in core tools..." << RESET << "\r" << std::flush;
         mcpManager.initBuiltin(path, cfg.agent.searchApiKey);
     }
+    
+    std::cout << GRAY << "  [2/2] Connecting to external MCP servers..." << RESET << "\r" << std::flush;
     int externalCount = mcpManager.initFromConfig(cfg.mcpServers);
-    std::cout << GREEN << "✔ " << (cfg.agent.useBuiltinTools ? "Built-in tools ready. " : "") 
-              << externalCount << " external server(s) connected." << RESET << std::endl;
+    
+    std::cout << GREEN << "  ✔ Engine active. " 
+              << BOLD << (cfg.agent.useBuiltinTools ? "Built-in" : "") 
+              << (cfg.agent.useBuiltinTools && externalCount > 0 ? " + " : "")
+              << (externalCount > 0 ? std::to_string(externalCount) + " External" : "") 
+              << " toolsets loaded." << RESET << "          " << std::endl;
     
     // Get all available tools and format them for the LLM
     auto mcpTools = mcpManager.getAllTools();
     nlohmann::json llmTools = formatToolsForLLM(mcpTools);
 
     printLogo();
-    std::cout << BLUE << "Target directory: " << BOLD << path << RESET << std::endl;
-    std::cout << BLUE << "Configuration:    " << BOLD << configPath << RESET << std::endl;
-    std::cout << YELLOW << "Shortcuts: " << RESET 
-              << BOLD << "clear" << RESET << " (forget), " 
-              << BOLD << "compress" << RESET << " (active summary), " 
-              << BOLD << "tools" << RESET << " (list tools), " 
-              << BOLD << "undo" << RESET << " (revert last file change)" << std::endl;
+    
+    std::cout << "  " << CYAN << "Target " << RESET << " : " << BOLD << path << RESET << std::endl;
+    std::cout << "  " << CYAN << "Config " << RESET << " : " << BOLD << configPath << RESET << std::endl;
+    std::cout << "  " << CYAN << "Model  " << RESET << " : " << PURPLE << cfg.llm.model << RESET << std::endl;
+    
+    std::cout << "\n  " << YELLOW << "Shortcuts:" << RESET << std::endl;
+    std::cout << GRAY << "  ┌──────────────────────────────────────────────────────────┐" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "tools" << RESET << GRAY << "    List all sensors  " 
+              << "│ " << RESET << BOLD << "undo" << RESET << GRAY << "     Revert change    " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "clear" << RESET << GRAY << "    Reset context     " 
+              << "│ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory   " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  └──────────────────────────────────────────────────────────┘" << RESET << std::endl;
 
     // Optimization: Define the core identity as an Autonomous Agent.
     auto now = std::chrono::system_clock::now();
