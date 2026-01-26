@@ -24,6 +24,17 @@
 
 ---
 
+## 📦 Quick Start
+
+1.  **Download**: Extract binary artifacts from [Releases](https://github.com/hearn/Photon/releases).
+2.  **Configure**: Set API keys and model parameters in `config.json`.
+3.  **Launch**:
+    ```bash
+    ./photon <your_project_path>
+    ```
+
+---
+
 ## 🌟 Core Evolutions
 
 ### 🧠 Cognitive Reasoning
@@ -100,17 +111,6 @@ Photon comes pre-installed with **20+** heavy engineering tools, forming a compl
 *   **Path Locking**: Strictly prohibits path escape, restricting permissions to the current workspace.
 *   **Danger Perception**: Real-time blocking of destructive commands like `rm -rf` and `sudo`.
 *   **Isolated Execution**: Mandatory interception of sensitive system operations.
-
----
-
-## 📦 Quick Start
-
-1.  **Download**: Extract binary artifacts from [Releases](https://github.com/hearn/Photon/releases).
-2.  **Configure**: Set API keys and model parameters in `config.json`.
-3.  **Launch**:
-    ```bash
-    ./photon <your_project_path>
-    ```
 
 ---
 

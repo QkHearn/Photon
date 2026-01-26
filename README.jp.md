@@ -25,6 +25,17 @@
 
 ---
 
+## 📦 クイックスタート [Quick Start]
+
+1.  **ダウンロード**: [Releases](https://github.com/hearn/Photon/releases)からバイナリを取得します。
+2.  **設定**: `config.json`でAPI Keyとモデルパラメータを設定します。
+3.  **起動**:
+    ```bash
+    ./photon <your_project_path>
+    ```
+
+---
+
 ## 🌟 コアエボリューション [Core Evolutions]
 
 ### 🧠 深い認知的推論 (Cognitive Reasoning)
@@ -101,17 +112,6 @@ Photonには**20以上**の重厚なエンジニアリングツールがプリ�
 *   **パスのロック**: パスのエスケープを厳禁し、権限を現在のワークスペース内に厳格に制限します。
 *   **危険の検知**: `rm -rf`や`sudo`などの破壊的なコマンドをリアルタイムで遮断します。
 *   **隔離実行**: 機密性の高いシステム操作を強制的にインターセプトします。
-
----
-
-## 📦 クイックスタート [Quick Start]
-
-1.  **ダウンロード**: [Releases](https://github.com/hearn/Photon/releases)からバイナリを取得します。
-2.  **設定**: `config.json`でAPI Keyとモデルパラメータを設定します。
-3.  **起動**:
-    ```bash
-    ./photon <your_project_path>
-    ```
 
 ---
 

@@ -25,6 +25,17 @@
 
 ---
 
+## 📦 快速开始 [Quick Start]
+
+1.  **下载**: 从 [Releases](https://github.com/hearn/Photon/releases) 提取二进制产物。
+2.  **配置**: 设置 `config.json` 中的 API Key 与模型参数。
+3.  **启航**:
+    ```bash
+    ./photon <your_project_path>
+    ```
+
+---
+
 ## 🌟 核心进化 [Core Evolutions]
 
 ### 🧠 深度认知推理 (Cognitive Reasoning)
@@ -101,17 +112,6 @@ Photon 预装了 **20+** 种重型工程工具，形成完整的感知-决策-�
 *   **路径锁定**: 严禁路径逃逸，权限严格限制在当前工作区。
 *   **危险感知**: 实时阻断 `rm -rf`、`sudo` 等破坏性指令。
 *   **隔离执行**: 敏感系统操作强制拦截。
-
----
-
-## 📦 快速开始 [Quick Start]
-
-1.  **下载**: 从 [Releases](https://github.com/hearn/Photon/releases) 提取二进制产物。
-2.  **配置**: 设置 `config.json` 中的 API Key 与模型参数。
-3.  **启航**:
-    ```bash
-    ./photon <your_project_path>
-    ```
 
 ---
 
