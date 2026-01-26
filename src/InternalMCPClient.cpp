@@ -46,6 +46,7 @@ void InternalMCPClient::registerTools() {
     toolHandlers["file_undo"] = [this](const nlohmann::json& a) { return fileUndo(a); };
     toolHandlers["memory_store"] = [this](const nlohmann::json& a) { return memoryStore(a); };
     toolHandlers["memory_retrieve"] = [this](const nlohmann::json& a) { return memoryRetrieve(a); };
+    toolHandlers["resolve_relative_date"] = [this](const nlohmann::json& a) { return resolveRelativeDate(a); };
 }
 
 bool InternalMCPClient::checkGitRepo() {
@@ -916,7 +917,8 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
             int count = 0;
 
             if (host.find("duckduckgo") != std::string::npos) {
-                static const std::regex entry_regex(R"raw(<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)</a>)raw");
+                // Fix: Use standard string with manual escaping to avoid R-literal issues
+                static const std::regex entry_regex("<a[^>]*class=\"[^\"]*result__a[^\"]*\"[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>[\\s\\S]*?(?:<a[^>]*class=\"[^\"]*result__snippet[^\"]*\"[^>]*>([\\s\\S]*?)</a>)?");
                 auto words_begin = std::sregex_iterator(html.begin(), html.end(), entry_regex);
                 auto words_end = std::sregex_iterator();
                 for (std::sregex_iterator i = words_begin; i != words_end && count < 5; ++i) {
@@ -977,43 +979,58 @@ nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
     nlohmann::json body = {
         {"deviceId", "ESN"}, {"deviceType", "1"}, {"language", "zh"}, {"country", "CN"},
         {"keyWord", query}, {"requestOrgin", 5}, {"ts", ts},
-        {"developerVertical", {{"category", 1}, {"language", "zh"}, {"catalog", "harmonyos-references"}, {"searchSubTitle", 0}, {"scene", 2}, {"subType", 4}}},
-        {"cutPage", {{"offset", 0}, {"length", 50}}}
+        {"developerVertical", {
+            {"category", 1}, {"language", "zh"}, {"catalog", "harmonyos-guides"}, 
+            {"searchSubTitle", 0}, {"scene", 2}, {"subType", 4}
+        }},
+        {"cutPage", {{"offset", 0}, {"length", 12}}}
     };
 
     try {
         httplib::Client cli("https://svc-drcn.developer.huawei.com");
         cli.set_follow_location(true);
-        cli.set_connection_timeout(5);
-        cli.set_read_timeout(10);
+        cli.set_decompress(true);
         
-        auto res = cli.Post("/community/servlet/consumer/partnerCommunityService/developer/search", body.dump(), "application/json");
+        httplib::Headers headers = {
+            {"Content-Type", "application/json"},
+            {"User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+        };
 
+        auto res = cli.Post("/community/servlet/consumer/partnerCommunityService/developer/search", headers, body.dump(), "application/json");
         if (res && res->status == 200) {
-            auto jsonRes = nlohmann::json::parse(res->body);
-            std::string summaryStr = "## HarmonyOS Developer Search: " + query + "\n\n";
+            auto j = nlohmann::json::parse(res->body);
+            std::string results = "HarmonyOS Search Results for: " + query + "\n\n";
             
-            if (jsonRes.contains("data") && jsonRes["data"].contains("list") && jsonRes["data"]["list"].is_array()) {
-                for (const auto& item : jsonRes["data"]["list"]) {
-                    std::string title = item.value("name", item.value("title", "Untitled"));
-                    std::string link = item.value("url", "");
-                    if (!link.empty() && link[0] == '/') link = "https://developer.huawei.com" + link;
-                    
-                    std::string digest = cleanHtml(item.value("digest", item.value("content", "")));
-                    
-                    summaryStr += "*   **[" + sanitizeUtf8(cleanHtml(title), 2000) + "](" + link + ")**\n";
-                    if (!digest.empty()) summaryStr += "    " + sanitizeUtf8(digest, 8000) + "\n\n";
+            if (j.contains("searchResult") && j["searchResult"].is_array() && !j["searchResult"].empty()) {
+                auto& firstResult = j["searchResult"][0];
+                if (firstResult.contains("developerInfos") && firstResult["developerInfos"].is_array()) {
+                    int count = 0;
+                    for (const auto& item : firstResult["developerInfos"]) {
+                        if (count >= 8) break;
+                        
+                        std::string title = item.value("name", item.value("title", "Untitled"));
+                        std::string urlPart = item.value("url", "");
+                        std::string link = urlPart;
+                        
+                        if (!urlPart.empty()) {
+                            if (urlPart.find("//") == 0) {
+                                link = "https:" + urlPart;
+                            } else if (urlPart.find("http") != 0) {
+                                link = std::string("https://developer.huawei.com") + (urlPart[0] == '/' ? "" : "/") + urlPart;
+                            }
+                        }
+
+                        std::string snippet = cleanHtml(item.value("description", item.value("content", "")));
+                        results += "### [" + title + "](" + link + ")\n" + snippet + "\n\n";
+                        count++;
+                    }
+                    return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 20000)}}}}};
                 }
-            } else {
-                summaryStr += "_No technical matches found in HarmonyOS docs._";
             }
-            return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(summaryStr, 50000)}}}}};
-        } else {
-            return {{"error", "Huawei API Service Unavailable"}};
+            return {{"content", {{{"type", "text"}, {"text", "No results found for: " + query}}}}};
         }
-    } catch (const std::exception& e) {
-        return {{"error", std::string("Harmony search exception: ") + e.what()}};
-    }
+    } catch (...) {}
+    return {{"error", "HarmonyOS search failed due to network or parsing error"}};
 }
 
 nlohmann::json InternalMCPClient::grepSearch(const nlohmann::json& args) {
@@ -1252,6 +1269,53 @@ void InternalMCPClient::backupFile(const std::string& relPathStr) {
 
 void InternalMCPClient::ensurePhotonDirs() {
     fs::create_directories(rootPath / ".photon" / "backups");
+}
+
+nlohmann::json InternalMCPClient::resolveRelativeDate(const nlohmann::json& args) {
+    std::string fuzzyDateStr = args["fuzzy_date"];
+    std::transform(fuzzyDateStr.begin(), fuzzyDateStr.end(), fuzzyDateStr.begin(), ::tolower);
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_t = std::chrono::system_clock::to_time_t(now);
+    std::tm timeinfo;
+#ifdef _WIN32
+    localtime_s(&timeinfo, &now_t);
+#else
+    localtime_r(&now_t, &timeinfo);
+#endif
+    auto formatDate = [](std::tm* tm_ptr) {
+        char buf[64];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d", tm_ptr);
+        return std::string(buf);
+    };
+    if (fuzzyDateStr == "today" || fuzzyDateStr == "今天") return {{"content", {{{"type", "text"}, {"text", formatDate(&timeinfo)}}}}};
+    if (fuzzyDateStr == "yesterday" || fuzzyDateStr == "昨天") {
+        timeinfo.tm_mday -= 1; std::mktime(&timeinfo);
+        return {{"content", {{{"type", "text"}, {"text", formatDate(&timeinfo)}}}}};
+    }
+    if (fuzzyDateStr == "tomorrow" || fuzzyDateStr == "明天") {
+        timeinfo.tm_mday += 1; std::mktime(&timeinfo);
+        return {{"content", {{{"type", "text"}, {"text", formatDate(&timeinfo)}}}}};
+    }
+    if (fuzzyDateStr == "last week" || fuzzyDateStr == "上周") {
+        timeinfo.tm_mday -= 7; std::mktime(&timeinfo);
+        return {{"content", {{{"type", "text"}, {"text", formatDate(&timeinfo)}}}}};
+    }
+    if (fuzzyDateStr == "last month" || fuzzyDateStr == "上个月") {
+        timeinfo.tm_mon -= 1; std::mktime(&timeinfo);
+        return {{"content", {{{"type", "text"}, {"text", formatDate(&timeinfo)}}}}};
+    }
+    if (fuzzyDateStr == "last year" || fuzzyDateStr == "去年") {
+        timeinfo.tm_year -= 1; std::mktime(&timeinfo);
+        return {{"content", {{{"type", "text"}, {"text", formatDate(&timeinfo)}}}}};
+    }
+    static const std::regex daysAgoRegex("(\\d+)\\s+(?:days?|天)\\s+(?:ago|前)");
+    std::smatch match;
+    if (std::regex_search(fuzzyDateStr, match, daysAgoRegex)) {
+        int days = std::stoi(match[1].str());
+        timeinfo.tm_mday -= days; std::mktime(&timeinfo);
+        return {{"content", {{{"type", "text"}, {"text", formatDate(&timeinfo)}}}}};
+    }
+    return {{"error", "Could not resolve relative date: " + fuzzyDateStr}};
 }
 
 std::string InternalMCPClient::executeCommand(const std::string& cmd) {

@@ -17,6 +17,7 @@ struct Config {
         size_t contextThreshold;
         std::vector<std::string> fileExtensions;
         bool useBuiltinTools;
+        std::string searchApiKey;
     } agent;
 
     struct MCPServerConfig {
@@ -52,6 +53,7 @@ struct Config {
         cfg.agent.contextThreshold = j.at("agent").at("context_threshold").get<size_t>();
         cfg.agent.fileExtensions = j.at("agent").at("file_extensions").get<std::vector<std::string>>();
         cfg.agent.useBuiltinTools = j.at("agent").value("use_builtin_tools", true);
+        cfg.agent.searchApiKey = j.at("agent").value("search_api_key", "");
         
         if (j.contains("mcp_servers")) {
             for (auto& item : j["mcp_servers"]) {

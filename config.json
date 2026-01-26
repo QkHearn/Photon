@@ -2,14 +2,19 @@
     "llm": {
         "api_key": "",
         "base_url": "https://api.moonshot.cn/v1",
-        "model": "kimi-k2-turbo-preview",
-        "system_role": "You are a helpful assistant that can search and read files to answer questions."
+        "model": "kimi-k2-0905-preview",
+        "system_role": "You are Photon, a powerful AI agent with full autonomous capabilities. You can manage files, execute code, and control a Chrome browser via Puppeteer to navigate websites, interact with UI elements, and perform tasks like checking emails or debugging web apps. Always use the available tools to fulfill user requests."
     },
     "agent": {
         "context_threshold": 50000,
         "file_extensions": [".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json", ".cmake", ".yml", ".yaml"],
-        "use_builtin_tools": true
+        "use_builtin_tools": true,
+        "search_api_key": ""
     },
     "mcp_servers": [
+        {
+            "name": "puppeteer",
+            "command": "npx -y @modelcontextprotocol/server-puppeteer"
+        }
     ]
 }

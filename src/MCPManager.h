@@ -9,21 +9,29 @@
 class MCPManager {
 public:
     // 初始化内置工具
-    void initBuiltin(const std::string& rootPath) {
+    void initBuiltin(const std::string& rootPath, const std::string& searchApiKey = "") {
         auto client = std::make_unique<InternalMCPClient>(rootPath);
+        if (!searchApiKey.empty()) {
+            client->setSearchApiKey(searchApiKey);
+        }
         clients["builtin"] = std::move(client);
         std::cout << "[MCPManager] Built-in tools initialized." << std::endl;
     }
 
     // 根据配置初始化所有服务器
-    void initFromConfig(const std::vector<Config::MCPServerConfig>& configs) {
+    int initFromConfig(const std::vector<Config::MCPServerConfig>& configs) {
+        int count = 0;
         for (const auto& cfg : configs) {
             auto client = std::make_unique<MCPClient>(cfg.command);
             if (client->initialize()) {
                 std::cout << "[MCPManager] Connected to: " << cfg.name << std::endl;
                 clients[cfg.name] = std::move(client);
+                count++;
+            } else {
+                std::cerr << "[MCPManager] Failed to connect to: " << cfg.name << std::endl;
             }
         }
+        return count;
     }
 
     // 获取所有服务器的工具定义，供 LLM 参考

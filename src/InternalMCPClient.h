@@ -17,6 +17,10 @@ class InternalMCPClient : public IMCPClient {
 public:
     InternalMCPClient(const std::string& rootPath);
     
+    void setSearchApiKey(const std::string& key) {
+        this->searchApiKey = key;
+    }
+    
     nlohmann::json listTools() override;
     nlohmann::json callTool(const std::string& name, const nlohmann::json& arguments) override;
 
@@ -26,6 +30,7 @@ private:
     fs::path rootPath;
     std::string lastFile;
     bool isGitRepo = false;
+    std::string searchApiKey;
 
     using ToolHandler = std::function<nlohmann::json(const nlohmann::json&)>;
     std::map<std::string, ToolHandler> toolHandlers;
@@ -51,6 +56,7 @@ private:
     nlohmann::json fileUndo(const nlohmann::json& args);
     nlohmann::json memoryStore(const nlohmann::json& args);
     nlohmann::json memoryRetrieve(const nlohmann::json& args);
+    nlohmann::json resolveRelativeDate(const nlohmann::json& args);
     
     std::string executeCommand(const std::string& cmd);
     bool shouldIgnore(const fs::path& path);

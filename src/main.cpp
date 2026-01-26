@@ -219,9 +219,11 @@ int main(int argc, char* argv[]) {
     // Initialize MCP Manager and connect all servers
     MCPManager mcpManager;
     if (cfg.agent.useBuiltinTools) {
-        mcpManager.initBuiltin(path);
+        mcpManager.initBuiltin(path, cfg.agent.searchApiKey);
     }
-    mcpManager.initFromConfig(cfg.mcpServers);
+    int externalCount = mcpManager.initFromConfig(cfg.mcpServers);
+    std::cout << GREEN << "✔ " << (cfg.agent.useBuiltinTools ? "Built-in tools ready. " : "") 
+              << externalCount << " external server(s) connected." << RESET << std::endl;
     
     // Get all available tools and format them for the LLM
     auto mcpTools = mcpManager.getAllTools();
@@ -233,13 +235,26 @@ int main(int argc, char* argv[]) {
     std::cout << YELLOW << "Shortcuts: " << RESET 
               << BOLD << "clear" << RESET << " (forget), " 
               << BOLD << "compress" << RESET << " (active summary), " 
+              << BOLD << "tools" << RESET << " (list tools), " 
               << BOLD << "undo" << RESET << " (revert last file change)" << std::endl;
 
     // Optimization: Define the core identity as an Autonomous Agent.
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream date_ss;
+    struct tm time_info;
+#ifdef _WIN32
+    localtime_s(&time_info, &in_time_t);
+#else
+    localtime_r(&in_time_t, &time_info);
+#endif
+    date_ss << std::put_time(&time_info, "%Y-%m-%d %H:%M:%S");
+
     std::string systemPrompt = "You are Photon, an autonomous AI agentic intelligence. Your mission is to assist with complex engineering tasks through sensing (tools), reasoning, and acting.\n" +
                                cfg.llm.systemRole + "\n" +
                                "Current working directory for your tools: " + path + "\n" +
-                               "Utilize your MCP tools to perceive the codebase, analyze structures, and execute changes as needed. " +
+                               "Current system time: " + date_ss.str() + "\n" +
+                               "Utilize your MCP tools (especially resolve_relative_date) to perceive the codebase, analyze structures, and execute changes as needed. " +
                                "Always use relative paths from the current working directory.";
     
     nlohmann::json messages = nlohmann::json::array();
@@ -260,6 +275,21 @@ int main(int argc, char* argv[]) {
 
         if (userInput == "compress") {
             messages = contextManager.forceCompress(messages);
+            continue;
+        }
+
+        if (userInput == "tools") {
+            std::cout << CYAN << "\n--- Available Tools ---" << RESET << std::endl;
+            for (const auto& t : mcpTools) {
+                std::string server = t.value("server_name", "unknown");
+                std::string name = t.value("name", "unknown");
+                std::string desc = t.value("description", "No description");
+                
+                std::cout << (server == "builtin" ? GREEN + "[Built-in] " : BLUE + "[External] ") 
+                          << BOLD << server << "::" << name << RESET << std::endl;
+                std::cout << "  " << desc << std::endl;
+            }
+            std::cout << CYAN << "-----------------------\n" << RESET << std::endl;
             continue;
         }
 

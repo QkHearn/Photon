@@ -75,19 +75,32 @@ nlohmann::json MCPClient::sendRequest(const std::string& method, const nlohmann:
 
     std::string responseLine;
     char buffer[1];
-    while (read(readPipe[0], buffer, 1) > 0) {
-        if (buffer[0] == '\n') break;
-        responseLine += buffer[0];
+    
+    // Read until we find a line that looks like a JSON object (starts with {)
+    while (true) {
+        responseLine.clear();
+        ssize_t bytesRead;
+        while ((bytesRead = read(readPipe[0], buffer, 1)) > 0) {
+            if (buffer[0] == '\n') break;
+            responseLine += buffer[0];
+        }
+        
+        if (bytesRead <= 0 && responseLine.empty()) {
+            return nlohmann::json::object();
+        }
+        
+        // Skip potential non-JSON noise (like logs or warnings)
+        if (!responseLine.empty() && responseLine[0] == '{') {
+            try {
+                return nlohmann::json::parse(responseLine);
+            } catch (...) {
+                // Not valid JSON, continue to next line
+            }
+        }
+        
+        if (bytesRead <= 0) break;
     }
-
-    if (responseLine.empty()) return nlohmann::json::object();
-
-    try {
-        return nlohmann::json::parse(responseLine);
-    } catch (...) {
-        std::cerr << "Failed to parse MCP response: " << responseLine << std::endl;
-        return nlohmann::json::object();
-    }
+    return nlohmann::json::object();
 }
 #else
 // Windows Stubs (To allow building, full implementation requires CreateProcess/Pipe)
@@ -104,7 +117,7 @@ nlohmann::json MCPClient::sendRequest(const std::string& method, const nlohmann:
 bool MCPClient::initialize() {
     nlohmann::json params = {
         {"protocolVersion", "2024-11-05"},
-        {"capabilities", {}},
+        {"capabilities", nlohmann::json::object()},
         {"clientInfo", {{"name", "Photon-Agent-CPP"}, {"version", "1.0.0"}}}
     };
     auto res = sendRequest("initialize", params);
