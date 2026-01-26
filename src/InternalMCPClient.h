@@ -43,6 +43,9 @@ private:
     nlohmann::json fileRead(const nlohmann::json& args);
     nlohmann::json fileWrite(const nlohmann::json& args);
     nlohmann::json pythonSandbox(const nlohmann::json& args);
+    nlohmann::json pipInstall(const nlohmann::json& args);
+    nlohmann::json sequentialThinking(const nlohmann::json& args);
+    nlohmann::json archVisualize(const nlohmann::json& args);
     nlohmann::json bashExecute(const nlohmann::json& args);
     nlohmann::json codeAstAnalyze(const nlohmann::json& args);
     nlohmann::json gitOperations(const nlohmann::json& args);

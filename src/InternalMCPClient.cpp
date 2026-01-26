@@ -33,6 +33,9 @@ void InternalMCPClient::registerTools() {
     toolHandlers["file_read"] = [this](const nlohmann::json& a) { return fileRead(a); };
     toolHandlers["file_write"] = [this](const nlohmann::json& a) { return fileWrite(a); };
     toolHandlers["python_sandbox"] = [this](const nlohmann::json& a) { return pythonSandbox(a); };
+    toolHandlers["pip_install"] = [this](const nlohmann::json& a) { return pipInstall(a); };
+    toolHandlers["sequential_thinking"] = [this](const nlohmann::json& a) { return sequentialThinking(a); };
+    toolHandlers["arch_visualize"] = [this](const nlohmann::json& a) { return archVisualize(a); };
     toolHandlers["bash_execute"] = [this](const nlohmann::json& a) { return bashExecute(a); };
     toolHandlers["code_ast_analyze"] = [this](const nlohmann::json& a) { return codeAstAnalyze(a); };
     toolHandlers["git_operations"] = [this](const nlohmann::json& a) { return gitOperations(a); };
@@ -396,7 +399,7 @@ nlohmann::json InternalMCPClient::listTools() {
     // Python Sandbox Tool
     tools.push_back({
         {"name", "python_sandbox"},
-        {"description", "Execute Python code and get the output. This tool has write access to the current directory."},
+        {"description", "Execute Python code and get the output. This tool automatically detects virtual environments (.venv/venv) and runs in the workspace root."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
@@ -406,7 +409,50 @@ nlohmann::json InternalMCPClient::listTools() {
         }}
     });
 
+    // Pip Install Tool
+    tools.push_back({
+        {"name", "pip_install"},
+        {"description", "Install python packages using pip. Automatically uses the detected virtual environment if available."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"package", {{"type", "string"}, {"description", "The package name(s) to install"}}}
+            }},
+            {"required", {"package"}}
+        }}
+    });
+
     // Bash Execute Tool
+    tools.push_back({
+        {"name", "sequential_thinking"},
+        {"description", "A tool for managing complex reasoning processes. It allows the agent to break down problems, maintain state across steps, and refine strategies as information is gathered. Use this when you need to perform multi-step planning or deep analysis."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"thought", {{"type", "string"}, {"description", "The current step's thinking content"}}},
+                {"thoughtNumber", {{"type", "integer"}, {"description", "The current thinking step number"}}},
+                {"totalThoughtNumber", {{"type", "integer"}, {"description", "Estimated total steps for this reasoning thread"}}},
+                {"nextThoughtNeeded", {{"type", "boolean"}, {"description", "Whether another thinking step is required"}}},
+                {"isRevision", {{"type", "boolean"}, {"description", "Set to true if this step revises a previous conclusion"}}}
+            }},
+            {"required", {"thought", "thoughtNumber", "nextThoughtNeeded"}}
+        }}
+    });
+
+    tools.push_back({
+        {"name", "arch_visualize"},
+        {"description", "Generate system architecture diagrams using Graphviz. This tool accepts a DOT-format string and renders it into an image (PNG/SVG) in the workspace."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"dot_content", {{"type", "string"}, {"description", "The Graphviz DOT language content describing the diagram"}}},
+                {"output_file", {{"type", "string"}, {"description", "The filename for the output image (e.g., arch.png)"}}},
+                {"format", {{"type", "string"}, {"description", "The output format: png, svg, or pdf"}}}
+            }},
+            {"required", {"dot_content", "output_file"}}
+        }}
+    });
+
     tools.push_back({
         {"name", "bash_execute"},
         {"description", "Execute a bash command in the workspace."},
@@ -667,12 +713,12 @@ nlohmann::json InternalMCPClient::fileRead(const nlohmann::json& args) {
     fs::path fullPath = rootPath / fs::u8path(relPathStr);
 
     if (!fs::exists(fullPath)) {
-        return {{"error", "File not found: " + relPathStr}};
+        return {{"content", {{{"type", "text"}, {"text", "Error: File not found: " + relPathStr}}}}};
     }
 
     std::ifstream file(fullPath);
     if (!file.is_open()) {
-        return {{"error", "Could not open file: " + relPathStr}};
+        return {{"content", {{{"type", "text"}, {"text", "Error: Could not open file: " + relPathStr}}}}};
     }
 
     std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -725,8 +771,8 @@ bool InternalMCPClient::isCommandSafe(const std::string& cmd) {
 
     // 3. Sensitive System Dirs (Cross-platform)
     static const std::vector<std::string> systemDirs = {
-        "/etc/", "/dev/", "/proc/", "/sys/", "/var/", "/root/", "/home/",
-        "c:\\windows", "c:\\users", "c:\\program files"
+        "/etc/", "/dev/", "/proc/", "/sys/", "/var/", "/root/",
+        "c:\\windows", "c:\\program files"
     };
 
     for (const auto& dir : systemDirs) {
@@ -739,31 +785,162 @@ bool InternalMCPClient::isCommandSafe(const std::string& cmd) {
 nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
     std::string code = args["code"];
     
+    // 允许更灵活的 Python 执行，但仍保留基本系统保护
     if (!isCommandSafe(code)) {
-        return {{"error", "Security Alert: Python code contains potentially dangerous patterns or system path access."}};
+        return {{"content", {{{"type", "text"}, {"text", "Security Alert: Python code contains potentially dangerous system patterns."}}}}};
     }
     
-    // Create a temporary python file
-    std::string tmpFile = "tmp_sandbox.py";
-    std::ofstream out(tmpFile);
+    // Create a temporary python file in the root path
+    std::string tmpFileName = ".tmp_photon_sandbox.py";
+    fs::path tmpFilePath = rootPath / tmpFileName;
+    
+    std::ofstream out(tmpFilePath);
+    if (!out) {
+        return {{"content", {{{"type", "text"}, {"text", "Error: Failed to create temporary script in " + rootPath.u8string()}}}}};
+    }
     out << code;
     out.close();
 
     std::string pythonCmd = "python3";
+    
+    // Try to detect virtual environment
+    std::vector<std::string> venvDirs = {".venv", "venv", "env"};
+    for (const auto& venv : venvDirs) {
+        fs::path venvPath = rootPath / venv;
 #ifdef _WIN32
-    // Check if python3 exists, if not fallback to python on Windows
-    if (executeCommand("python3 --version").find("not found") != std::string::npos || 
-        executeCommand("python3 --version").empty()) {
-        pythonCmd = "python";
+        fs::path pythonExe = venvPath / "Scripts" / "python.exe";
+#else
+        fs::path pythonExe = venvPath / "bin" / "python";
+#endif
+        if (fs::exists(pythonExe)) {
+            pythonCmd = "\"" + pythonExe.u8string() + "\"";
+            break;
+        }
     }
+
+#ifdef _WIN32
+    if (pythonCmd == "python3") {
+        // Fallback for Windows
+        if (executeCommand("python3 --version").find("not found") != std::string::npos || 
+            executeCommand("python3 --version").empty()) {
+            pythonCmd = "python";
+        }
+    }
+    std::string fullCmd = "cd /d \"" + rootPath.u8string() + "\" && " + pythonCmd + " \"" + tmpFileName + "\" 2>&1";
+#else
+    std::string fullCmd = "cd \"" + rootPath.u8string() + "\" && " + pythonCmd + " \"" + tmpFileName + "\" 2>&1";
 #endif
 
-    std::string output = executeCommand(pythonCmd + " " + tmpFile + " 2>&1");
+    std::string output = executeCommand(fullCmd);
     
     // Clean up
-    fs::remove(tmpFile);
+    if (fs::exists(tmpFilePath)) {
+        fs::remove(tmpFilePath);
+    }
+
+    if (output.empty()) {
+        output = "(Execution successful, but produced no output)";
+    }
 
     return {{"content", {{{"type", "text"}, {"text", output}}}}};
+}
+
+nlohmann::json InternalMCPClient::pipInstall(const nlohmann::json& args) {
+    std::string package = args["package"];
+    std::string pipCmd = "pip3";
+
+    // Try to detect virtual environment pip
+    std::vector<std::string> venvDirs = {".venv", "venv", "env"};
+    for (const auto& venv : venvDirs) {
+        fs::path venvPath = rootPath / venv;
+#ifdef _WIN32
+        fs::path pipExe = venvPath / "Scripts" / "pip.exe";
+#else
+        fs::path pipExe = venvPath / "bin" / "pip";
+#endif
+        if (fs::exists(pipExe)) {
+            pipCmd = "\"" + pipExe.u8string() + "\"";
+            break;
+        }
+    }
+
+    if (pipCmd == "pip3") {
+#ifdef _WIN32
+        if (executeCommand("pip3 --version").find("not found") != std::string::npos || 
+            executeCommand("pip3 --version").empty()) {
+            pipCmd = "pip";
+        }
+#endif
+    }
+
+    std::string fullCmd = pipCmd + " install " + package + " 2>&1";
+    std::string output = executeCommand(fullCmd);
+
+    return {{"content", {{{"type", "text"}, {"text", output}}}}};
+}
+
+nlohmann::json InternalMCPClient::sequentialThinking(const nlohmann::json& args) {
+    int thoughtNumber = args.value("thoughtNumber", 1);
+    int totalThoughtNumber = args.value("totalThoughtNumber", 0);
+    std::string thought = args.value("thought", "");
+    bool nextThoughtNeeded = args.value("nextThoughtNeeded", false);
+    
+    std::string status = "Thought " + std::to_string(thoughtNumber);
+    if (totalThoughtNumber > 0) {
+        status += " of " + std::to_string(totalThoughtNumber);
+    }
+    
+    std::string result = "Successfully processed " + status + ". ";
+    if (nextThoughtNeeded) {
+        result += "Please proceed with your next thought.";
+    } else {
+        result += "Reasoning chain complete.";
+    }
+
+    return {{"content", {{{"type", "text"}, {"text", result}}}}};
+}
+
+nlohmann::json InternalMCPClient::archVisualize(const nlohmann::json& args) {
+    std::string dotContent = args["dot_content"];
+    std::string outputFile = args["output_file"];
+    std::string format = args.value("format", "png");
+    
+    // Create a temporary DOT file
+    std::string dotFileName = ".tmp_arch.dot";
+    fs::path dotFilePath = rootPath / dotFileName;
+    std::ofstream out(dotFilePath);
+    if (!out) {
+        return {{"content", {{{"type", "text"}, {"text", "Error: Failed to create temporary DOT file."}}}}};
+    }
+    out << dotContent;
+    out.close();
+
+    // Use Python to render the DOT file if graphviz command is not directly available
+    // This script tries to use the 'graphviz' python library to render
+    std::string pythonScript = 
+        "import sys\n"
+        "import os\n"
+        "try:\n"
+        "    import graphviz\n"
+        "    # Remove extension from outputFile for graphviz render\n"
+        "    base_name = '" + outputFile + "'.rsplit('.', 1)[0]\n"
+        "    source = graphviz.Source.from_file('" + dotFileName + "')\n"
+        "    output = source.render(filename=base_name, format='" + format + "', cleanup=True)\n"
+        "    print(f'Diagram successfully rendered to {output}')\n"
+        "except ImportError:\n"
+        "    print('Error: Python \"graphviz\" library not found. Please install it using: pip_install graphviz')\n"
+        "except Exception as e:\n"
+        "    print(f'Error during rendering: {str(e)}')\n";
+
+    nlohmann::json pythonArgs = {{"code", pythonScript}};
+    nlohmann::json result = pythonSandbox(pythonArgs);
+
+    // Clean up DOT file
+    if (fs::exists(dotFilePath)) {
+        fs::remove(dotFilePath);
+    }
+
+    return result;
 }
 
 nlohmann::json InternalMCPClient::bashExecute(const nlohmann::json& args) {
@@ -793,7 +970,7 @@ nlohmann::json InternalMCPClient::codeAstAnalyze(const nlohmann::json& args) {
     std::string relPathStr = args["path"];
     fs::path fullPath = rootPath / fs::u8path(relPathStr);
 
-    if (!fs::exists(fullPath)) return {{"error", "File not found"}};
+    if (!fs::exists(fullPath)) return {{"content", {{{"type", "text"}, {"text", "Error: File not found"}}}}};
 
     std::ifstream file(fullPath);
     std::string line;
@@ -1111,7 +1288,7 @@ nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
     int end = args["end_line"];
     fs::path fullPath = rootPath / fs::u8path(relPathStr);
 
-    if (!fs::exists(fullPath)) return {{"error", "File not found"}};
+    if (!fs::exists(fullPath)) return {{"content", {{{"type", "text"}, {"text", "Error: File not found"}}}}};
 
     std::ifstream file(fullPath);
     std::string line;
@@ -1132,7 +1309,7 @@ nlohmann::json InternalMCPClient::listDirTree(const nlohmann::json& args) {
     int maxDepth = args.value("depth", 3);
     fs::path startPath = rootPath / fs::u8path(subPathStr);
 
-    if (!fs::exists(startPath)) return {{"error", "Path not found"}};
+    if (!fs::exists(startPath)) return {{"content", {{{"type", "text"}, {"text", "Error: Path not found"}}}}};
 
     std::string tree;
     try {
