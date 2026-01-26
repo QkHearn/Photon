@@ -6,7 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <cstdio>
-#include "MCPClient.h"
+#include "mcp/MCPClient.h"
 
 #include <functional>
 #include <map>
@@ -14,7 +14,7 @@
 #include <atomic>
 #include <thread>
 #include <csignal> // For kill
-#include "SkillManager.h"
+#include "utils/SkillManager.h"
 
 namespace fs = std::filesystem;
 

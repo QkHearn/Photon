@@ -1,4 +1,4 @@
-#include "MCPClient.h"
+#include "mcp/MCPClient.h"
 #include <sstream>
 #include <iostream>
 

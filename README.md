@@ -23,11 +23,15 @@
   <b>彻底重定义 AI 驱动的软件开发范式。</b>
 </p>
 
+<p align="center">
+  <img src="demo.png" alt="Photon Demo" width="800">
+</p>
+
 ---
 
 ## 📦 快速开始 [Quick Start]
 
-1.  **下载**: 从 [Releases](https://github.com/hearn/Photon/releases) 提取二进制产物。
+1.  **下载**: 从 [Releases](https://github.com/QkHearn/Photon/releases) 提取二进制产物。
 2.  **配置**: 设置 `config.json` 中的 API Key 与模型参数。
 3.  **启航**:
     ```bash

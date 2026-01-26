@@ -8,13 +8,13 @@
 #ifdef _WIN32
     #include <winsock2.h>
 #endif
-#include "FileManager.h"
-#include "LLMClient.h"
-#include "ContextManager.h"
-#include "ConfigManager.h"
-#include "MCPClient.h"
-#include "MCPManager.h"
-#include "SkillManager.h"
+#include "utils/FileManager.h"
+#include "core/LLMClient.h"
+#include "core/ContextManager.h"
+#include "core/ConfigManager.h"
+#include "mcp/MCPClient.h"
+#include "mcp/MCPManager.h"
+#include "utils/SkillManager.h"
 
 // ANSI Color Codes
 const std::string RESET = "\033[0m";
@@ -132,14 +132,18 @@ std::string renderMarkdown(const std::string& input) {
 }
 
 void printLogo() {
-    std::cout << "\n";
-    std::cout << CYAN << "   ___________________________________________________________________" << RESET << std::endl;
-    std::cout << CYAN << BOLD << R"(         ____    __  __  ____   ______  ____    _   __)" << RESET << std::endl;
-    std::cout << CYAN << BOLD << R"(        / __ \  / / / / / __ \ /_  __/ / __ \  / | / /)" << RESET << std::endl;
-    std::cout << CYAN << BOLD << R"(       / /_/ / / /_/ / / / / /  / /   / / / / /  |/ / )" << RESET << std::endl;
-    std::cout << CYAN << BOLD << R"(      / ____/ / __  / / /_/ /  / /   / /_/ / / /|  /  )" << RESET << std::endl;
-    std::cout << CYAN << BOLD << R"(     /_/     /_/ /_/  \____/  /_/    \____/ /_/ |_/   )" << RESET << std::endl;
-    std::cout << CYAN << "   ___________________________________________________________________" << RESET << std::endl;
+    std::string frame = CYAN + "  ====================================================================" + RESET;
+    std::vector<std::string> lines = {
+        CYAN + BOLD + R"(         ____    __  __  ____   ______  ____    _   __)" + RESET,
+        CYAN + BOLD + R"(        / __ \  / / / / / __ \ /_  __/ / __ \  / | / /)" + RESET,
+        CYAN + BOLD + R"(       / /_/ / / /_/ / / / / /  / /   / / / / /  |/ / )" + RESET,
+        CYAN + BOLD + R"(      / ____/ / __  / / /_/ /  / /   / /_/ / / /|  /  )" + RESET,
+        CYAN + BOLD + R"(     /_/     /_/ /_/  \____/  /_/    \____/ /_/ |_/   )" + RESET
+    };
+
+    std::cout << "\n" << frame << std::endl;
+    for (const auto& line : lines) std::cout << line << std::endl;
+    std::cout << frame << std::endl;
     std::cout << GRAY << "        ─── " << ITALIC << "The Native Agentic Core v1.0 [Cyber Falcon Edition]" << RESET << GRAY << " ───\n" << std::endl;
 }
 
@@ -189,6 +193,8 @@ int main(int argc, char* argv[]) {
 
     // Global exception handler to prevent silent crash
     try {
+        printLogo(); // 先展示 Logo 动画
+
         std::string path = ".";
     std::string configPath = "config.json"; // Default to current directory
 
@@ -253,8 +259,6 @@ int main(int argc, char* argv[]) {
     auto mcpTools = mcpManager.getAllTools();
     nlohmann::json llmTools = formatToolsForLLM(mcpTools);
 
-    printLogo();
-    
     std::cout << "  " << CYAN << "Target " << RESET << " : " << BOLD << path << RESET << std::endl;
     std::cout << "  " << CYAN << "Config " << RESET << " : " << BOLD << configPath << RESET << std::endl;
     std::cout << "  " << CYAN << "Model  " << RESET << " : " << PURPLE << cfg.llm.model << RESET << std::endl;

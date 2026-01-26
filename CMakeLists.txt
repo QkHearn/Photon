@@ -35,13 +35,16 @@ find_package(nlohmann_json REQUIRED)
 # we expect it to be in the include path.
 
 add_executable(photon 
-    src/main.cpp 
-    src/FileManager.cpp 
-    src/LLMClient.cpp 
-    src/ContextManager.cpp
-    src/MCPClient.cpp
-    src/InternalMCPClient.cpp
+    src/core/main.cpp 
+    src/utils/FileManager.cpp 
+    src/core/LLMClient.cpp 
+    src/core/ContextManager.cpp
+    src/mcp/MCPClient.cpp
+    src/mcp/InternalMCPClient.cpp
 )
+
+# Add src to include path
+target_include_directories(photon PRIVATE src)
 
 target_link_libraries(photon PRIVATE nlohmann_json::nlohmann_json)
 
@@ -50,12 +53,13 @@ enable_testing()
 
 # Create a library for shared logic to be tested
 add_library(agent_lib 
-    src/FileManager.cpp 
-    src/LLMClient.cpp 
-    src/ContextManager.cpp
-    src/MCPClient.cpp
-    src/InternalMCPClient.cpp
+    src/utils/FileManager.cpp 
+    src/core/LLMClient.cpp 
+    src/core/ContextManager.cpp
+    src/mcp/MCPClient.cpp
+    src/mcp/InternalMCPClient.cpp
 )
+target_include_directories(agent_lib PUBLIC src)
 target_link_libraries(agent_lib PRIVATE nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto)
 
 # Link main app to the library

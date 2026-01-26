@@ -22,11 +22,15 @@
   It gives AI real "hands" and "brains," redefining the AI-driven software development paradigm with microsecond response speeds, deep reasoning, and a multi-dimensional perception system.
 </p>
 
+<p align="center">
+  <img src="demo.png" alt="Photon Demo" width="800">
+</p>
+
 ---
 
 ## 📦 Quick Start
 
-1.  **Download**: Extract binary artifacts from [Releases](https://github.com/hearn/Photon/releases).
+1.  **Download**: Extract binary artifacts from [Releases](https://github.com/QkHearn/Photon/releases).
 2.  **Configure**: Set API keys and model parameters in `config.json`.
 3.  **Launch**:
     ```bash

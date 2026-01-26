@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 #include <memory>
-#include "LLMClient.h"
+#include "core/LLMClient.h"
 
 #include <nlohmann/json.hpp>
 

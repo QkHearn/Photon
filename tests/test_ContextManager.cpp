@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../src/ContextManager.h"
+#include "core/ContextManager.h"
 #include <memory>
 
 // Mock LLMClient for testing context management without network

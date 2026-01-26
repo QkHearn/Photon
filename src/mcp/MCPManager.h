@@ -2,9 +2,9 @@
 #include <vector>
 #include <memory>
 #include <map>
-#include "MCPClient.h"
-#include "InternalMCPClient.h"
-#include "ConfigManager.h"
+#include "mcp/MCPClient.h"
+#include "mcp/InternalMCPClient.h"
+#include "core/ConfigManager.h"
 
 class MCPManager {
 public:

@@ -37,7 +37,7 @@ if %errorlevel% neq 0 (
 :: 4. 执行编译
 echo [Photon] Compiling...
 cl /EHsc /O2 /std:c++17 ^
-   src\main.cpp src\FileManager.cpp src\LLMClient.cpp src\ContextManager.cpp src\MCPClient.cpp ^
+   src\core\main.cpp src\utils\FileManager.cpp src\core\LLMClient.cpp src\core\ContextManager.cpp src\mcp\MCPClient.cpp src\mcp\InternalMCPClient.cpp ^
    /I src /I "%VCPKG_INC%" ^
    /link /LIBPATH:"%VCPKG_LIB%" libssl.lib libcrypto.lib ws2_32.lib crypt32.lib advapi32.lib user32.lib ^
    /out:photon.exe

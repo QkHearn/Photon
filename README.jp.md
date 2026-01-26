@@ -23,11 +23,15 @@
   <b>AI駆動のソフトウェア開発パラダイムを根本から再定義します。</b>
 </p>
 
+<p align="center">
+  <img src="demo.png" alt="Photon Demo" width="800">
+</p>
+
 ---
 
 ## 📦 クイックスタート [Quick Start]
 
-1.  **ダウンロード**: [Releases](https://github.com/hearn/Photon/releases)からバイナリを取得します。
+1.  **ダウンロード**: [Releases](https://github.com/QkHearn/Photon/releases)からバイナリを取得します。
 2.  **設定**: `config.json`でAPI Keyとモデルパラメータを設定します。
 3.  **起動**:
     ```bash
