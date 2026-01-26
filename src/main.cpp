@@ -264,8 +264,10 @@ int main(int argc, char* argv[]) {
     std::cout << GRAY << "  │ " << RESET << BOLD << "tools   " << RESET << GRAY << " List all sensors   " 
               << "│ " << RESET << BOLD << "undo    " << RESET << GRAY << " Revert change     " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "skills  " << RESET << GRAY << " List active skills " 
+              << "│ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory    " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "tasks   " << RESET << GRAY << " List sched tasks   " 
               << "│ " << RESET << BOLD << "clear   " << RESET << GRAY << " Reset context     " << "│" << RESET << std::endl;
-    std::cout << GRAY << "  │ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory     " 
+    std::cout << GRAY << "  │ " << RESET << BOLD << "memory  " << RESET << GRAY << " Show long-term mem " 
               << "│ " << RESET << BOLD << "exit    " << RESET << GRAY << " Terminate agent   " << "│" << RESET << std::endl;
     std::cout << GRAY << "  └──────────────────────────────────────────────────────────┘" << RESET << std::endl;
 
@@ -336,6 +338,45 @@ int main(int argc, char* argv[]) {
                 }
             }
             std::cout << CYAN << "---------------------\n" << RESET << std::endl;
+            continue;
+        }
+
+        if (userInput == "tasks") {
+            std::cout << CYAN << "\n--- Active Scheduled Tasks ---" << RESET << std::endl;
+            nlohmann::json res = mcpManager.callTool("builtin", "tasks", {});
+            if (res.contains("content") && res["content"][0].contains("text")) {
+                std::cout << res["content"][0]["text"].get<std::string>() << std::endl;
+            } else {
+                std::cout << "Failed to retrieve tasks." << std::endl;
+            }
+            std::cout << CYAN << "------------------------------\n" << RESET << std::endl;
+            continue;
+        }
+
+        if (userInput == "memory") {
+            std::cout << CYAN << "\n--- Long-term Memory ---" << RESET << std::endl;
+            fs::path memPath = fs::u8path(path) / ".photon" / "memory.json";
+            if (fs::exists(memPath)) {
+                try {
+                    std::ifstream f(memPath);
+                    nlohmann::json j;
+                    f >> j;
+                    if (j.is_object() && !j.empty()) {
+                        for (auto& [key, val] : j.items()) {
+                            std::string valStr = val.is_string() ? val.get<std::string>() : val.dump();
+                            if (valStr.length() > 50) valStr = valStr.substr(0, 47) + "...";
+                            std::cout << PURPLE << BOLD << "  • " << key << RESET << ": " << valStr << std::endl;
+                        }
+                    } else {
+                        std::cout << GRAY << "  (Memory is empty)" << RESET << std::endl;
+                    }
+                } catch (...) {
+                    std::cout << RED << "  (Error reading memory)" << RESET << std::endl;
+                }
+            } else {
+                std::cout << GRAY << "  (No memory file found)" << RESET << std::endl;
+            }
+            std::cout << CYAN << "------------------------\n" << RESET << std::endl;
             continue;
         }
 

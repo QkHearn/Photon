@@ -26,6 +26,7 @@ InternalMCPClient::InternalMCPClient(const std::string& rootPathStr) {
     this->rootPath = fs::u8path(rootPathStr);
     isGitRepo = checkGitRepo();
     registerTools();
+    loadTasksFromDisk(); // Reload tasks from previous sessions
 }
 
 void InternalMCPClient::registerTools() {
@@ -51,6 +52,33 @@ void InternalMCPClient::registerTools() {
     toolHandlers["memory_retrieve"] = [this](const nlohmann::json& a) { return memoryRetrieve(a); };
     toolHandlers["resolve_relative_date"] = [this](const nlohmann::json& a) { return resolveRelativeDate(a); };
     toolHandlers["skill_read"] = [this](const nlohmann::json& a) { return skillRead(a); };
+    toolHandlers["schedule"] = [this](const nlohmann::json& a) { return osScheduler(a); };
+    toolHandlers["tasks"] = [this](const nlohmann::json& a) { return listTasks(a); };
+    toolHandlers["cancel"] = [this](const nlohmann::json& a) { return cancelTask(a); };
+}
+
+InternalMCPClient::~InternalMCPClient() {
+    // Kill all tracked background tasks on exit
+    for (const auto& task : tasks) {
+        killTaskProcess(task.pid);
+    }
+}
+
+std::string InternalMCPClient::generateTaskId() {
+    static int counter = 0;
+    return "task_" + std::to_string(++counter);
+}
+
+void InternalMCPClient::killTaskProcess(int pid) {
+    if (pid <= 0) return;
+#ifdef _WIN32
+    std::string cmd = "taskkill /F /PID " + std::to_string(pid) + " >nul 2>&1";
+#else
+    // Use PID directly instead of process group to avoid "No such process" errors
+    // and suppress stderr to keep the console clean.
+    std::string cmd = "kill -9 " + std::to_string(pid) + " >/dev/null 2>&1"; 
+#endif
+    std::system(cmd.c_str());
 }
 
 bool InternalMCPClient::checkGitRepo() {
@@ -638,6 +666,47 @@ nlohmann::json InternalMCPClient::listTools() {
                 {"name", {{"type", "string"}, {"description", "The name of the skill to read (e.g., 'skill-creator')"}}}
             }},
             {"required", {"name"}}
+        }}
+    });
+
+    // List Tasks Tool
+    tools.push_back({
+        {"name", "tasks"},
+        {"description", "List all active background scheduled tasks."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {}},
+            {"required", {}}
+        }}
+    });
+
+    // Cancel Task Tool
+    tools.push_back({
+        {"name", "cancel"},
+        {"description", "Cancel a running background task by ID."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"task_id", {{"type", "string"}, {"description", "The ID of the task to cancel"}}}
+            }},
+            {"required", {"task_id"}}
+        }}
+    });
+
+    // OS Timed Task Tool
+    tools.push_back({
+        {"name", "schedule"},
+        {"description", "Schedule an asynchronous task to run after a delay. Supports periodic execution. Providing a task_id will overwrite any existing task with that ID."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"delay_seconds", {{"type", "integer"}, {"description", "Delay in seconds before execution (or interval for periodic)"}}},
+                {"type", {{"type", "string"}, {"enum", {"notify", "execute"}}, {"description", "Task type"}}},
+                {"payload", {{"type", "string"}, {"description", "Notification message or shell command"}}},
+                {"is_periodic", {{"type", "boolean"}, {"description", "If true, the task repeats every delay_seconds"}}},
+                {"task_id", {{"type", "string"}, {"description", "Optional unique identifier. If an active task with this ID exists, it will be replaced."}}}
+            }},
+            {"required", {"delay_seconds", "type", "payload"}}
         }}
     });
 
@@ -1518,6 +1587,156 @@ nlohmann::json InternalMCPClient::skillRead(const nlohmann::json& args) {
     return {{"content", {{{"type", "text"}, {"text", content}}}}};
 }
 
+nlohmann::json InternalMCPClient::osScheduler(const nlohmann::json& args) {
+    // Proactively clean up dead tasks to prevent memory growth
+    listTasks({});
+
+    int delay = args["delay_seconds"];
+    std::string type = args["type"];
+    std::string payload = args["payload"];
+    bool isPeriodic = args.value("is_periodic", false);
+    std::string taskId = args.value("task_id", "");
+    
+    if (delay < 0) return {{"error", "Delay cannot be negative"}};
+
+    // If task_id is provided, check for duplicates and cancel them
+    if (!taskId.empty()) {
+        auto it = std::remove_if(tasks.begin(), tasks.end(), [&](const BackgroundTask& t) {
+            if (t.id == taskId) {
+                killTaskProcess(t.pid);
+                return true;
+            }
+            return false;
+        });
+        tasks.erase(it, tasks.end());
+    } else {
+        taskId = generateTaskId();
+    }
+
+    std::string cmd;
+    
+    // Construct the command content
+    std::string coreCmd;
+    if (type == "notify") {
+#ifdef _WIN32
+        // Escape single quotes for PowerShell
+        std::string safePayload;
+        for (char c : payload) {
+            if (c == '\'') safePayload += "''";
+            else safePayload += c;
+        }
+        coreCmd = "powershell -Command \"[reflection.assembly]::loadwithpartialname('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('" + safePayload + "', 'Photon Scheduler')\"";
+#else
+        std::string safePayload;
+        for (char c : payload) {
+            if (c == '"') safePayload += "\\\"";
+            else if (c == '\\') safePayload += "\\\\";
+            else if (c == '\'') safePayload += "\\\'"; // Add single quote escape
+            else safePayload += c;
+        }
+        // Simplified macOS notification command with a sound hint for better debugging
+        coreCmd = "osascript -e 'display notification \"" + safePayload + "\" with title \"Photon Reminder\"' && afplay /System/Library/Sounds/Tink.aiff";
+#endif
+    } else {
+        if (!isCommandSafe(payload)) {
+            return {{"error", "Security Alert: Scheduled command blocked by Photon Guard."}};
+        }
+        coreCmd = payload;
+    }
+
+    // Wrap in periodicity logic
+    if (isPeriodic) {
+#ifdef _WIN32
+        // Windows loop with time drift compensation and serialization using PowerShell
+        // We use -EncodedCommand or careful escaping to handle nested quotes in coreCmd
+        cmd = "powershell -Command \"(Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'while($true){ $start=[DateTime]::Now; " + coreCmd + "; $wait=" + std::to_string(delay) + "-([DateTime]::Now-$start).TotalSeconds; if($wait -gt 0){ Start-Sleep -Seconds $wait } }' -WindowStyle Hidden -PassThru).Id\"";
+#else
+        // Linux/macOS loop with time drift compensation
+        cmd = "nohup sh -c 'while true; do NEXT=$(( $(date +%s) + " + std::to_string(delay) + " )); " + coreCmd + "; NOW=$(date +%s); DIFF=$(( NEXT - NOW )); [ $DIFF -gt 0 ] && sleep $DIFF; done' >/dev/null 2>&1 & echo $!";
+#endif
+    } else {
+#ifdef _WIN32
+        // One-time task for Windows
+        cmd = "powershell -Command \"(Start-Process cmd -ArgumentList '/c timeout /t " + std::to_string(delay) + " /nobreak >nul && " + coreCmd + "' -WindowStyle Hidden -PassThru).Id\"";
+#else
+        // For one-time tasks, we add a self-cleanup marker or just rely on process exit.
+        // But to remove from our 'tasks' list automatically, we'd need a callback mechanism or polling.
+        // For now, let's keep the process simple. The task entry remains until manually cleared or next restart,
+        // but the process dies. We can improve listTasks to check for liveness.
+        cmd = "nohup sh -c 'sleep " + std::to_string(delay) + " && " + coreCmd + "' >/dev/null 2>&1 & echo $!";
+#endif
+    }
+
+    // Execute and capture PID
+    std::string output = executeCommand(cmd);
+    int pid = 0;
+    try {
+        pid = std::stoi(output);
+    } catch (...) {}
+
+    tasks.push_back({taskId, (isPeriodic ? "[Periodic] " : "[One-time] ") + type + ": " + payload, pid, isPeriodic, delay, std::time(nullptr)});
+    
+    saveTasksToDisk(); // Persist tasks to disk
+
+    // Auto-save to long-term memory for persistence
+    memoryStore({{"key", "task_log_" + taskId}, {"value", "Scheduled: " + type + " - " + payload}});
+
+    return {{"content", {{{"type", "text"}, {"text", "Task scheduled: " + taskId + " (PID: " + std::to_string(pid) + ")"}}}}};
+}
+
+nlohmann::json InternalMCPClient::listTasks(const nlohmann::json& args) {
+    // Clean up dead tasks before listing
+    // Since we don't have a background polling thread, we do a lazy cleanup here.
+    // Check if PID is still running.
+    auto it = std::remove_if(tasks.begin(), tasks.end(), [&](const BackgroundTask& t) {
+        // For all tasks, check if process is still alive.
+        if (t.pid <= 0) return true; // Invalid PID
+        
+#ifdef _WIN32
+        // On Windows, tasklist is a common way to check if PID is alive
+        std::string checkCmd = "tasklist /FI \"PID eq " + std::to_string(t.pid) + "\" 2>nul";
+        std::string output = executeCommand(checkCmd);
+        if (output.find(std::to_string(t.pid)) == std::string::npos) {
+            return true; // Process is gone
+        }
+#else
+        // On POSIX, kill(pid, 0) checks existence.
+        if (kill(t.pid, 0) != 0) {
+            return true; // Process is gone, remove from list
+        }
+#endif
+        return false;
+    });
+    tasks.erase(it, tasks.end());
+    saveTasksToDisk(); // Update persistence
+
+    if (tasks.empty()) return {{"content", {{{"type", "text"}, {"text", "No active background tasks."}}}}};
+    
+    std::string report = "Active Tasks:\n";
+    for (const auto& t : tasks) {
+        report += "- ID: " + t.id + " | PID: " + std::to_string(t.pid) + " | " + t.description + "\n";
+    }
+    return {{"content", {{{"type", "text"}, {"text", report}}}}};
+}
+
+nlohmann::json InternalMCPClient::cancelTask(const nlohmann::json& args) {
+    std::string targetId = args["task_id"];
+    auto it = std::remove_if(tasks.begin(), tasks.end(), [&](const BackgroundTask& t) {
+        if (t.id == targetId) {
+            killTaskProcess(t.pid);
+            return true;
+        }
+        return false;
+    });
+
+    if (it != tasks.end()) {
+        tasks.erase(it, tasks.end());
+        saveTasksToDisk(); // Update persistence
+        return {{"content", {{{"type", "text"}, {"text", "Task cancelled: " + targetId}}}}};
+    }
+    return {{"error", "Task ID not found: " + targetId}};
+}
+
 std::string InternalMCPClient::executeCommand(const std::string& cmd) {
     std::array<char, 128> buffer;
     std::string result;
@@ -1545,4 +1764,67 @@ std::string InternalMCPClient::executeCommand(const std::string& cmd) {
     }
     pipeClose(pipePtr);
     return sanitizeUtf8(result, 30000);
+}
+
+bool InternalMCPClient::commandExists(const std::string& cmd) {
+#ifdef _WIN32
+    std::string checkCmd = "where " + cmd + " >nul 2>&1";
+#else
+    std::string checkCmd = "command -v " + cmd + " >/dev/null 2>&1";
+#endif
+    return std::system(checkCmd.c_str()) == 0;
+}
+
+void InternalMCPClient::saveTasksToDisk() {
+    fs::path tasksPath = rootPath / ".photon" / "tasks.json";
+    nlohmann::json j = nlohmann::json::array();
+    for (const auto& t : tasks) {
+        j.push_back({
+            {"id", t.id},
+            {"description", t.description},
+            {"pid", t.pid},
+            {"isPeriodic", t.isPeriodic},
+            {"interval", t.interval},
+            {"startTime", t.startTime}
+        });
+    }
+    std::ofstream f(tasksPath);
+    if (f.is_open()) {
+        f << j.dump(4);
+    }
+}
+
+void InternalMCPClient::loadTasksFromDisk() {
+    fs::path tasksPath = rootPath / ".photon" / "tasks.json";
+    if (!fs::exists(tasksPath)) return;
+
+    std::ifstream f(tasksPath);
+    nlohmann::json j;
+    try {
+        f >> j;
+        if (j.is_array()) {
+            for (const auto& item : j) {
+                BackgroundTask t;
+                t.id = item["id"];
+                t.description = item["description"];
+                t.pid = item["pid"];
+                t.isPeriodic = item["isPeriodic"];
+                t.interval = item["interval"];
+                t.startTime = item["startTime"];
+                
+                // Only re-add if the process is actually still alive
+#ifdef _WIN32
+                std::string checkCmd = "tasklist /FI \"PID eq " + std::to_string(t.pid) + "\" 2>nul";
+                std::string output = executeCommand(checkCmd);
+                if (output.find(std::to_string(t.pid)) != std::string::npos) {
+                    tasks.push_back(t);
+                }
+#else
+                if (kill(t.pid, 0) == 0) {
+                    tasks.push_back(t);
+                }
+#endif
+            }
+        }
+    } catch (...) {}
 }

@@ -10,6 +10,10 @@
 
 #include <functional>
 #include <map>
+#include <vector>
+#include <atomic>
+#include <thread>
+#include <csignal> // For kill
 #include "SkillManager.h"
 
 namespace fs = std::filesystem;
@@ -17,6 +21,7 @@ namespace fs = std::filesystem;
 class InternalMCPClient : public IMCPClient {
 public:
     InternalMCPClient(const std::string& rootPath);
+    ~InternalMCPClient(); // Add destructor for cleanup
     
     void setSearchApiKey(const std::string& key) {
         this->searchApiKey = key;
@@ -67,12 +72,31 @@ private:
     nlohmann::json memoryRetrieve(const nlohmann::json& args);
     nlohmann::json resolveRelativeDate(const nlohmann::json& args);
     nlohmann::json skillRead(const nlohmann::json& args);
+    nlohmann::json osScheduler(const nlohmann::json& args);
+    nlohmann::json listTasks(const nlohmann::json& args);
+    nlohmann::json cancelTask(const nlohmann::json& args);
     
     std::string executeCommand(const std::string& cmd);
+    
+private:
+    struct BackgroundTask {
+        std::string id;
+        std::string description;
+        int pid;
+        bool isPeriodic;
+        int interval;
+        std::time_t startTime;
+    };
+    std::vector<BackgroundTask> tasks;
+    std::string generateTaskId();
+    void killTaskProcess(int pid);
     bool shouldIgnore(const fs::path& path);
     std::string cleanHtml(const std::string& html);
     std::string htmlToMarkdown(const std::string& html);
     void backupFile(const std::string& relPath);
     void ensurePhotonDirs();
     bool isCommandSafe(const std::string& cmd);
+    bool commandExists(const std::string& cmd);
+    void saveTasksToDisk();
+    void loadTasksFromDisk();
 };
