@@ -13,6 +13,10 @@
 </p>
 
 <p align="center">
+  <a href="README.md">中文</a> | <a href="README.en.md">English</a> | <a href="README.jp.md">日本語</a>
+</p>
+
+<p align="center">
   <b>"Reasoning through light, coding through logic."</b><br>
   Photon 不仅仅是一个 AI 助手，它是基于原生 C++ 构建的<b>高性能、工程级自进化智能体内核</b>。<br>
   它赋予 AI 真正的“手”与“大脑”，通过微秒级的响应速度、深度推理能力与多维感知系统，<br>
