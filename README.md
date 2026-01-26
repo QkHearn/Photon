@@ -1,6 +1,10 @@
 # <p align="center">⚛️ PHOTON: THE NATIVE AGENTIC CORE</p>
 
 <p align="center">
+  <b>Author:</b> hearn (<a href="mailto:hearn.qk@gmail.com">hearn.qk@gmail.com</a>)
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Language-C%2B%2B17-00599C?style=flat-square&logo=c%2B%2B" alt="C++17">
   <img src="https://img.shields.io/badge/Performance-Zero_Latency-FF6F00?style=flat-square" alt="Performance">
   <img src="https://img.shields.io/badge/Reasoning-Sequential_Thinking-673AB7?style=flat-square" alt="Reasoning">
@@ -9,29 +13,36 @@
 </p>
 
 <p align="center">
-  <b>Photon 不仅仅是一个 AI 助手，它是一款基于原生 C++ 构建的高性能、工程级自进化智能体内核。</b><br>
-  它赋予 AI 真正的“手”与“大脑”，通过微秒级的响应速度与多维感知能力，重定义 AI 驱动的软件开发。
+  <b>"Reasoning through light, coding through logic."</b><br>
+  Photon 不仅仅是一个 AI 助手，它是基于原生 C++ 构建的<b>高性能、工程级自进化智能体内核</b>。<br>
+  它赋予 AI 真正的“手”与“大脑”，通过微秒级的响应速度、深度推理能力与多维感知系统，<br>
+  <b>彻底重定义 AI 驱动的软件开发范式。</b>
 </p>
 
 ---
 
-## 🌟 核心进化点 [Key Evolutions]
+## 🌟 核心进化 [Core Evolutions]
 
-### 🧠 深度推理引擎 (Sequential Thinking)
-Photon 拒绝“直觉式应答”。面对复杂挑战，它会开启内部**思考画布**，进行假设建立、逻辑推演与策略修正。你会看到它在大脑中反复打磨方案，确保每一次执行都具备工程级的严谨。
+### 🧠 深度认知推理 (Cognitive Reasoning)
+Photon 拒绝“直觉式应答”。面对复杂工程挑战，它自动开启内部**思考画布 (Sequential Thinking)**，进行多阶假设建立、逻辑推演与策略修正。它像资深工程师一样在“大脑”中反复打磨方案，确保每一次执行都具备工程级的严谨性与可行性。
 
-### 🏎️ 极致的原生性能 (Native Speed)
-告别解释型语言的迟钝。基于 C++17 纯血构建，Photon 的工具链调用达到**微秒级**：
-*   **零秒启动**: 二进制程序秒速进入工作状态。
-*   **多线程并发**: 拥有比传统 IDE 更快的内容定位能力，毫秒级扫描万行代码。
+### 🏎️ 极致原生性能 (Native Velocity)
+告别解释型语言的迟钝。基于 **C++17 纯血构建**，Photon 的工具链调用达到**微秒级**响应：
+*   **零秒启动**: 二进制程序秒速进入作战状态。
+*   **并发扫描**: 拥有比传统 IDE 更快的内容定位能力，毫秒级扫描万行代码库，精准定位上下文。
 
-### 👁️ 多维感官与可视化 (Architecture Perception)
-Photon 拥有超越文本的感知力。它不仅能通过 **AST 分析**瞬间拆解复杂项目的骨架，更能利用 **Graphviz** 将抽象的逻辑实时渲染为**视觉化架构图**。
+### 🧩 模块化技能系统 (Skill Modules)
+Photon 引入了先进的 **Skill 模块化架构**。不仅仅是工具的堆砌，而是**能力的可插拔**。
+*   **Skill Manager**: 动态加载专门领域的知识包（如 `skill-creator`），瞬间让通用 AI 变身特定领域的专家。
+*   **本地化同步**: 自动将全局技能同步至项目本地，支持项目级的能力定制与隔离。
 
-### 🕸️ 无限的边界扩展 (Universal MCP)
-通过标准 Model Context Protocol，Photon 连接了整个现代生态：
-*   **浏览器霸权**: 完美集成 Puppeteer，赋予 AI 直接接管 Chrome 的能力（查邮件、调试网页、全自动化流程）。
-*   **双域演算**: 结合 C++ 的稳定执行与 Python Sandbox 的灵活演算。
+### 👁️ 多维架构感知 (Architecture Perception)
+Photon 拥有超越文本的感知力。它不仅能通过 **AST 分析** 瞬间拆解复杂项目的骨架，更能利用 **Graphviz** 将抽象的代码逻辑实时渲染为**可视化架构图**，让系统脉络一目了然。
+
+### 🕸️ 无限边界扩展 (Universal MCP)
+通过标准 **Model Context Protocol (MCP)**，Photon 连接了整个现代生态：
+*   **浏览器霸权**: 完美集成 Puppeteer，赋予 AI 直接接管 Chrome 的能力（查阅文档、调试网页、全自动化流程）。
+*   **双域演算**: 结合 C++ 的稳定执行与 Python Sandbox 的灵活演算，覆盖全场景需求。
 
 ---
 
@@ -39,26 +50,26 @@ Photon 拥有超越文本的感知力。它不仅能通过 **AST 分析**瞬间�
 
 ```text
        ┌──────────────────────┐
-       │   User Terminal UI   │ (Rich ANSI / Markdown Rendering)
+       │   User Terminal UI   │  (Rich ANSI / Markdown Rendering)
        └──────────┬───────────┘
                   │ 
        ┌──────────┴───────────┐
        │   Photon Core (C++)  │─── [ Context Manager ]
        └─────┬──────────┬─────┘    (Memory & Adaptive Compression)
              │          │
-    ┌────────┴──┐  ┌────┴────────────────────────┐
-    │LLM Client │  │      MCP Tool Manager       │
-    └─────┬─────┘  └────┬────────────┬───────────┘
-          │             │            │
-    [ API Gateway ]  [Built-in]   [External]
-    (OpenAI / Kimi)  (C++ Native) (Node / Python / Rust)
+    ┌────────┴──┐  ┌────┴─────────────────────────────┐
+    │LLM Client │  │         MCP Tool Manager         │
+    └─────┬─────┘  └────┬────────────┬────────────────┤
+          │             │            │                │
+    [ API Gateway ]  [Built-in]   [External]       [Skills]
+    (OpenAI / Kimi)  (C++ Native) (Node / Python)  (Modular Caps)
 ```
 
 ---
 
 ## 🔬 智能体军械库 [The Arsenal]
 
-Photon 预装了 **18+** 种重型工程工具，形成完整的感知-决策-执行闭环：
+Photon 预装了 **20+** 种重型工程工具，形成完整的感知-决策-执行闭环：
 
 ### 📂 全息文件感知
 *   **file_search / grep_search**: Git 优先的并行检索，精准锁定代码片段。
@@ -69,6 +80,7 @@ Photon 预装了 **18+** 种重型工程工具，形成完整的感知-决策-�
 *   **diff_apply**: 确定性的代码注入，确保重构过程零冗余。
 *   **python_sandbox**: 自动识别 `.venv` 环境，支持即时安装依赖并执行演算。
 *   **arch_visualize**: 将代码逻辑一键转化为架构图。
+*   **skill_read**: 动态读取技能指南，按需加载专业知识。
 
 ### 🌍 全球知识检索
 *   **web_search / web_fetch**: 自动化信息采集，为 AI 提供最纯净的实时语料。
@@ -100,6 +112,5 @@ Photon 预装了 **18+** 种重型工程工具，形成完整的感知-决策-�
 ---
 
 <p align="center">
-  <b>Author:</b> hearn (<a href="mailto:hearn.qk@gmail.com">hearn.qk@gmail.com</a>)<br>
-  <i>"Reasoning through light, coding through logic. Photon is the bridge between human intent and machine logic."</i>
+  <i>"Photon is the bridge between human intent and machine logic."</i>
 </p>
