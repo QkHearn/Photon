@@ -1,124 +1,142 @@
-# <p align="center">⚛️ PHOTON: THE NATIVE AGENTIC CORE</p>
-
+# <p align="center">⚛️ PHOTON</p>
 <p align="center">
-  <b>作者:</b> hearn (<a href="mailto:hearn.qk@gmail.com">hearn.qk@gmail.com</a>)
+  <i align="center">The Native Agentic Core — 次世代エンジニアリングのためのネイティブコア</i>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Language-C%2B%2B17-00599C?style=flat-square&logo=c%2B%2B" alt="C++17">
-  <img src="https://img.shields.io/badge/Performance-Zero_Latency-FF6F00?style=flat-square" alt="Performance">
-  <img src="https://img.shields.io/badge/Reasoning-Sequential_Thinking-673AB7?style=flat-square" alt="Reasoning">
-  <img src="https://img.shields.io/badge/Platform-Win_|_macOS_|_Linux-E91E63?style=flat-square" alt="Platform">
-  <img src="https://img.shields.io/badge/Safety-Photon_Guard-FFD600?style=flat-square" alt="Safety">
+  <img src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=for-the-badge&logo=c%2B%2B" alt="C++17">
+  <img src="https://img.shields.io/badge/Performance-Zero_Latency-FF6F00?style=for-the-badge" alt="Performance">
+  <img src="https://img.shields.io/badge/Integration-Minimalist-673AB7?style=for-the-badge" alt="Integration">
 </p>
 
 <p align="center">
-  <a href="README.md">中文</a> | <a href="README.en.md">English</a> | <a href="README.jp.md">日本語</a>
-</p>
-
-<p align="center">
-  <b>"Reasoning through light, coding through logic."</b><br>
-  Photonは単なるAIアシスタントではありません。C++で構築された<b>高性能・エンジニアリング級の自己進化型エージェントコア</b>です。<br>
-  AIに真の「手」と「脳」を与え、マイクロ秒単位の応答速度、深い推論能力、多次元の知覚システムを通じて、<br>
-  <b>AI駆動のソフトウェア開発パラダイムを根本から再定義します。</b>
-</p>
-
-<p align="center">
-  <img src="demo.png" alt="Photon Demo" width="800">
+  <a href="https://github.com/QkHearn">
+    <img src="https://img.shields.io/badge/Architect-Hearn-black?style=flat-square&logo=github" alt="Author">
+  </a>
+  <a href="mailto:hearn.qk@gmail.com">
+    <img src="https://img.shields.io/badge/Contact-hearn.qk@gmail.com-red?style=flat-square&logo=gmail" alt="Email">
+  </a>
 </p>
 
 ---
 
-## 📦 クイックスタート [Quick Start]
+## 💎 なぜ Photon なのか？ [Why Photon?]
 
-1.  **ダウンロード**: [Releases](https://github.com/QkHearn/Photon/releases)からバイナリを取得します。
-2.  **設定**: `config.json`でAPI Keyとモデルパラメータを設定します。
-3.  **起動**:
-    ```bash
-    ./photon <your_project_path>
-    ```
+### ⚡ 究極のネイティブ性能 (Native Velocity)
+*   **ハードコア性能**: 純粋な C++17 で構築され、ツールチェーン呼び出しにおいて**マイクロ秒単位の応答**を実現。
+*   **極低リソース占有**: 実行メモリはわずか **10MB〜30MB**。スクリプト言語より 10 倍以上高速に起動。
+*   **ゼロ依存配布**: Python や Node.js などの実行環境は不要。単一バイナリで、あらゆるプラットフォームで「即利用可能」。
 
----
+### 🔌 極限のシンプル統合 (Minimalist Integration)
+*   **Drop-in & Run**: 複雑なパッケージインストールは不要。バイナリをダウンロードしてターミナルで起動するだけ。
+*   **IDE インビジブルエンジン**: Cursor や VS Code などの IDE の背後で動作する「見えないインフラ」として設計。
+*   **CLI ファースト**: 強力なコマンドラインインターフェースにより、自動化スクリプトや CI/CD パイプラインに「脳」を。
 
-## 🌟 コアエボリューション [Core Evolutions]
-
-### 🧠 深い認知的推論 (Cognitive Reasoning)
-Photonは「直感的な応答」を拒否します。複雑なエンジニアリングの課題に対し、自動的に内部の**思考キャンバス (Sequential Thinking)**を展開し、多段階の仮説構築、論理推論、戦略の修正を行います。熟練したエンジニアのように「脳内」で案を練り上げ、すべての実行がエンジニアリング級の厳密さと実現可能性を備えるようにします。
-
-### 🏎️ 極限のネイティブ性能 (Native Velocity)
-インタープリタ言語の鈍重さに別れを告げましょう。**C++17**に基づき純粋に構築されたPhotonのツールチェーン呼び出しは、**マイクロ秒単位**の応答速度を実現します：
-*   **ゼロ秒起動**: バイナリプログラムは瞬時に戦闘状態に入ります。
-*   **並列スキャン**: 従来のIDEよりも高速なコンテンツ特定能力を持ち、ミリ秒単位で数万行のコードベースをスキャンし、コンテキストを正確に特定します。
-
-### 🧩 モジュール式スキルシステム (Skill Modules)
-Photonは先進的な**Skillモジュール化アーキテクチャ**を導入しました。単なるツールの集まりではなく、**能力のプラグイン化**を実現しています。
-*   **Skill Manager**: 専門分野の知識パッケージ（`skill-creator`など）を動的にロードし、汎用AIを一瞬で特定の分野のスペシャリストに変貌させます。
-*   **ローカライズ同期**: グローバルなスキルをプロジェクトのローカルディレクトリに自動的に同期し、プロジェクト単位の能力のカスタマイズと隔離をサポートします。
-
-### 👁️ 多次元アーキテクチャ知覚 (Architecture Perception)
-Photonはテキストを超えた知覚能力を持っています。**AST分析**を通じて複雑なプロジェクトの骨格を一瞬で分解するだけでなく、**Graphviz**を利用して抽象的なコードロジックをリアルタイムで**可視化アーキテクチャ図**としてレンダリングし、システムの構造を一目で把握できるようにします。
-
-### 🕸️ 無限の境界拡張 (Universal MCP)
-標準の **Model Context Protocol (MCP)** を通じて、Photonは現代のエコシステム全体と接続します：
-*   **ブラウザの覇権**: Puppeteerを完璧に統合し、AIにChromeを直接制御する能力を与えます（ドキュメントの参照、ウェブページのデバッグ、フルオートメーションフロー）。
-*   **デュアルドメイン演算**: C++の安定した実行とPython Sandboxの柔軟な演算を組み合わせ、あらゆるシナリオのニーズをカバーします。
+### 🧠 深いエンジニアリング知覚 (Engineering Perception)
+*   **構造的認知**: 内蔵の AST 解析により、単なるテキストマッチングを超え、複雑なコードロジックを深く理解。
+*   **原子レベルの介入**: すべてのコード修正は決定論的に検証され、ワンクリック `undo` をサポート。エンジニアリング状態の絶対的な安全を確保。
+*   **専門家パラダイムの注入**: モジュール化された Skills システムを通じて、シニアエンジニアの設計経験を AI のネイティブな本能として固定化。
 
 ---
 
 ## 🏗️ システムアーキテクチャ [Architecture]
 
 ```text
-       ┌──────────────────────┐
-       │   User Terminal UI   │  (Rich ANSI / Markdown Rendering)
-       └──────────┬───────────┘
-                  │ 
-       ┌──────────┴───────────┐
-       │   Photon Core (C++)  │─── [ Context Manager ]
-       └─────┬──────────┬─────┘    (Memory & Adaptive Compression)
-             │          │
-    ┌────────┴──┐  ┌────┴─────────────────────────────┐
-    │LLM Client │  │         MCP Tool Manager         │
-    └─────┬─────┘  └────┬────────────┬────────────────┤
-    │             │            │                │
-    [ API Gateway ]  [Built-in]   [External]       [Skills]
-    (OpenAI / Kimi)  (C++ Native) (Node / Python)  (Modular Caps)
+                     ┌──────────────────────────────────────────┐
+                     │           IDE / Terminal Host            │
+                     │ (VS Code, JetBrains, Cursor, Vim, etc.)  │
+                     └───────────────────┬──────────────────────┘
+                                         │ (Standard I/O)
+                     ┌───────────────────▼──────────────────────┐
+                     │            PHOTON KERNEL (C++)           │
+                     │  ──────────────────────────────────────  │
+                     │  [ Context Manager ]    [ Memory System ]│
+                     │  (Short-term Mem)       (JSON/Markdown)  │
+                     └───────────┬────────────────────┬─────────┘
+                                 │                    │
+                    ┌────────────▼───────┐    ┌───────▼─────────────┐
+                    │     LLM Client     │    │  MCP Tool Manager   │
+                    │   (Reasoning Hub)  │    │   (Execution Hub)   │
+                    └────────────────────┘    └───────┬─────────────┘
+                                                      │
+          ┌───────────────────────────────────────────┴──────────────────────────┐
+          │                                    │                                 │
+┌─────────▼──────────┐               ┌─────────▼──────────┐            ┌─────────▼──────────┐
+│   Built-in Tools   │               │   Expert Skills    │            │    External MCP    │
+│    (C++ Native)    │               │  (Modular Logic)   │            │   (Node / Python)  │
+├────────────────────┤               ├────────────────────┤            ├────────────────────┤
+│• Parallel Search   │               │• Code Architect    │            │• Puppeteer         │
+│• AST Analysis      │               │• Debug Master      │            │• Google Search     │
+│• Python Sandbox    │               │• Env Initializer   │            │• Custom Servers    │
+└────────────────────┘               └────────────────────┘            └────────────────────┘
 ```
 
 ---
 
-## 🔬 エージェントの兵器庫 [The Arsenal]
+## 🧠 コア概念の解説 [Core Concepts]
 
-Photonには**20以上**の重厚なエンジニアリングツールがプリインストールされており、完全な知覚・意思決定・実行のループを形成しています：
+### 🛠️ Tools：エージェントの「デジタル触手」 (Actuation Layer)
+> **ディープ・パースペクティブ**: AI 領域において、知覚と実行はエージェントが物理世界と対話する唯一の手段です。Tools のない AI は単なるチャットボックスですが、Tools を持つ Photon は「動けるエンジニア」です。
 
-### 📂 ホログラフィックなファイル知覚
-*   **file_search / grep_search**: Git優先の並列検索により、コードスニペットを正確に特定します。
-*   **read_file_lines**: インテリジェントなスライス読み込みにより、Tokenウィンドウを保護しながら詳細な情報を取得します。
-*   **code_ast_analyze**: 骨格知覚により、Tokenを消費せずにプロジェクト全体の構造を理解します。
+*   **全息感知**: 高性能な並列検索と AST 解析を内蔵。トークンを消費せずに大規模プロジェクトの構造を瞬時に分解。
+*   **原子レベルの介入**: 決定論的なコード注入（Diff Apply）と隔離されたサンドボックスにより、すべての実行を正確かつ安全に。
+*   **無限の拡張性**: **MCP (Model Context Protocol)** に基づき、世界中のコミュニティが提供する数千のツールサーバーと連携可能。
 
-### 🛠️ 原子レベルのリファクタリングと実行
-*   **diff_apply**: 決定論的なコード注入により、リファクタリングプロセスでの冗長性をゼロにします。
-*   **python_sandbox**: `.venv`環境を自動的に識別し、依存関係の即時インストールと演算の実行をサポートします。
-*   **arch_visualize**: コードロジックをワンクリックでアーキテクチャ図に変換します。
-*   **skill_read**: スキルガイドを動的に読み込み、必要に応じて専門知識をロードします。
+### 📜 Skills：デジタル生命の「専門家本能」 (Expert Paradigms)
+> **ディープ・パースペクティブ**: 汎用的な LLM は特定のエンジニアリング領域における深みに欠けることがあります。Skills システムは「経験」を「本能」に変えることで、この溝を埋めます。
 
-### 🌍 グローバルな知識検索
-*   **web_search / web_fetch**: 情報収集を自動化し、AIに最も純粋なリアルタイムのコーパスを提供します。
-*   **harmony_search**: HarmonyOS開発者エコシステムと深く統合し、HarmonyOSコアドキュメントを秒速で特定します。
+*   **思考の固定化**: モジュール化された `SKILL.md` を通じて、シニアアーキテクトの思考プロセス（例：性能チューニング、高並列システム設計）を AI の意思決定層に直接注入。
+*   **能動的な進化**: AI は実行前に自ら Skill ガイドを読み込み、単なる確率予測ではなく、工業規格に準拠したエンジニアリングを実践します。
 
-### 💾 会話をまたぐ永続メモリ
-*   **memory_management**: プロジェクトの規約や過去の教訓を記録します。Photonは使用するにつれて、あなたの習慣をより理解するようになります。
+### 💾 Memory：時空を超える「自己の連続性」 (Neural Persistence)
+> **ディープ・パースペクティブ**: 記憶のない AI は単なる関数呼び出しですが、記憶のある AI は進化する生命です。
+
+*   **多態的記憶システム**: 高速検索のための JSON 断片事実と、深い理解のための Markdown 構造化知識を統合。
+*   **習慣の同期**: Photon はプロジェクトの規約、過去のバグの教訓、特定のコーディング嗜好を記録し続けます。使い込むほどに、AI はあなたと「同期」していきます。
+
+### 📑 Context：高次元の「思考ワークスペース」 (Cognitive Workspace)
+> **ディープ・パースペクティブ**: LLM のコンテキストウィンドウは高価で有限です。Context Manager は Photon の「脳の執事」です。
+
+*   **インテリジェントな圧縮**: 対話が膨大になった際、重要な意思決定ポイントを自動識別し、LLM を用いて再帰的に要約・圧縮。
+*   **ロスレスな思考**: 核心的なロジックを維持したまま思考の有効長を劇的に延長し、数万行規模の巨大なタスクの処理を可能にします。
 
 ---
 
-## 🛡️ 防御プロトコル [Photon Guard]
+## 🚀 クイックスタート [Quick Start]
 
-**Photon Guard**はすべての低レベルの呼び出しをリアルタイムで監視し、エージェントが安全な境界内で動作することを保証します：
-*   **パスのロック**: パスのエスケープを厳禁し、権限を現在のワークスペース内に厳格に制限します。
-*   **危険の検知**: `rm -rf`や`sudo`などの破壊的なコマンドをリアルタイムで遮断します。
-*   **隔離実行**: 機密性の高いシステム操作を強制的にインターセプトします。
+### 1. ダウンロード
+[Releases](https://github.com/QkHearn/Photon/releases) ページから、お使いの OS に適したバイナリをダウンロードします。
+
+### 2. 設定
+プログラムと同じディレクトリに `config.json` を作成または編集し、API キーを設定します：
+
+```json
+{
+  "llm": {
+    "api_key": "YOUR_API_KEY",
+    "base_url": "https://api.moonshot.cn/v1",
+    "model": "kimi-k2-0905-preview"
+  }
+}
+```
+
+### 3. 起動
+ターミナルで実行し、プロジェクトのディレクトリを指定します：
+
+```bash
+# 実行権限の付与 (Linux/macOS)
+chmod +x photon
+
+# 分析の開始
+./photon /path/to/your/project
+```
 
 ---
 
 <p align="center">
-  <i>"Photon is the bridge between human intent and machine logic."</i>
+  <a href="README.md">中文</a> | <a href="README.en.md">English</a> | <a href="README.jp.md">日本語</a>
+</p>
+
+<p align="center">
+  <i>"Photon: The bridge between human intent and machine logic, at the speed of light."</i>
 </p>
