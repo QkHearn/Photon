@@ -15,6 +15,9 @@
 #include "mcp/MCPClient.h"
 #include "mcp/MCPManager.h"
 #include "utils/SkillManager.h"
+#ifdef __APPLE__
+    #include <mach-o/dyld.h>
+#endif
 
 // ANSI Color Codes
 const std::string RESET = "\033[0m";
@@ -196,20 +199,43 @@ int main(int argc, char* argv[]) {
         printLogo(); // 先展示 Logo 动画
 
         std::string path = ".";
-    std::string configPath = "config.json"; // Default to current directory
+        
+        // Determine executable directory for default config search
+        fs::path exeDir;
+        try {
+#ifdef _WIN32
+            wchar_t szPath[MAX_PATH];
+            GetModuleFileNameW(NULL, szPath, MAX_PATH);
+            exeDir = fs::path(szPath).parent_path();
+#elif defined(__APPLE__)
+            char szPath[1024];
+            uint32_t size = sizeof(szPath);
+            if (_NSGetExecutablePath(szPath, &size) == 0) {
+                exeDir = fs::canonical(szPath).parent_path();
+            }
+#else
+            exeDir = fs::canonical("/proc/self/exe").parent_path();
+#endif
+        } catch (...) {}
 
-    if (argc >= 2) {
-        path = argv[1];
-    }
-    
-    // Check if config.json exists in current directory, if not try parent (for build/ dir runs)
-    if (argc < 3) {
-        if (!fs::exists(fs::u8path(configPath)) && fs::exists(fs::u8path("../config.json"))) {
-            configPath = "../config.json";
+        std::string configPath = "config.json"; // Default to current directory
+
+        if (argc >= 2) {
+            path = argv[1];
         }
-    } else {
-        configPath = argv[2];
-    }
+        
+        // Check if config.json exists in current directory, if not try other locations
+        if (argc < 3) {
+            if (fs::exists(fs::u8path("config.json"))) {
+                configPath = "config.json";
+            } else if (fs::exists(fs::u8path("../config.json"))) {
+                configPath = "../config.json";
+            } else if (!exeDir.empty() && fs::exists(exeDir / "config.json")) {
+                configPath = (exeDir / "config.json").u8string();
+            }
+        } else {
+            configPath = argv[2];
+        }
 
     Config cfg;
     try {
@@ -239,9 +265,63 @@ int main(int argc, char* argv[]) {
 
     // Initialize Skill Manager
     SkillManager skillManager;
-    // Always attempt to load local skills, even if no global roots are configured
+
+    // 1. Load bundled internal skills (Low priority)
+    // We already have static skills loaded in constructor, 
+    // but we still try to load from directory to allow updating without recompiling.
+    try {
+        fs::path exeDir;
+#ifdef _WIN32
+        wchar_t szPath[MAX_PATH];
+        if (GetModuleFileNameW(NULL, szPath, MAX_PATH) != 0) {
+            exeDir = fs::path(szPath).parent_path();
+        }
+#elif defined(__APPLE__)
+        char szPath[4096];
+        uint32_t size = sizeof(szPath);
+        if (_NSGetExecutablePath(szPath, &size) == 0) {
+            exeDir = fs::canonical(szPath).parent_path();
+        }
+#else
+        exeDir = fs::canonical("/proc/self/exe").parent_path();
+#endif
+        
+        fs::path builtinPath;
+        if (!exeDir.empty() && fs::exists(exeDir / "builtin_skills")) {
+            builtinPath = exeDir / "builtin_skills";
+        } else if (fs::exists(fs::path("builtin_skills"))) {
+            builtinPath = fs::path("builtin_skills");
+        }
+
+        if (!builtinPath.empty() && fs::is_directory(builtinPath)) {
+            skillManager.loadFromRoot(builtinPath.u8string(), true); // Mark as builtin
+        }
+    } catch (...) {}
+
+    // 2. Sync & Load specialized skills from config (High priority, can override)
+    // Now syncing to globalDataPath/skills instead of project-local
     std::cout << GRAY << "  [3/3] Syncing & Loading specialized skills..." << RESET << "\r" << std::flush;
-    skillManager.syncAndLoad(cfg.agent.skillRoots, path);
+    
+    // Determine globalDataPath for SkillManager sync
+    fs::path globalDataPath;
+    try {
+        fs::path exeDir;
+#ifdef _WIN32
+        wchar_t szPath[MAX_PATH];
+        if (GetModuleFileNameW(NULL, szPath, MAX_PATH) != 0) exeDir = fs::path(szPath).parent_path();
+#elif defined(__APPLE__)
+        char szPath[4096];
+        uint32_t size = sizeof(szPath);
+        if (_NSGetExecutablePath(szPath, &size) == 0) exeDir = fs::canonical(szPath).parent_path();
+#else
+        exeDir = fs::canonical("/proc/self/exe").parent_path();
+#endif
+        globalDataPath = exeDir / ".photon";
+    } catch (...) {
+        globalDataPath = fs::u8path(path) / ".photon";
+    }
+
+    skillManager.syncAndLoad(cfg.agent.skillRoots, globalDataPath.u8string());
     
     // Inject SkillManager into Builtin Tools
     if (auto* builtin = dynamic_cast<InternalMCPClient*>(mcpManager.getClient("builtin"))) {
@@ -332,16 +412,35 @@ int main(int argc, char* argv[]) {
         }
 
         if (userInput == "skills") {
-            std::cout << CYAN << "\n--- Loaded Skills ---" << RESET << std::endl;
+            std::cout << CYAN << "\n--- Loaded Skills ---\n" << RESET << std::endl;
             if (skillManager.getCount() == 0) {
                 std::cout << GRAY << "  (No skills loaded)" << RESET << std::endl;
             } else {
+                // Group 1: Built-in Skills
+                std::cout << GREEN << BOLD << "[Built-in]" << RESET << GRAY << " (核心专家技能)" << RESET << std::endl;
+                bool hasBuiltin = false;
                 for (const auto& [name, skill] : skillManager.getSkills()) {
-                    std::cout << PURPLE << BOLD << "  • " << name << RESET << std::endl;
-                    std::cout << GRAY << "    Source: " << skill.path << RESET << std::endl;
+                    if (skill.isBuiltin) {
+                        std::cout << PURPLE << BOLD << "  • " << name << RESET << std::endl;
+                        std::cout << GRAY << "    Source: " << skill.path << RESET << std::endl;
+                        hasBuiltin = true;
+                    }
                 }
+                if (!hasBuiltin) std::cout << GRAY << "  (无内置技能)" << RESET << std::endl;
+
+                // Group 2: External Skills
+                std::cout << "\n" << BLUE << BOLD << "[External]" << RESET << GRAY << " (自定义/项目技能)" << RESET << std::endl;
+                bool hasExternal = false;
+                for (const auto& [name, skill] : skillManager.getSkills()) {
+                    if (!skill.isBuiltin) {
+                        std::cout << PURPLE << BOLD << "  • " << name << RESET << std::endl;
+                        std::cout << GRAY << "    Source: " << skill.path << RESET << std::endl;
+                        hasExternal = true;
+                    }
+                }
+                if (!hasExternal) std::cout << GRAY << "  (无外置技能)" << RESET << std::endl;
             }
-            std::cout << CYAN << "---------------------\n" << RESET << std::endl;
+            std::cout << CYAN << "\n---------------------\n" << RESET << std::endl;
             continue;
         }
 
@@ -359,26 +458,11 @@ int main(int argc, char* argv[]) {
 
         if (userInput == "memory") {
             std::cout << CYAN << "\n--- Long-term Memory ---" << RESET << std::endl;
-            fs::path memPath = fs::u8path(path) / ".photon" / "memory.json";
-            if (fs::exists(memPath)) {
-                try {
-                    std::ifstream f(memPath);
-                    nlohmann::json j;
-                    f >> j;
-                    if (j.is_object() && !j.empty()) {
-                        for (auto& [key, val] : j.items()) {
-                            std::string valStr = val.is_string() ? val.get<std::string>() : val.dump();
-                            if (valStr.length() > 50) valStr = valStr.substr(0, 47) + "...";
-                            std::cout << PURPLE << BOLD << "  • " << key << RESET << ": " << valStr << std::endl;
-                        }
-                    } else {
-                        std::cout << GRAY << "  (Memory is empty)" << RESET << std::endl;
-                    }
-                } catch (...) {
-                    std::cout << RED << "  (Error reading memory)" << RESET << std::endl;
-                }
+            nlohmann::json res = mcpManager.callTool("builtin", "memory_list", {});
+            if (res.contains("content") && res["content"][0].contains("text")) {
+                std::cout << renderMarkdown(res["content"][0]["text"].get<std::string>()) << std::endl;
             } else {
-                std::cout << GRAY << "  (No memory file found)" << RESET << std::endl;
+                std::cout << "Failed to retrieve memory list." << std::endl;
             }
             std::cout << CYAN << "------------------------\n" << RESET << std::endl;
             continue;

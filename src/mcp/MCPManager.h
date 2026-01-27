@@ -6,6 +6,8 @@
 #include "mcp/InternalMCPClient.h"
 #include "core/ConfigManager.h"
 
+#include <future>
+
 class MCPManager {
 public:
     // 初始化内置工具
@@ -15,20 +17,29 @@ public:
             client->setSearchApiKey(searchApiKey);
         }
         clients["builtin"] = std::move(client);
-        std::cout << "[MCPManager] Built-in tools initialized." << std::endl;
     }
 
-    // 根据配置初始化所有服务器
+    // 根据配置初始化所有服务器 (并行异步)
     int initFromConfig(const std::vector<Config::MCPServerConfig>& configs) {
-        int count = 0;
+        if (configs.empty()) return 0;
+
+        std::vector<std::pair<std::string, std::future<std::unique_ptr<MCPClient>>>> futures;
         for (const auto& cfg : configs) {
-            auto client = std::make_unique<MCPClient>(cfg.command);
-            if (client->initialize()) {
-                std::cout << "[MCPManager] Connected to: " << cfg.name << std::endl;
-                clients[cfg.name] = std::move(client);
+            futures.push_back({cfg.name, std::async(std::launch::async, [cmd = cfg.command]() {
+                auto client = std::make_unique<MCPClient>(cmd);
+                if (client->initialize()) {
+                    return client;
+                }
+                return std::unique_ptr<MCPClient>(nullptr);
+            })});
+        }
+
+        int count = 0;
+        for (auto& f : futures) {
+            auto client = f.second.get();
+            if (client) {
+                clients[f.first] = std::move(client);
                 count++;
-            } else {
-                std::cerr << "[MCPManager] Failed to connect to: " << cfg.name << std::endl;
             }
         }
         return count;

@@ -7,6 +7,8 @@
 #include <iostream>
 #include <sstream>
 
+#include "utils/BuiltinSkillsData.h"
+
 namespace fs = std::filesystem;
 
 class SkillManager {
@@ -16,12 +18,29 @@ public:
         std::string description;
         std::string content;
         std::string path;
+        bool isBuiltin = false; // 新增：标记是否为内置 Skill
     };
 
-    // Sync skills from global roots to project .photon/skills and load them
-    void syncAndLoad(const std::vector<std::string>& sourceRoots, const std::string& projectRootStr) {
-        fs::path projectRoot = fs::u8path(projectRootStr);
-        fs::path destRoot = projectRoot / ".photon" / "skills";
+    SkillManager() {
+        loadInternalStaticSkills();
+    }
+
+    void loadInternalStaticSkills() {
+        for (const auto& [id, data] : INTERNAL_SKILLS_DATA) {
+            Skill s;
+            s.name = data.name;
+            s.description = data.description;
+            s.content = data.content;
+            s.path = "embedded://builtin/" + id;
+            s.isBuiltin = true;
+            skills[id] = s;
+        }
+    }
+
+    // Sync skills from global roots to global .photon/skills and load them
+    void syncAndLoad(const std::vector<std::string>& sourceRoots, const std::string& globalDataPathStr) {
+        fs::path globalDataPath = fs::u8path(globalDataPathStr);
+        fs::path destRoot = globalDataPath / "skills";
 
         if (!fs::exists(destRoot)) {
             try {
@@ -32,48 +51,52 @@ public:
             }
         }
 
+        bool anyChanged = false;
         for (const auto& rootStr : sourceRoots) {
             fs::path rootPath = fs::u8path(rootStr);
-            // Handle home directory expansion if needed
             if (rootStr.front() == '~') {
-                const char* home = std::getenv("HOME");
-                if (home) {
-                    rootPath = fs::path(home) / rootStr.substr(2);
-                }
+                const char* home = nullptr;
+#ifdef _WIN32
+                home = std::getenv("USERPROFILE");
+#else
+                home = std::getenv("HOME");
+#endif
+                if (home) rootPath = fs::path(home) / rootStr.substr(2);
             }
 
             if (!fs::exists(rootPath) || !fs::is_directory(rootPath)) continue;
 
             try {
-                // Recursively search for SKILL.md files in source
                 for (const auto& entry : fs::recursive_directory_iterator(rootPath)) {
                     if (entry.is_regular_file() && entry.path().filename() == "SKILL.md") {
                         fs::path sourceSkillDir = entry.path().parent_path();
                         std::string skillName = sourceSkillDir.filename().string();
-                        
                         fs::path destSkillDir = destRoot / skillName;
                         
-                        // Create destination directory if it doesn't exist
-                        if (!fs::exists(destSkillDir)) {
-                            fs::create_directories(destSkillDir);
+                        // 增量检查：只有当源文件更新时才拷贝
+                        bool needsCopy = true;
+                        if (fs::exists(destSkillDir / "SKILL.md")) {
+                            if (fs::last_write_time(entry.path()) <= fs::last_write_time(destSkillDir / "SKILL.md")) {
+                                needsCopy = false;
+                            }
                         }
 
-                        // Copy contents
-                        // Note: fs::copy with recursive | overwrite_existing replaces files
-                        fs::copy(sourceSkillDir, destSkillDir, fs::copy_options::overwrite_existing | fs::copy_options::recursive);
+                        if (needsCopy) {
+                            if (!fs::exists(destSkillDir)) fs::create_directories(destSkillDir);
+                            fs::copy(sourceSkillDir, destSkillDir, fs::copy_options::overwrite_existing | fs::copy_options::recursive);
+                            anyChanged = true;
+                        }
                     }
                 }
-            } catch (const std::exception& e) {
-                std::cerr << "Error syncing skills from " << rootStr << ": " << e.what() << std::endl;
-            }
+            } catch (...) {}
         }
 
-        // Finally, load from the project-local .photon/skills directory
+        // 加载最终结果
         loadFromRoot(destRoot.string());
     }
 
     // Load skills from a single root directory (each subdir is a skill)
-    void loadFromRoot(const std::string& rootPathStr) {
+    void loadFromRoot(const std::string& rootPathStr, bool isBuiltin = false) {
         try {
             fs::path rootPath = fs::u8path(rootPathStr);
             // Handle home directory expansion if needed (simplified)
@@ -91,7 +114,7 @@ public:
                 if (entry.is_regular_file() && entry.path().filename() == "SKILL.md") {
                     // Use parent directory name as skill name
                     std::string skillName = entry.path().parent_path().filename().string();
-                    loadSkill(skillName, entry.path().string());
+                    loadSkill(skillName, entry.path().string(), isBuiltin);
                 }
             }
         } catch (const std::exception& e) {
@@ -129,7 +152,7 @@ public:
         }
     }
 
-    void loadSkill(const std::string& name, const std::string& path) {
+    void loadSkill(const std::string& name, const std::string& path, bool isBuiltin = false) {
         try {
             std::ifstream f(path);
             if (f.is_open()) {
@@ -138,12 +161,19 @@ public:
                 skill.name = name;
                 skill.path = path;
                 skill.content = content;
+                skill.isBuiltin = isBuiltin;
                 parseFrontmatter(skill);
                 
-                // If no description in frontmatter, use a generic one or first few lines? 
-                // For now, leave empty if not found, or use "No description provided."
                 if (skill.description.empty()) {
                     skill.description = "Extended capability for " + name;
+                }
+
+                // If we are overwriting an existing skill, and the new one is NOT builtin 
+                // but the old one WAS, we check if it's actually the same skill.
+                if (skills.count(name) && !isBuiltin && skills[name].isBuiltin) {
+                    // If we are loading from .photon/skills, it might be a synced version of a builtin.
+                    // Let's keep it marked as builtin if the name matches.
+                    skill.isBuiltin = true;
                 }
 
                 skills[name] = skill;

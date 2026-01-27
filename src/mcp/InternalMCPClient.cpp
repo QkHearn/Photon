@@ -4,6 +4,9 @@
 #include "mcp/InternalMCPClient.h"
 #include <algorithm>
 #include <regex>
+#ifdef __APPLE__
+    #include <mach-o/dyld.h>
+#endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "utils/httplib.h"
 #include <sstream>
@@ -24,9 +27,93 @@
 
 InternalMCPClient::InternalMCPClient(const std::string& rootPathStr) {
     this->rootPath = fs::u8path(rootPathStr);
+    
+    // Determine global data path (same directory as the executable)
+    try {
+#ifdef _WIN32
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(NULL, path, MAX_PATH);
+        this->globalDataPath = fs::path(path).parent_path() / ".photon";
+#elif defined(__APPLE__)
+        char path[1024];
+        uint32_t size = sizeof(path);
+        if (_NSGetExecutablePath(path, &size) == 0) {
+            this->globalDataPath = fs::canonical(path).parent_path() / ".photon";
+        } else {
+            this->globalDataPath = this->rootPath / ".photon";
+        }
+#else
+        this->globalDataPath = fs::canonical("/proc/self/exe").parent_path() / ".photon";
+#endif
+    } catch (...) {
+        this->globalDataPath = this->rootPath / ".photon"; // Fallback
+    }
+
     isGitRepo = checkGitRepo();
     registerTools();
-    loadTasksFromDisk(); // Reload tasks from previous sessions
+    
+    // Move non-critical background tasks to a separate thread to speed up startup
+    std::thread([this]() {
+        loadTasksFromDisk(); // Reload tasks from previous sessions
+        syncKnowledgeIndex(); // Sync manually added MD files
+    }).detach();
+}
+
+void InternalMCPClient::syncKnowledgeIndex() {
+    fs::path memoryPath = globalDataPath / "memory.json";
+    nlohmann::json memory = nlohmann::json::object();
+    
+    if (fs::exists(memoryPath)) {
+        std::ifstream f(memoryPath);
+        try { f >> memory; } catch (...) {}
+    }
+
+    if (!memory.contains("knowledge_files")) {
+        memory["knowledge_files"] = nlohmann::json::array();
+    }
+
+    bool changed = false;
+    std::vector<std::string> currentFiles;
+    
+    try {
+        if (fs::exists(globalDataPath)) {
+            for (const auto& entry : fs::directory_iterator(globalDataPath)) {
+                if (entry.path().extension() == ".md") {
+                    currentFiles.push_back(entry.path().filename().u8string());
+                }
+            }
+        }
+    } catch (...) {}
+
+    // Check for new files or removed files
+    nlohmann::json& existingFiles = memory["knowledge_files"];
+    bool needsUpdate = false;
+    if (existingFiles.size() != currentFiles.size()) {
+        needsUpdate = true;
+    } else {
+        for (const auto& f : currentFiles) {
+            bool found = false;
+            for (const auto& ex : existingFiles) {
+                if (ex.get<std::string>() == f) { found = true; break; }
+            }
+            if (!found) { needsUpdate = true; break; }
+        }
+    }
+
+    if (needsUpdate) {
+        existingFiles = nlohmann::json::array();
+        for (const auto& f : currentFiles) {
+            existingFiles.push_back(f);
+        }
+        changed = true;
+    }
+
+    if (changed) {
+        std::ofstream f(memoryPath);
+        if (f.is_open()) {
+            f << memory.dump(4);
+        }
+    }
 }
 
 void InternalMCPClient::registerTools() {
@@ -49,6 +136,7 @@ void InternalMCPClient::registerTools() {
     toolHandlers["diff_apply"] = [this](const nlohmann::json& a) { return diffApply(a); };
     toolHandlers["file_undo"] = [this](const nlohmann::json& a) { return fileUndo(a); };
     toolHandlers["memory_store"] = [this](const nlohmann::json& a) { return memoryStore(a); };
+    toolHandlers["memory_list"] = [this](const nlohmann::json& a) { return memoryList(a); };
     toolHandlers["memory_retrieve"] = [this](const nlohmann::json& a) { return memoryRetrieve(a); };
     toolHandlers["resolve_relative_date"] = [this](const nlohmann::json& a) { return resolveRelativeDate(a); };
     toolHandlers["skill_read"] = [this](const nlohmann::json& a) { return skillRead(a); };
@@ -629,17 +717,28 @@ nlohmann::json InternalMCPClient::listTools() {
         }}
     });
 
-    // Memory Store Tool
     tools.push_back({
         {"name", "memory_store"},
-        {"description", "Store a key-value pair in Photon's long-term memory (.photon/memory.json)."},
+        {"description", "Store information in Photon's long-term memory. Supports short facts (JSON) and long-form knowledge (Markdown)."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
-                {"key", {{"type", "string"}, {"description", "The key to identify this memory"}}},
-                {"value", {{"type", "string"}, {"description", "The content to remember"}}}
+                {"key", {{"type", "string"}, {"description", "The key/title for this memory"}}},
+                {"value", {{"type", "string"}, {"description", "The content to remember"}}},
+                {"type", {{"type", "string"}, {"enum", {"fact", "knowledge"}}, {"description", "Storage type: 'fact' for JSON (short), 'knowledge' for Markdown (long/structured)"}}}
             }},
             {"required", {"key", "value"}}
+        }}
+    });
+
+    // Memory List Tool
+    tools.push_back({
+        {"name", "memory_list"},
+        {"description", "List all stored facts and knowledge files in long-term memory."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {}},
+            {"required", {}}
         }}
     });
 
@@ -1034,12 +1133,13 @@ nlohmann::json InternalMCPClient::bashExecute(const nlohmann::json& args) {
     }
 
 #ifdef _WIN32
-    // On Windows, bash might not be available. Try to use cmd /c if it looks like a simple command,
-    // but the tool is called 'bash_execute', so we'll try to use 'sh -c' or 'bash -c' first.
-    std::string shellCmd = "sh -c \"" + command + "\"";
-    // Check if sh exists
-    if (executeCommand("sh --version").find("not found") != std::string::npos || 
-        executeCommand("sh --version").empty()) {
+    // On Windows, bash might not be available. 
+    // Use commandExists helper for a more reliable check.
+    std::string shellCmd;
+    if (commandExists("sh")) {
+        shellCmd = "sh -c \"" + command + "\"";
+    } else {
+        // Fallback to cmd /c if sh is not found
         shellCmd = "cmd /c " + command;
     }
     std::string output = executeCommand(shellCmd + " 2>&1");
@@ -1478,30 +1578,99 @@ nlohmann::json InternalMCPClient::fileUndo(const nlohmann::json& args) {
 nlohmann::json InternalMCPClient::memoryStore(const nlohmann::json& args) {
     std::string key = args["key"];
     std::string value = args["value"];
-    fs::path memoryPath = rootPath / ".photon" / "memory.json";
+    std::string type = args.value("type", "fact");
+    
+    if (type == "knowledge") {
+        fs::path kbPath = globalDataPath / "knowledge.md";
+        std::ofstream f(kbPath, std::ios::app);
+        if (!f.is_open()) return {{"error", "Could not open knowledge.md for writing"}};
+        
+        auto now = std::chrono::system_clock::now();
+        auto in_time_t = std::chrono::system_clock::to_time_t(now);
+        std::stringstream ss;
+        struct tm time_info;
+#ifdef _WIN32
+        localtime_s(&time_info, &in_time_t);
+#else
+        localtime_r(&in_time_t, &time_info);
+#endif
+        ss << std::put_time(&time_info, "%Y-%m-%d %H:%M:%S");
 
-    nlohmann::json memory = nlohmann::json::object();
+        f << "\n## " << key << " (" << ss.str() << ")\n" << value << "\n";
+        f.close();
+
+        // Also record in JSON index
+        fs::path memoryPath = globalDataPath / "memory.json";
+        nlohmann::json memory = nlohmann::json::object();
+        if (fs::exists(memoryPath)) {
+            std::ifstream fi(memoryPath);
+            try { fi >> memory; } catch (...) {}
+        }
+        if (!memory.contains("knowledge_index")) memory["knowledge_index"] = nlohmann::json::array();
+        memory["knowledge_index"].push_back({{"title", key}, {"timestamp", ss.str()}});
+        
+        std::ofstream fo(memoryPath);
+        fo << memory.dump(4);
+        
+        return {{"content", {{{"type", "text"}, {"text", "Knowledge stored in knowledge.md and indexed."}}}}};
+    } else {
+        fs::path memoryPath = globalDataPath / "memory.json";
+        nlohmann::json memory = nlohmann::json::object();
+        if (fs::exists(memoryPath)) {
+            std::ifstream f(memoryPath);
+            if (f.is_open()) {
+                try { f >> memory; } catch (...) {}
+                f.close();
+            }
+        }
+
+        if (!memory.contains("facts")) memory["facts"] = nlohmann::json::object();
+        memory["facts"][key] = value;
+
+        std::ofstream f(memoryPath);
+        if (!f.is_open()) return {{"error", "Could not open memory.json for writing"}};
+        f << memory.dump(4);
+        f.close();
+
+        return {{"content", {{{"type", "text"}, {"text", "Fact stored for key: " + key}}}}};
+    }
+}
+
+nlohmann::json InternalMCPClient::memoryList(const nlohmann::json& args) {
+    fs::path memoryPath = globalDataPath / "memory.json";
+    std::string report = "Photon Long-term Memory Index:\n\n";
+    
     if (fs::exists(memoryPath)) {
         std::ifstream f(memoryPath);
-        if (f.is_open()) {
-            try { f >> memory; } catch (...) {}
-            f.close();
+        nlohmann::json memory;
+        try {
+            f >> memory;
+            if (memory.contains("facts") && !memory["facts"].empty()) {
+                report += "### [Facts (JSON)]\n";
+                for (auto& [key, val] : memory["facts"].items()) {
+                    report += "- " + key + "\n";
+                }
+                report += "\n";
+            }
+            if (memory.contains("knowledge_index") && !memory["knowledge_index"].empty()) {
+                report += "### [Knowledge (Markdown)]\n";
+                for (const auto& item : memory["knowledge_index"]) {
+                    report += "- " + item.value("title", "Untitled") + " (" + item.value("timestamp", "") + ")\n";
+                }
+            }
+        } catch (...) {
+            return {{"error", "Memory file corrupted"}};
         }
+    } else {
+        report += "(No memory found yet)";
     }
-
-    memory[key] = value;
-
-    std::ofstream f(memoryPath);
-    if (!f.is_open()) return {{"error", "Could not open memory.json for writing"}};
-    f << memory.dump(4);
-    f.close();
-
-    return {{"content", {{{"type", "text"}, {"text", "Memory stored for key: " + key}}}}};
+    
+    return {{"content", {{{"type", "text"}, {"text", report}}}}};
 }
 
 nlohmann::json InternalMCPClient::memoryRetrieve(const nlohmann::json& args) {
     std::string key = args["key"];
-    fs::path memoryPath = rootPath / ".photon" / "memory.json";
+    fs::path memoryPath = globalDataPath / "memory.json";
 
     if (!fs::exists(memoryPath)) return {{"error", "No memory found yet."}};
 
@@ -1510,10 +1679,19 @@ nlohmann::json InternalMCPClient::memoryRetrieve(const nlohmann::json& args) {
     try { f >> memory; } catch (...) { return {{"error", "Memory file corrupted"}}; }
     f.close();
 
-    if (memory.contains(key)) {
-        return {{"content", {{{"type", "text"}, {"text", memory[key].get<std::string>()}}}}};
+    if (memory.contains("facts") && memory["facts"].contains(key)) {
+        return {{"content", {{{"type", "text"}, {"text", memory["facts"][key].get<std::string>()}}}}};
     } else {
-        return {{"content", {{{"type", "text"}, {"text", "Key not found in memory."}}}}};
+        // If not in facts, check if it's a request for the whole knowledge file
+        if (key == "knowledge.md" || key == "knowledge") {
+            fs::path kbPath = globalDataPath / "knowledge.md";
+            if (fs::exists(kbPath)) {
+                std::ifstream kbf(kbPath);
+                std::string content((std::istreambuf_iterator<char>(kbf)), std::istreambuf_iterator<char>());
+                return {{"content", {{{"type", "text"}, {"text", content}}}}};
+            }
+        }
+        return {{"content", {{{"type", "text"}, {"text", "Key not found in facts. Use memory_list to see available knowledge titles."}}}}};
     }
 }
 
@@ -1528,7 +1706,7 @@ void InternalMCPClient::backupFile(const std::string& relPathStr) {
 }
 
 void InternalMCPClient::ensurePhotonDirs() {
-    fs::create_directories(rootPath / ".photon" / "backups");
+    fs::create_directories(globalDataPath / "backups");
 }
 
 nlohmann::json InternalMCPClient::resolveRelativeDate(const nlohmann::json& args) {
@@ -1776,7 +1954,7 @@ bool InternalMCPClient::commandExists(const std::string& cmd) {
 }
 
 void InternalMCPClient::saveTasksToDisk() {
-    fs::path tasksPath = rootPath / ".photon" / "tasks.json";
+    fs::path tasksPath = globalDataPath / "tasks.json";
     nlohmann::json j = nlohmann::json::array();
     for (const auto& t : tasks) {
         j.push_back({
@@ -1795,7 +1973,7 @@ void InternalMCPClient::saveTasksToDisk() {
 }
 
 void InternalMCPClient::loadTasksFromDisk() {
-    fs::path tasksPath = rootPath / ".photon" / "tasks.json";
+    fs::path tasksPath = globalDataPath / "tasks.json";
     if (!fs::exists(tasksPath)) return;
 
     std::ifstream f(tasksPath);

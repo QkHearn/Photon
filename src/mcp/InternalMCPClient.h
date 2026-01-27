@@ -38,6 +38,7 @@ public:
 
 private:
     fs::path rootPath;
+    fs::path globalDataPath; // Global storage path (~/.photon or same dir as exe)
     std::string lastFile;
     bool isGitRepo = false;
     std::string searchApiKey;
@@ -47,6 +48,7 @@ private:
     std::map<std::string, ToolHandler> toolHandlers;
 
     void registerTools();
+    void syncKnowledgeIndex();
     bool checkGitRepo();
     bool isBinary(const fs::path& path);
 
@@ -69,6 +71,7 @@ private:
     nlohmann::json diffApply(const nlohmann::json& args);
     nlohmann::json fileUndo(const nlohmann::json& args);
     nlohmann::json memoryStore(const nlohmann::json& args);
+    nlohmann::json memoryList(const nlohmann::json& args);
     nlohmann::json memoryRetrieve(const nlohmann::json& args);
     nlohmann::json resolveRelativeDate(const nlohmann::json& args);
     nlohmann::json skillRead(const nlohmann::json& args);
