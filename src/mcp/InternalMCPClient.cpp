@@ -17,6 +17,7 @@
 #include <future>
 #include <thread>
 #include <mutex>
+#include <unordered_set>
 
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
@@ -119,6 +120,8 @@ void InternalMCPClient::syncKnowledgeIndex() {
 void InternalMCPClient::registerTools() {
     toolHandlers["file_search"] = [this](const nlohmann::json& a) { return fileSearch(a); };
     toolHandlers["file_read"] = [this](const nlohmann::json& a) { return fileRead(a); };
+    toolHandlers["context_read"] = [this](const nlohmann::json& a) { return contextRead(a); };
+    toolHandlers["diagnostics_check"] = [this](const nlohmann::json& a) { return diagnosticsCheck(a); };
     toolHandlers["file_write"] = [this](const nlohmann::json& a) { return fileWrite(a); };
     toolHandlers["python_sandbox"] = [this](const nlohmann::json& a) { return pythonSandbox(a); };
     toolHandlers["pip_install"] = [this](const nlohmann::json& a) { return pipInstall(a); };
@@ -138,6 +141,9 @@ void InternalMCPClient::registerTools() {
     toolHandlers["memory_store"] = [this](const nlohmann::json& a) { return memoryStore(a); };
     toolHandlers["memory_list"] = [this](const nlohmann::json& a) { return memoryList(a); };
     toolHandlers["memory_retrieve"] = [this](const nlohmann::json& a) { return memoryRetrieve(a); };
+    toolHandlers["project_overview"] = [this](const nlohmann::json& a) { return projectOverview(a); };
+    toolHandlers["symbol_search"] = [this](const nlohmann::json& a) { return symbolSearch(a); };
+    toolHandlers["lsp_definition"] = [this](const nlohmann::json& a) { return lspDefinition(a); };
     toolHandlers["resolve_relative_date"] = [this](const nlohmann::json& a) { return resolveRelativeDate(a); };
     toolHandlers["skill_read"] = [this](const nlohmann::json& a) { return skillRead(a); };
     toolHandlers["schedule"] = [this](const nlohmann::json& a) { return osScheduler(a); };
@@ -489,13 +495,41 @@ nlohmann::json InternalMCPClient::listTools() {
     // File Read Tool
     tools.push_back({
         {"name", "file_read"},
-        {"description", "Read the content of a specific file."},
+        {"description", "Read the content of a specific file. WARNING: For large files, this consumes significant tokens. Use 'read_file_lines' for partial reads or 'code_ast_analyze' for structure overview instead."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
                 {"path", {{"type", "string"}, {"description", "The relative path to the file"}}}
             }},
             {"required", {"path"}}
+        }}
+    });
+
+    // Context Read Tool (index -> windowed read, prioritize hot files)
+    tools.push_back({
+        {"name", "context_read"},
+        {"description", "Use symbol index to locate matches and read windowed context. Prioritizes changed/hot files to reduce redundant reads."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"query", {{"type", "string"}, {"description", "Symbol or identifier to locate via the index"}}},
+                {"context_lines", {{"type", "integer"}, {"description", "Lines of context above and below the match (default: 20)"}}},
+                {"max_matches", {{"type", "integer"}, {"description", "Maximum number of matches to return (default: 3)"}}},
+                {"path", {{"type", "string"}, {"description", "Optional relative path to restrict matches to a single file"}}}
+            }},
+            {"required", {"query"}}
+        }}
+    });
+
+    // Diagnostics Check Tool
+    tools.push_back({
+        {"name", "diagnostics_check"},
+        {"description", "Run build/compilation and capture errors/warnings. Automatically detects build systems (CMake, Make, NPM, Cargo, Go). Use this after making changes to verify correctness."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"command", {{"type", "string"}, {"description", "Optional build command (if not provided, will be auto-detected)"}}}
+            }}
         }}
     });
 
@@ -516,7 +550,7 @@ nlohmann::json InternalMCPClient::listTools() {
     // Python Sandbox Tool
     tools.push_back({
         {"name", "python_sandbox"},
-        {"description", "Execute Python code and get the output. This tool automatically detects virtual environments (.venv/venv) and runs in the workspace root."},
+        {"description", "Execute transient Python code and get the output. NOTE: This tool is for short-lived tasks. For long-running servers (like Flask), use 'bash_execute' with background commands (e.g., 'nohup python app.py &') and manage them via 'tasks'."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
@@ -685,7 +719,8 @@ nlohmann::json InternalMCPClient::listTools() {
             {"properties", {
                 {"path", {{"type", "string"}, {"description", "The relative path to start (default: root)"}}},
                 {"depth", {{"type", "integer"}, {"description", "Maximum depth to show (default: 3)"}}}
-            }}
+            }},
+            {"required", nlohmann::json::array()}
         }}
     });
 
@@ -737,8 +772,8 @@ nlohmann::json InternalMCPClient::listTools() {
         {"description", "List all stored facts and knowledge files in long-term memory."},
         {"inputSchema", {
             {"type", "object"},
-            {"properties", {}},
-            {"required", {}}
+            {"properties", nlohmann::json::object()},
+            {"required", nlohmann::json::array()}
         }}
     });
 
@@ -774,8 +809,8 @@ nlohmann::json InternalMCPClient::listTools() {
         {"description", "List all active background scheduled tasks."},
         {"inputSchema", {
             {"type", "object"},
-            {"properties", {}},
-            {"required", {}}
+            {"properties", nlohmann::json::object()},
+            {"required", nlohmann::json::array()}
         }}
     });
 
@@ -806,6 +841,58 @@ nlohmann::json InternalMCPClient::listTools() {
                 {"task_id", {{"type", "string"}, {"description", "Optional unique identifier. If an active task with this ID exists, it will be replaced."}}}
             }},
             {"required", {"delay_seconds", "type", "payload"}}
+        }}
+    });
+
+    // Resolve Relative Date Tool
+    tools.push_back({
+        {"name", "resolve_relative_date"},
+        {"description", "Resolve fuzzy date strings like 'today', 'yesterday', '2 days ago' into absolute YYYY-MM-DD format."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"fuzzy_date", {{"type", "string"}, {"description", "The fuzzy date string to resolve"}}}
+            }},
+            {"required", {"fuzzy_date"}}
+        }}
+    });
+
+    // Project Overview Tool
+    tools.push_back({
+        {"name", "project_overview"},
+        {"description", "Get a high-level overview of the project structure and key components. Use this at the beginning of a task to minimize redundant searches."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", nlohmann::json::object()},
+            {"required", nlohmann::json::array()}
+        }}
+    });
+
+    // Symbol Search Tool
+    tools.push_back({
+        {"name", "symbol_search"},
+        {"description", "Search for global symbols (classes, functions, methods) across the entire project. This uses a pre-built index and is extremely fast."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"query", {{"type", "string"}, {"description", "The symbol name to search for"}}}
+            }},
+            {"required", {"query"}}
+        }}
+    });
+
+    // LSP Definition Tool
+    tools.push_back({
+        {"name", "lsp_definition"},
+        {"description", "Find the definition of a symbol at a given file location using LSP (semantic navigation)."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"path", {{"type", "string"}, {"description", "The relative path of the file"}}},
+                {"line", {{"type", "integer"}, {"description", "The line number (1-indexed)"}}},
+                {"character", {{"type", "integer"}, {"description", "The character position (0-indexed)"}}}
+            }},
+            {"required", {"path", "line", "character"}}
         }}
     });
 
@@ -898,13 +985,223 @@ nlohmann::json InternalMCPClient::fileRead(const nlohmann::json& args) {
         return {{"content", {{{"type", "text"}, {"text", "Error: File not found: " + relPathStr}}}}};
     }
 
+    // Size check for token optimization
+    std::uintmax_t fileSize = fs::file_size(fullPath);
+    const std::uintmax_t MAX_READ_SIZE = 50000; // 50KB soft limit
+
     std::ifstream file(fullPath);
     if (!file.is_open()) {
         return {{"content", {{{"type", "text"}, {"text", "Error: Could not open file: " + relPathStr}}}}};
     }
 
+    if (fileSize > MAX_READ_SIZE) {
+        // Optimization: Instead of just first 2000 chars, provide a summary of symbols + first/last parts
+        std::string report = "⚠️ WARNING: File is too large (" + std::to_string(fileSize / 1024) + " KB).\n";
+        report += "To save tokens, providing a structural summary. Use 'read_file_lines' or 'context_read' for details.\n\n";
+        
+        if (symbolManager) {
+            auto syms = symbolManager->getFileSymbols(relPathStr);
+            if (!syms.empty()) {
+                report += "--- FILE SYMBOLS ---\n";
+                for (const auto& s : syms) {
+                    report += "- [" + s.type + "] " + s.name + " (Line " + std::to_string(s.line) + ")\n";
+                }
+                report += "\n";
+            }
+        }
+
+        char head[1001];
+        file.read(head, 1000);
+        head[file.gcount()] = '\0';
+        
+        report += "--- BEGINNING OF FILE ---\n" + std::string(head) + "\n...\n";
+        
+        if (fileSize > 2000) {
+            file.seekg(-1000, std::ios::end);
+            char tail[1001];
+            file.read(tail, 1000);
+            tail[file.gcount()] = '\0';
+            report += "--- END OF FILE ---\n" + std::string(tail);
+        }
+
+        return {{"content", {{{"type", "text"}, {"text", report}}}}};
+    }
+
     std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(content, 100000)}}}}};
+}
+
+std::string InternalMCPClient::autoDetectBuildCommand() {
+    // 1. Custom scripts
+#ifdef _WIN32
+    if (fs::exists(rootPath / "build.bat")) return "build.bat";
+#else
+    if (fs::exists(rootPath / "build.sh")) return "./build.sh";
+#endif
+
+    // 2. CMake (Check for build dir or just use cmake --build .)
+    if (fs::exists(rootPath / "CMakeLists.txt")) {
+        if (fs::exists(rootPath / "build")) return "cmake --build build";
+        return "cmake --build .";
+    }
+
+    // 3. Makefile
+    if (fs::exists(rootPath / "Makefile") || fs::exists(rootPath / "makefile")) {
+        return "make";
+    }
+
+    // 4. Node.js
+    if (fs::exists(rootPath / "package.json")) {
+        // Try to read package.json to see if 'build' script exists
+        try {
+            std::ifstream f(rootPath / "package.json");
+            nlohmann::json j;
+            f >> j;
+            if (j.contains("scripts") && j["scripts"].contains("build")) {
+                return "npm run build";
+            }
+        } catch (...) {}
+        return "npm install"; // Fallback to install if no build script
+    }
+
+    // 5. Rust
+    if (fs::exists(rootPath / "Cargo.toml")) {
+        return "cargo build";
+    }
+
+    // 6. Go
+    if (fs::exists(rootPath / "go.mod")) {
+        return "go build ./...";
+    }
+
+    return "";
+}
+
+nlohmann::json InternalMCPClient::diagnosticsCheck(const nlohmann::json& args) {
+    std::string buildCmd = args.value("command", "");
+    if (buildCmd.empty()) {
+        buildCmd = autoDetectBuildCommand();
+        if (buildCmd.empty()) {
+            return {{"content", {{{"type", "text"}, {"text", "❌ Error: Could not automatically detect a build system (no CMakeLists.txt, Makefile, package.json, etc. found).\n"
+                                                              "Please provide a specific command via the 'command' argument."}}}}};
+        }
+    }
+
+    std::string output = executeCommand("cd \"" + rootPath.u8string() + "\" && " + buildCmd + " 2>&1");
+    
+    // Simple heuristic to extract errors/warnings
+    std::stringstream ss(output);
+    std::string line;
+    std::string filtered;
+    bool hasIssues = false;
+    
+    while (std::getline(ss, line)) {
+        // Match common error patterns (gcc, clang, msvc, python, etc.)
+        if (line.find("error:") != std::string::npos || 
+            line.find("warning:") != std::string::npos ||
+            line.find("Error ") != std::string::npos ||
+            line.find("Exception") != std::string::npos ||
+            line.find("Traceback") != std::string::npos) {
+            filtered += line + "\n";
+            hasIssues = true;
+        }
+    }
+
+    if (!hasIssues) {
+        return {{"content", {{{"type", "text"}, {"text", "✅ Build successful. No errors or warnings found.\n\nFull Output:\n" + output}}}}};
+    }
+
+    return {{"content", {{{"type", "text"}, {"text", "❌ Build issues found:\n\n" + filtered + "\n\nUse 'context_read' or 'read_file_lines' on the reported paths/lines to fix them."}}}}};
+}
+
+nlohmann::json InternalMCPClient::contextRead(const nlohmann::json& args) {
+    if (!symbolManager) {
+        return {{"content", {{{"type", "text"}, {"text", "SymbolManager not initialized."}}}}};
+    }
+
+    std::string query = args.value("query", "");
+    if (query.empty()) {
+        return {{"content", {{{"type", "text"}, {"text", "Error: query is required."}}}}};
+    }
+    int contextLines = args.value("context_lines", 20);
+    int maxMatches = args.value("max_matches", 3);
+    if (contextLines < 0) contextLines = 0;
+    if (maxMatches < 1) maxMatches = 1;
+    std::string pathFilter = args.value("path", "");
+
+    auto results = symbolManager->search(query);
+    if (!pathFilter.empty()) {
+        std::vector<SymbolManager::Symbol> filtered;
+        for (const auto& s : results) {
+            if (s.path == pathFilter) filtered.push_back(s);
+        }
+        results.swap(filtered);
+    }
+    if (results.empty()) {
+        return {{"content", {{{"type", "text"}, {"text", "No symbols found for: " + query}}}}};
+    }
+
+    std::unordered_set<std::string> hotFiles;
+    if (isGitRepo) {
+        std::string cmd = "git -C " + rootPath.u8string() + " status --porcelain";
+        std::string output = executeCommand(cmd);
+        std::stringstream ss(output);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (line.size() < 4) continue;
+            std::string path = line.substr(3);
+            auto arrow = path.find("->");
+            if (arrow != std::string::npos) {
+                path = path.substr(arrow + 2);
+                while (!path.empty() && path[0] == ' ') path.erase(path.begin());
+            }
+            if (!path.empty()) hotFiles.insert(path);
+        }
+    }
+    if (!lastFile.empty()) {
+        hotFiles.insert(lastFile);
+    }
+
+    std::stable_partition(results.begin(), results.end(), [&](const SymbolManager::Symbol& s) {
+        return hotFiles.find(s.path) != hotFiles.end();
+    });
+
+    auto readWindow = [&](const fs::path& filePath, int line, int ctx) -> std::string {
+        std::ifstream file(filePath);
+        if (!file.is_open()) return "";
+        int start = std::max(1, line - ctx);
+        int end = std::max(line + ctx, start);
+        std::string out;
+        std::string textLine;
+        int current = 1;
+        while (std::getline(file, textLine)) {
+            if (current >= start && current <= end) {
+                out += std::to_string(current) + "|" + textLine + "\n";
+            }
+            if (current > end) break;
+            current++;
+        }
+        return out;
+    };
+
+    std::string report;
+    int count = 0;
+    for (const auto& s : results) {
+        if (count >= maxMatches) break;
+        fs::path fullPath = rootPath / fs::u8path(s.path);
+        if (!fs::exists(fullPath)) continue;
+        std::string window = readWindow(fullPath, s.line, contextLines);
+        if (window.empty()) continue;
+        std::string source = s.source.empty() ? "unknown" : s.source;
+        report += "Match [" + s.type + "|" + source + "] `" + s.name + "` in `" +
+                  s.path + "` (Line " + std::to_string(s.line) + ")\n";
+        report += window + "\n";
+        count++;
+    }
+    if (report.empty()) {
+        return {{"content", {{{"type", "text"}, {"text", "No readable matches found for: " + query}}}}};
+    }
+    return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(report, 12000)}}}}};
 }
 
 nlohmann::json InternalMCPClient::fileWrite(const nlohmann::json& args) {
@@ -967,6 +1264,14 @@ bool InternalMCPClient::isCommandSafe(const std::string& cmd) {
 nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
     std::string code = args["code"];
     
+    // Heuristic: Check if the code seems to be starting a persistent server
+    if ((code.find("app.run") != std::string::npos || code.find("run_flask") != std::string::npos || 
+         code.find("threading.Thread") != std::string::npos) && code.find("time.sleep") != std::string::npos) {
+        return {{"content", {{{"type", "text"}, {"text", "💡 Suggestion: It looks like you are trying to start a long-running server inside the transient python_sandbox.\n"
+                                                          "This sandbox will exit immediately after the main script finishes, which will kill your threads/subprocesses.\n"
+                                                          "To run a background service, please use 'bash_execute' with 'nohup python app.py &' and verify it using 'web_fetch'."}}}}};
+    }
+
     // 允许更灵活的 Python 执行，但仍保留基本系统保护
     if (!isCommandSafe(code)) {
         return {{"content", {{{"type", "text"}, {"text", "Security Alert: Python code contains potentially dangerous system patterns."}}}}};
@@ -1157,30 +1462,32 @@ nlohmann::json InternalMCPClient::codeAstAnalyze(const nlohmann::json& args) {
 
     std::ifstream file(fullPath);
     std::string line;
-    std::string result = "AST Analysis for " + relPathStr + ":\n";
+    std::string result = "## Structure of " + relPathStr + "\n\n";
+    int lineNum = 0;
 
     // More robust regex for C++ and Python
-    // C++: handle namespaces, templates, and complex signatures
     static const std::regex cppClass(R"raw((class|struct)\s+([A-Za-z0-9_]+)(\s*:\s*[^{]+)?\s*\{)raw");
     static const std::regex cppFunc(R"raw(([A-Za-z0-9_<>, :*&]+)\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*(const|override|final|noexcept)*\s*(\{|;))raw");
-    // Python: handle classes and methods
     static const std::regex pyDef(R"raw(^\s*(def|async def)\s+([A-Za-z0-9_]+)\s*\()raw");
     static const std::regex pyClass(R"raw(^\s*class\s+([A-Za-z0-9_]+)\s*[:\(])raw");
 
     while (std::getline(file, line)) {
+        lineNum++;
         // Simple comment skipping
         if (line.find("//") != std::string::npos && line.find("//") < 5) continue;
         if (line.find("#") != std::string::npos && line.find("#") < 5) continue;
 
         std::smatch match;
         if (std::regex_search(line, match, cppClass) || std::regex_search(line, match, pyClass)) {
-            result += "[Class/Struct] " + match[2].str() + "\n";
+            result += "- **[Class]** `" + match[2].str() + "` (Line " + std::to_string(lineNum) + ")\n";
         } else if (std::regex_search(line, match, cppFunc)) {
-            result += "  [C++ Function] " + match[2].str() + " (returns " + match[1].str() + ")\n";
+            result += "  - **[Method]** `" + match[2].str() + "` (Line " + std::to_string(lineNum) + ") -> Returns `" + match[1].str() + "`\n";
         } else if (std::regex_search(line, match, pyDef)) {
-            result += "  [Py Function] " + match[2].str() + "\n";
+            result += "  - **[Function]** `" + match[2].str() + "` (Line " + std::to_string(lineNum) + ")\n";
         }
     }
+    
+    result += "\n*Tip: Use 'read_file_lines' with these line numbers for precise reading.*";
     return {{"content", {{{"type", "text"}, {"text", result}}}}};
 }
 
@@ -1707,6 +2014,183 @@ void InternalMCPClient::backupFile(const std::string& relPathStr) {
 
 void InternalMCPClient::ensurePhotonDirs() {
     fs::create_directories(globalDataPath / "backups");
+}
+
+nlohmann::json InternalMCPClient::projectOverview(const nlohmann::json& args) {
+    std::string report = "# Project Overview: " + rootPath.filename().u8string() + "\n\n";
+    
+    // 1. Core Directory Structure (Limited Depth)
+    report += "## 📂 Key Directories\n";
+    try {
+        int count = 0;
+        for (const auto& entry : fs::directory_iterator(rootPath)) {
+            if (entry.is_directory() && !shouldIgnore(entry.path())) {
+                report += "- `" + entry.path().filename().u8string() + "/`\n";
+                if (++count > 15) break; 
+            }
+        }
+    } catch (...) {}
+
+    // 2. Discover Core Symbols (Summary)
+    report += "\n## 🧠 Core Components (Heuristic)\n";
+    // We look for files that likely contain core logic
+    std::vector<std::string> coreFiles;
+    try {
+        for (const auto& entry : fs::recursive_directory_iterator(rootPath)) {
+            if (entry.is_regular_file()) {
+                std::string name = entry.path().filename().u8string();
+                if (name == "main.cpp" || name == "App.js" || name == "index.ts" || 
+                    name.find("Manager") != std::string::npos || name.find("Client") != std::string::npos) {
+                    coreFiles.push_back(fs::relative(entry.path(), rootPath).u8string());
+                }
+            }
+            if (coreFiles.size() > 10) break;
+        }
+    } catch (...) {}
+
+    for (const auto& f : coreFiles) {
+        report += "- `" + f + "`\n";
+    }
+
+    report += "\n*Strategy: Start by using 'code_ast_analyze' on these core files instead of reading them all.*";
+    return {{"content", {{{"type", "text"}, {"text", report}}}}};
+}
+
+nlohmann::json InternalMCPClient::symbolSearch(const nlohmann::json& args) {
+    if (!symbolManager) return {{"error", "SymbolManager not initialized"}};
+    
+    std::string query = args["query"];
+    auto results = symbolManager->search(query);
+    
+    if (results.empty()) {
+        return {{"content", {{{"type", "text"}, {"text", "No symbols found matching: " + query}}}}};
+    }
+    
+    std::string report = "Found " + std::to_string(results.size()) + " matches:\n";
+    for (const auto& s : results) {
+        std::string source = s.source.empty() ? "unknown" : s.source;
+        report += "- [" + s.type + "|" + source + "] `" + s.name + "` in `" + s.path + "` (Line " + std::to_string(s.line) + ")\n";
+    }
+    return {{"content", {{{"type", "text"}, {"text", report}}}}};
+}
+
+nlohmann::json InternalMCPClient::lspDefinition(const nlohmann::json& args) {
+    auto extractIdentifierAt = [](const fs::path& path, int line, int character) -> std::string {
+        if (line <= 0 || character < 0) return "";
+        std::ifstream file(path);
+        if (!file.is_open()) return "";
+        std::string textLine;
+        int current = 0;
+        while (std::getline(file, textLine)) {
+            current++;
+            if (current == line) break;
+        }
+        if (current != line) return "";
+        if (textLine.empty()) return "";
+        int idx = std::min<int>(character, static_cast<int>(textLine.size()));
+        auto isIdent = [](char c) {
+            unsigned char uc = static_cast<unsigned char>(c);
+            return std::isalnum(uc) || c == '_';
+        };
+        int start = idx;
+        while (start > 0 && isIdent(textLine[start - 1])) {
+            start--;
+        }
+        int end = idx;
+        while (end < static_cast<int>(textLine.size()) && isIdent(textLine[end])) {
+            end++;
+        }
+        if (start >= end) return "";
+        return textLine.substr(start, end - start);
+    };
+    auto fallbackToSymbolIndex = [&](const std::string& reason,
+                                     const std::string& relPath,
+                                     int line,
+                                     int character) -> nlohmann::json {
+        if (!symbolManager) {
+            return {{"content", {{{"type", "text"}, {"text", reason + " Symbol index not initialized."}}}}};
+        }
+        fs::path fullPath = fs::absolute(rootPath / fs::u8path(relPath));
+        std::string ident = extractIdentifierAt(fullPath, line, character);
+        if (ident.empty()) {
+            return {{"content", {{{"type", "text"}, {"text", reason + " No identifier found at " + relPath + ":" + std::to_string(line)}}}}};
+        }
+        auto results = symbolManager->search(ident);
+        if (results.empty()) {
+            return {{"content", {{{"type", "text"}, {"text", reason + " No symbol matches for: " + ident}}}}};
+        }
+        auto toLower = [](const std::string& s) {
+            std::string out = s;
+            for (auto& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return out;
+        };
+        std::string identLower = toLower(ident);
+        std::vector<SymbolManager::Symbol> localExact;
+        std::vector<SymbolManager::Symbol> localLoose;
+        std::vector<SymbolManager::Symbol> globalExact;
+        std::vector<SymbolManager::Symbol> globalLoose;
+        for (const auto& s : results) {
+            bool isLocal = s.path == relPath;
+            bool exact = toLower(s.name) == identLower;
+            if (isLocal && exact) localExact.push_back(s);
+            else if (isLocal) localLoose.push_back(s);
+            else if (exact) globalExact.push_back(s);
+            else globalLoose.push_back(s);
+        }
+        std::vector<SymbolManager::Symbol> ordered;
+        ordered.reserve(results.size());
+        ordered.insert(ordered.end(), localExact.begin(), localExact.end());
+        ordered.insert(ordered.end(), localLoose.begin(), localLoose.end());
+        ordered.insert(ordered.end(), globalExact.begin(), globalExact.end());
+        ordered.insert(ordered.end(), globalLoose.begin(), globalLoose.end());
+
+        std::string report = reason + " Fallback to symbol index for `" + ident + "`.\n";
+        report += "Found " + std::to_string(ordered.size()) + " candidates:\n";
+        size_t limit = std::min<size_t>(ordered.size(), 20);
+        for (size_t i = 0; i < limit; ++i) {
+            const auto& s = ordered[i];
+            report += "- [" + s.type + "] `" + s.name + "` in `" + s.path + "` (Line " + std::to_string(s.line) + ")\n";
+        }
+        if (ordered.size() > limit) {
+            report += "... and " + std::to_string(ordered.size() - limit) + " more\n";
+        }
+        return {{"content", {{{"type", "text"}, {"text", report}}}}};
+    };
+    auto pickClient = [&](const std::string& relPath) -> LSPClient* {
+        if (!lspByExtension.empty()) {
+            std::string ext = fs::path(relPath).extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            auto it = lspByExtension.find(ext);
+            if (it != lspByExtension.end()) return it->second;
+        }
+        return lspClient;
+    };
+
+    std::string relPath = args["path"];
+    int line = args["line"];
+    int character = args["character"];
+    LSPClient* client = pickClient(relPath);
+    if (!client) {
+        return fallbackToSymbolIndex("LSP client not initialized.", relPath, line, character);
+    }
+
+    fs::path fullPath = fs::absolute(rootPath / fs::u8path(relPath));
+    std::string fileUri = "file://" + fullPath.u8string();
+
+    LSPClient::Position position{line - 1, character};
+    auto locations = client->goToDefinition(fileUri, position);
+
+    if (locations.empty()) {
+        return fallbackToSymbolIndex("No definition found by LSP.", relPath, line, character);
+    }
+
+    std::string report = "Found " + std::to_string(locations.size()) + " definitions:\n";
+    for (const auto& loc : locations) {
+        std::string locPath = loc.uri;
+        if (locPath.find("file://") == 0) locPath = locPath.substr(7);
+        report += "- File: `" + locPath + "`, Line: " + std::to_string(loc.range.start.line + 1) + "\n";
+    }
+    return {{"content", {{{"type", "text"}, {"text", report}}}}};
 }
 
 nlohmann::json InternalMCPClient::resolveRelativeDate(const nlohmann::json& args) {

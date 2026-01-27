@@ -19,6 +19,23 @@ struct Config {
         bool useBuiltinTools;
         std::string searchApiKey;
         std::vector<std::string> skillRoots; // Directories to search for skills
+        bool enableTreeSitter = false;
+        bool symbolFallbackOnEmpty = false;
+        std::string lspServerPath;
+        std::string lspRootUri;
+        struct LSPServer {
+            std::string name;
+            std::string command;
+            std::vector<std::string> extensions;
+        };
+        std::vector<LSPServer> lspServers;
+        struct TreeSitterLanguage {
+            std::string name;
+            std::vector<std::string> extensions;
+            std::string libraryPath;
+            std::string symbol;
+        };
+        std::vector<TreeSitterLanguage> treeSitterLanguages;
     } agent;
 
     struct MCPServerConfig {
@@ -55,8 +72,35 @@ struct Config {
         cfg.agent.fileExtensions = j.at("agent").at("file_extensions").get<std::vector<std::string>>();
         cfg.agent.useBuiltinTools = j.at("agent").value("use_builtin_tools", true);
         cfg.agent.searchApiKey = j.at("agent").value("search_api_key", "");
+        cfg.agent.enableTreeSitter = j.at("agent").value("enable_tree_sitter", false);
+        cfg.agent.symbolFallbackOnEmpty = j.at("agent").value("symbol_fallback_on_empty", false);
+        cfg.agent.lspServerPath = j.at("agent").value("lsp_server_path", "");
+        cfg.agent.lspRootUri = j.at("agent").value("lsp_root_uri", "");
+        if (j.at("agent").contains("lsp_servers")) {
+            for (const auto& item : j["agent"]["lsp_servers"]) {
+                Agent::LSPServer server;
+                server.name = item.value("name", "");
+                server.command = item.value("command", "");
+                server.extensions = item.value("extensions", std::vector<std::string>{});
+                if (!server.command.empty()) {
+                    cfg.agent.lspServers.push_back(std::move(server));
+                }
+            }
+        }
         if (j.at("agent").contains("skill_roots")) {
             cfg.agent.skillRoots = j.at("agent")["skill_roots"].get<std::vector<std::string>>();
+        }
+        if (j.at("agent").contains("tree_sitter_languages")) {
+            for (const auto& item : j["agent"]["tree_sitter_languages"]) {
+                Agent::TreeSitterLanguage lang;
+                lang.name = item.value("name", "");
+                lang.extensions = item.value("extensions", std::vector<std::string>{});
+                lang.libraryPath = item.value("library_path", "");
+                lang.symbol = item.value("symbol", "");
+                if (!lang.name.empty() && !lang.extensions.empty()) {
+                    cfg.agent.treeSitterLanguages.push_back(std::move(lang));
+                }
+            }
         }
         
         if (j.contains("mcp_servers")) {

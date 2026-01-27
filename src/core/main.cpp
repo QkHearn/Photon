@@ -5,6 +5,9 @@
 #include <iomanip>
 #include <regex>
 #include <sstream>
+#include <cstdlib>
+#include <cctype>
+#include <unordered_map>
 #ifdef _WIN32
     #include <winsock2.h>
 #endif
@@ -14,7 +17,15 @@
 #include "core/ConfigManager.h"
 #include "mcp/MCPClient.h"
 #include "mcp/MCPManager.h"
+#include "mcp/LSPClient.h"
 #include "utils/SkillManager.h"
+#include "utils/SymbolManager.h"
+#include "utils/RegexSymbolProvider.h"
+#include "utils/TreeSitterSymbolProvider.h"
+#ifdef PHOTON_ENABLE_TREESITTER
+#include "tree-sitter-cpp.h"
+#include "tree_sitter/tree-sitter-python.h"
+#endif
 #ifdef __APPLE__
     #include <mach-o/dyld.h>
 #endif
@@ -33,6 +44,82 @@ const std::string PURPLE = "\033[38;5;141m";
 const std::string ORANGE = "\033[38;5;208m";
 const std::string GRAY = "\033[38;5;242m";
 const std::string GOLD = "\033[38;5;220m";
+
+std::string findExecutableInPath(const std::vector<std::string>& names) {
+    const char* pathEnv = std::getenv("PATH");
+    if (!pathEnv) return "";
+    std::string paths = pathEnv;
+#ifdef _WIN32
+    const char sep = ';';
+#else
+    const char sep = ':';
+#endif
+    size_t start = 0;
+    while (start <= paths.size()) {
+        size_t end = paths.find(sep, start);
+        std::string dir = (end == std::string::npos) ? paths.substr(start) : paths.substr(start, end - start);
+        if (!dir.empty()) {
+            for (const auto& name : names) {
+                fs::path candidate = fs::path(dir) / name;
+                if (fs::exists(candidate) && fs::is_regular_file(candidate)) {
+                    return candidate.u8string();
+                }
+#ifdef _WIN32
+                fs::path exe = candidate;
+                exe += ".exe";
+                if (fs::exists(exe) && fs::is_regular_file(exe)) {
+                    return exe.u8string();
+                }
+#endif
+            }
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return "";
+}
+
+std::vector<std::string> guessExtensionsForCommand(const std::string& command) {
+    std::string lower = command;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower.find("clangd") != std::string::npos) {
+        return {".c", ".cpp", ".h", ".hpp"};
+    }
+    if (lower.find("pyright") != std::string::npos || lower.find("pylsp") != std::string::npos) {
+        return {".py"};
+    }
+    return {};
+}
+
+std::vector<Config::Agent::LSPServer> autoDetectLspServers() {
+    std::vector<Config::Agent::LSPServer> detected;
+    std::unordered_set<std::string> added;
+
+    auto addServer = [&](const std::string& name,
+                         const std::string& command,
+                         const std::vector<std::string>& extensions) {
+        if (command.empty() || extensions.empty()) return;
+        if (added.insert(command).second) {
+            Config::Agent::LSPServer server;
+            server.name = name;
+            server.command = command;
+            server.extensions = extensions;
+            detected.push_back(std::move(server));
+        }
+    };
+
+    if (!findExecutableInPath({"clangd"}).empty()) {
+        addServer("clangd", "clangd", {".c", ".cpp", ".h", ".hpp"});
+    }
+
+    if (!findExecutableInPath({"pyright-langserver"}).empty()) {
+        addServer("pyright", "pyright-langserver --stdio", {".py"});
+    } else if (!findExecutableInPath({"pylsp"}).empty()) {
+        addServer("pylsp", "pylsp", {".py"});
+    }
+
+    return detected;
+}
 
 std::string renderMarkdown(const std::string& input) {
     std::string output;
@@ -250,6 +337,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    if (cfg.agent.lspServerPath.empty()) {
+        cfg.agent.lspServerPath = findExecutableInPath({
+            "clangd", "clangd-18", "clangd-17", "clangd-16", "pyright-langserver"
+        });
+    }
+
     auto llmClient = std::make_shared<LLMClient>(cfg.llm.apiKey, cfg.llm.baseUrl, cfg.llm.model);
     ContextManager contextManager(llmClient, cfg.agent.contextThreshold);
 
@@ -323,9 +416,62 @@ int main(int argc, char* argv[]) {
 
     skillManager.syncAndLoad(cfg.agent.skillRoots, globalDataPath.u8string());
     
-    // Inject SkillManager into Builtin Tools
+    // Initialize Symbol Manager and start async scan
+    SymbolManager symbolManager(path);
+    symbolManager.setFallbackOnEmpty(cfg.agent.symbolFallbackOnEmpty);
+#ifdef PHOTON_ENABLE_TREESITTER
+    if (cfg.agent.enableTreeSitter) {
+        auto treeProvider = std::make_unique<TreeSitterSymbolProvider>();
+        treeProvider->registerLanguage("cpp", {".cpp", ".h", ".hpp"}, tree_sitter_cpp());
+        treeProvider->registerLanguage("python", {".py"}, tree_sitter_python());
+        for (const auto& lang : cfg.agent.treeSitterLanguages) {
+            treeProvider->registerLanguageFromLibrary(lang.name, lang.extensions, lang.libraryPath, lang.symbol);
+        }
+        symbolManager.registerProvider(std::move(treeProvider));
+    }
+#endif
+    symbolManager.registerProvider(std::make_unique<RegexSymbolProvider>());
+    symbolManager.startAsyncScan();
+
+    // Initialize LSP clients if configured
+    std::vector<std::unique_ptr<LSPClient>> lspClients;
+    std::unordered_map<std::string, LSPClient*> lspByExt;
+    LSPClient* lspFallback = nullptr;
+    auto rootUri = cfg.agent.lspRootUri;
+    if (rootUri.empty()) {
+        rootUri = "file://" + fs::absolute(fs::u8path(path)).u8string();
+    }
+
+    if (cfg.agent.lspServers.empty() && !cfg.agent.lspServerPath.empty()) {
+        Config::Agent::LSPServer server;
+        server.name = "default";
+        server.command = cfg.agent.lspServerPath;
+        server.extensions = guessExtensionsForCommand(server.command);
+        cfg.agent.lspServers.push_back(std::move(server));
+    }
+    if (cfg.agent.lspServers.empty()) {
+        cfg.agent.lspServers = autoDetectLspServers();
+    }
+
+    for (const auto& server : cfg.agent.lspServers) {
+        if (server.command.empty()) continue;
+        auto client = std::make_unique<LSPClient>(server.command, rootUri);
+        if (!client->initialize()) continue;
+        if (!lspFallback) lspFallback = client.get();
+        for (auto ext : server.extensions) {
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            lspByExt[ext] = client.get();
+        }
+        lspClients.push_back(std::move(client));
+    }
+
+    // Inject SkillManager and SymbolManager into Builtin Tools
     if (auto* builtin = dynamic_cast<InternalMCPClient*>(mcpManager.getClient("builtin"))) {
         builtin->setSkillManager(&skillManager);
+        builtin->setSymbolManager(&symbolManager);
+        if (!lspClients.empty()) {
+            builtin->setLSPClients(lspByExt, lspFallback);
+        }
     }
 
     std::cout << GREEN << "  ✔ Engine active. " 
@@ -372,8 +518,11 @@ int main(int argc, char* argv[]) {
                                skillManager.getSystemPromptAddition() + "\n" +
                                "Current working directory for your tools: " + path + "\n" +
                                "Current system time: " + date_ss.str() + "\n" +
-                               "Utilize your MCP tools (especially resolve_relative_date) to perceive the codebase, analyze structures, and execute changes as needed. " +
-                               "Always use relative paths from the current working directory.";
+                               "CRITICAL GUIDELINES:\n" +
+                               "1. PROJECT MAPPING: Start by calling 'project_overview' to understand the architecture. This minimizes redundant file searches.\n" +
+                               "2. TOKEN EFFICIENCY: Reading full content of large files is expensive. Use 'code_ast_analyze' to see file structure with line numbers first, and 'read_file_lines' for specific content.\n" +
+                               "3. BACKGROUND SERVICES: Never use 'python_sandbox' for long-running servers. Use 'bash_execute' with 'nohup ... &' and manage them via 'tasks'.\n" +
+                               "4. RELATIVE PATHS: Always use relative paths from the current working directory.";
     
     nlohmann::json messages = nlohmann::json::array();
     messages.push_back({{"role", "system"}, {"content", systemPrompt}});

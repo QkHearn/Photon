@@ -10,18 +10,21 @@
 
 #include <functional>
 #include <map>
+#include <unordered_map>
 #include <vector>
 #include <atomic>
 #include <thread>
 #include <csignal> // For kill
 #include "utils/SkillManager.h"
+#include "utils/SymbolManager.h"
+#include "mcp/LSPClient.h"
 
 namespace fs = std::filesystem;
 
 class InternalMCPClient : public IMCPClient {
 public:
     InternalMCPClient(const std::string& rootPath);
-    ~InternalMCPClient(); // Add destructor for cleanup
+    ~InternalMCPClient(); 
     
     void setSearchApiKey(const std::string& key) {
         this->searchApiKey = key;
@@ -29,6 +32,16 @@ public:
     
     void setSkillManager(SkillManager* mgr) {
         this->skillManager = mgr;
+    }
+
+    void setSymbolManager(SymbolManager* mgr) {
+        this->symbolManager = mgr;
+    }
+
+    void setLSPClient(LSPClient* client) { this->lspClient = client; }
+    void setLSPClients(const std::unordered_map<std::string, LSPClient*>& byExt, LSPClient* fallback) {
+        lspByExtension = byExt;
+        lspClient = fallback;
     }
 
     nlohmann::json listTools() override;
@@ -43,17 +56,23 @@ private:
     bool isGitRepo = false;
     std::string searchApiKey;
     SkillManager* skillManager = nullptr;
+    SymbolManager* symbolManager = nullptr;
+    LSPClient* lspClient = nullptr;
+    std::unordered_map<std::string, LSPClient*> lspByExtension;
 
     using ToolHandler = std::function<nlohmann::json(const nlohmann::json&)>;
     std::map<std::string, ToolHandler> toolHandlers;
 
     void registerTools();
     void syncKnowledgeIndex();
+    nlohmann::json getProjectSummary(); // New: Get high-level overview
     bool checkGitRepo();
     bool isBinary(const fs::path& path);
 
     nlohmann::json fileSearch(const nlohmann::json& args);
     nlohmann::json fileRead(const nlohmann::json& args);
+    nlohmann::json contextRead(const nlohmann::json& args);
+    nlohmann::json diagnosticsCheck(const nlohmann::json& args);
     nlohmann::json fileWrite(const nlohmann::json& args);
     nlohmann::json pythonSandbox(const nlohmann::json& args);
     nlohmann::json pipInstall(const nlohmann::json& args);
@@ -73,6 +92,9 @@ private:
     nlohmann::json memoryStore(const nlohmann::json& args);
     nlohmann::json memoryList(const nlohmann::json& args);
     nlohmann::json memoryRetrieve(const nlohmann::json& args);
+    nlohmann::json projectOverview(const nlohmann::json& args);
+    nlohmann::json symbolSearch(const nlohmann::json& args);
+    nlohmann::json lspDefinition(const nlohmann::json& args);
     nlohmann::json resolveRelativeDate(const nlohmann::json& args);
     nlohmann::json skillRead(const nlohmann::json& args);
     nlohmann::json osScheduler(const nlohmann::json& args);
@@ -102,4 +124,5 @@ private:
     bool commandExists(const std::string& cmd);
     void saveTasksToDisk();
     void loadTasksFromDisk();
+    std::string autoDetectBuildCommand();
 };

@@ -37,9 +37,13 @@ find_package(nlohmann_json REQUIRED)
 add_executable(photon 
     src/core/main.cpp 
     src/utils/FileManager.cpp 
+    src/utils/SymbolManager.cpp
+    src/utils/RegexSymbolProvider.cpp
+    src/utils/TreeSitterSymbolProvider.cpp
     src/core/LLMClient.cpp 
     src/core/ContextManager.cpp
     src/mcp/MCPClient.cpp
+    src/mcp/LSPClient.cpp
     src/mcp/InternalMCPClient.cpp
 )
 
@@ -54,9 +58,13 @@ enable_testing()
 # Create a library for shared logic to be tested
 add_library(agent_lib 
     src/utils/FileManager.cpp 
+    src/utils/SymbolManager.cpp
+    src/utils/RegexSymbolProvider.cpp
+    src/utils/TreeSitterSymbolProvider.cpp
     src/core/LLMClient.cpp 
     src/core/ContextManager.cpp
     src/mcp/MCPClient.cpp
+    src/mcp/LSPClient.cpp
     src/mcp/InternalMCPClient.cpp
 )
 target_include_directories(agent_lib PUBLIC src)
@@ -91,3 +99,30 @@ endif()
 # Link pthread if needed
 find_package(Threads REQUIRED)
 target_link_libraries(photon PRIVATE Threads::Threads)
+
+# --- Optional Tree-sitter ---
+option(PHOTON_ENABLE_TREESITTER "Enable Tree-sitter parser support" OFF)
+if(PHOTON_ENABLE_TREESITTER)
+    add_subdirectory(third_party/tree-sitter)
+
+    add_library(tree-sitter-cpp STATIC
+        third_party/tree-sitter-cpp/src/parser.c
+        third_party/tree-sitter-cpp/src/scanner.c
+    )
+    target_include_directories(tree-sitter-cpp PRIVATE third_party/tree-sitter/lib/include)
+    target_include_directories(tree-sitter-cpp PUBLIC third_party/tree-sitter-cpp/bindings/c)
+    target_link_libraries(tree-sitter-cpp PRIVATE tree-sitter)
+
+    add_library(tree-sitter-python STATIC
+        third_party/tree-sitter-python/src/parser.c
+        third_party/tree-sitter-python/src/scanner.c
+    )
+    target_include_directories(tree-sitter-python PRIVATE third_party/tree-sitter/lib/include)
+    target_include_directories(tree-sitter-python PUBLIC third_party/tree-sitter-python/bindings/c)
+    target_link_libraries(tree-sitter-python PRIVATE tree-sitter)
+
+    target_link_libraries(photon PRIVATE tree-sitter tree-sitter-cpp tree-sitter-python)
+    target_link_libraries(agent_lib PRIVATE tree-sitter tree-sitter-cpp tree-sitter-python)
+    target_compile_definitions(photon PRIVATE PHOTON_ENABLE_TREESITTER)
+    target_compile_definitions(agent_lib PRIVATE PHOTON_ENABLE_TREESITTER)
+endif()

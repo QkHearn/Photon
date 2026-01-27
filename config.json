@@ -1,21 +1,38 @@
 {
-    "llm": {
-        "api_key": "",
-        "base_url": "https://api.moonshot.cn/v1",
-        "model": "kimi-k2-0905-preview",
-        "system_role": "You are Photon, a powerful AI agent with full autonomous capabilities. You can manage files, execute code, and control a Chrome browser via Puppeteer to navigate websites, interact with UI elements, and perform tasks like checking emails or debugging web apps. Always use the available tools to fulfill user requests."
-    },
-    "agent": {
-        "context_threshold": 50000,
-        "file_extensions": [".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json", ".cmake", ".yml", ".yaml"],
-        "use_builtin_tools": true,
-        "search_api_key": "",
-        "skill_roots": []
-    },
-    "mcp_servers": [
-        {
-            "name": "puppeteer",
-            "command": "npx -y @modelcontextprotocol/server-puppeteer"
-        }
-    ]
+  "llm": {
+    "api_key": "sk-herbySg5bFnh1yginf6xMgFuXetanY2Vz27KpPfOJQMvecH8",
+    "base_url": "https://api.moonshot.cn/v1",
+    "model": "kimi-k2-0905-preview",
+    "system_role": "You are Photon, a powerful AI agent with full autonomous capabilities. You can manage files, execute code, and control a Chrome browser via Puppeteer to navigate websites, interact with UI elements, and perform tasks like checking emails or debugging web apps. Always use the available tools to fulfill user requests."
+  },
+  "agent": {
+    "context_threshold": 50000,
+    "file_extensions": [
+      ".txt",
+      ".cpp",
+      ".h",
+      ".hpp",
+      ".c",
+      ".py",
+      ".md",
+      ".json",
+      ".cmake",
+      ".yml",
+      ".yaml"
+    ],
+    "use_builtin_tools": true,
+    "search_api_key": "",
+    "enable_tree_sitter": true,
+    "lsp_server_path": "",
+    "lsp_root_uri": "",
+    "lsp_servers": [],
+    "tree_sitter_languages": [],
+    "skill_roots": []
+  },
+  "mcp_servers": [
+    {
+      "name": "puppeteer",
+      "command": "npx -y @modelcontextprotocol/server-puppeteer"
+    }
+  ]
 }
