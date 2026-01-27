@@ -1,6 +1,6 @@
 {
   "llm": {
-    "api_key": "sk-herbySg5bFnh1yginf6xMgFuXetanY2Vz27KpPfOJQMvecH8",
+    "api_key": "",
     "base_url": "https://api.moonshot.cn/v1",
     "model": "kimi-k2-0905-preview",
     "system_role": "You are Photon, a powerful AI agent with full autonomous capabilities. You can manage files, execute code, and control a Chrome browser via Puppeteer to navigate websites, interact with UI elements, and perform tasks like checking emails or debugging web apps. Always use the available tools to fulfill user requests."
