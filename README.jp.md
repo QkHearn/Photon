@@ -20,6 +20,12 @@
 
 ---
 
+<p align="center">
+  <img src="./demo.png" width="800" alt="Photon Demo">
+</p>
+
+---
+
 ## 💎 なぜ Photon なのか？ [Why Photon?]
 
 ### ⚡ 究極のネイティブ性能 (Native Velocity)

@@ -20,6 +20,12 @@
 
 ---
 
+<p align="center">
+  <img src="./demo.png" width="600" alt="Photon Demo">
+</p>
+
+---
+
 ## 💎 Why Photon?
 
 ### ⚡ Native Velocity

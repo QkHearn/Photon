@@ -20,6 +20,12 @@
 
 ---
 
+<p align="center">
+  <img src="./demo.png" width="800" alt="Photon Demo">
+</p>
+
+---
+
 ## 💎 为什么选择 Photon? [Why Photon?]
 
 ### ⚡ 极致原生 (Native Velocity)
