@@ -130,9 +130,11 @@ bool MCPClient::initialize() {
     };
     std::string reqStr = notification.dump() + "\n";
 #ifdef _WIN32
-    _write(writePipe[1], reqStr.c_str(), static_cast<unsigned int>(reqStr.length()));
+    auto ignored = _write(writePipe[1], reqStr.c_str(), static_cast<unsigned int>(reqStr.length()));
+    (void)ignored;
 #else
-    write(writePipe[1], reqStr.c_str(), reqStr.length());
+    auto ignored = write(writePipe[1], reqStr.c_str(), reqStr.length());
+    (void)ignored;
 #endif
 
     return !res.is_null() && res.contains("result");

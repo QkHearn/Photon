@@ -173,7 +173,8 @@ void InternalMCPClient::killTaskProcess(int pid) {
     // and suppress stderr to keep the console clean.
     std::string cmd = "kill -9 " + std::to_string(pid) + " >/dev/null 2>&1"; 
 #endif
-    std::system(cmd.c_str());
+    auto ignored = std::system(cmd.c_str());
+    (void)ignored;
 }
 
 bool InternalMCPClient::checkGitRepo() {
