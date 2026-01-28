@@ -21,31 +21,37 @@
 ---
 
 <p align="center">
-  <img src="./demo.png" width="800" alt="Photon Demo">
+  <img src="./demo.png" width="600" alt="Photon Demo">
 </p>
 
 ---
 
-## 💎 为什么选择 Photon? [Why Photon?]
+## 💎 Why Photon?
 
-### ⚡ 极致原生 (Native Velocity)
-*   **硬核性能**：基于 C++17 纯血构建，工具链调用实现**微秒级响应**。
-*   **极低损耗**：核心运行内存仅 **10MB~30MB**，启动速度比解释型语言快 10 倍以上。
-*   **零依赖分发**：单文件二进制产物，无 Python/Node.js 运行时依赖，真正做到全平台“开箱即用”。
+While generic AI agents rely on "fuzzy" text searching, Photon is built for **engineering precision**.
 
-### 🔌 极简集成 (Minimalist Integration)
-*   **Drop-in & Run**：无需安装复杂的依赖包，下载二进制文件即可在任何终端启动。
-*   **IDE 隐形驱动**：设计哲学为“隐形基础设施”，无缝作为 Cursor、VS Code 等 IDE 的底层推理与执行引擎。
-*   **CLI 优先**：强大的命令行接口，让自动化脚本与 CI/CD 流水线也能拥有“大脑”。
+### 🚀 Hardcore Native Performance
+*   **Zero Latency**: Built with C++17. Toolchain calls and project indexing happen in microseconds, not seconds.
+*   **Minimal Footprint**: Runs on just 10MB-30MB of RAM. No heavy Node.js or Python runtimes required.
+*   **Single Binary**: A portable, self-contained engine that works everywhere—from your local terminal to remote CI/CD pipelines.
 
-### 🧠 深度工程感知 (Engineering Perception)
-*   **结构化认知**：内置 AST 语法树分析，超越简单的文本匹配，实现对复杂代码逻辑的深度理解。
-*   **原子级干预**：每一次代码修改都经过确定性校验，支持一键回滚 (`undo`)，确保工程状态绝对安全。
-*   **专家思维注入**：通过模块化 Skills 系统，将资深工程师的架构经验固化为 AI 的原生本能。
+### 🎯 Surgical Precision (AST + LSP)
+*   **Beyond Grep**: Unlike tools that just "guess" based on text, Photon uses **Tree-sitter** for real-time AST parsing. It understands the exact scope of your functions and classes (down to the exact line range).
+*   **Compiler-Grade Intelligence**: Deep **LSP** integration provides 100% accurate "Go to Definition" and type-aware analysis.
+*   **Line-Level Control**: Modify code with surgical accuracy using `file_edit_lines`, featuring real-time **Git Diff previews** before any changes are committed.
+
+### 🧠 Intelligent Context Management
+*   **Token-Surgical Reads**: Never waste tokens on 10,000-line files. Photon generates **Structural Summaries** and uses **Windowed Context Reads** to give the AI only what it needs.
+*   **Neural Persistence**: A polymorphic memory system that aligns with your project's specific coding standards and historical context.
+
+### 🛡️ Safety-First Agentic Loop
+*   **Autonomous Reasoning**: A multi-step **Agentic Loop** that plans, acts, verifies, and reflects.
+*   **Human-in-the-Loop**: High-risk actions (like shell execution or bulk edits) require explicit confirmation, keeping you in total control.
+*   **Deterministic Undo**: Every modification is backed up. If the AI makes a mistake, one command brings you back to a safe state.
 
 ---
 
-## 🏗️ 系统架构 [Architecture]
+## 🏗️ Architecture
 
 ```text
                      ┌──────────────────────────────────────────┐
@@ -79,64 +85,42 @@
 
 ---
 
-## 🧠 核心概念科普 [Core Concepts]
+## 🧠 Core Concepts
 
-### 🛠️ Tools：智能体的“数字触手” (Actuation Layer)
-> **深度视角**：在 AI 领域，感知与执行是智能体与物理世界交互的唯一途径。没有 Tools 的 AI 只是一个聊天框，而拥有 Tools 的 Photon 是一个能干活的工程师。
+### 🛠️ Tools: The "Digital Tentacles" (Actuation Layer)
+> **Deep Perspective**: In the AI domain, perception and actuation are the only ways for an agent to interact with the physical world. Without Tools, AI is just a chat box; with Photon's Tools, it's a functional engineer.
 
-*   **全息感知**：内置高性能并行检索与 AST 语法树分析，让 AI 不费 Token 即可瞬间拆解大规模项目的骨架。
-*   **原子级干预**：通过确定性的代码注入（Diff Apply）与隔离的沙盒环境，确保每一次执行都精准且安全。
+*   **Holographic Perception**: Built-in high-performance parallel retrieval and AST analysis allow the AI to deconstruct large-scale project structures without wasting tokens.
+*   **Atomic Intervention**: Ensures every execution is precise and safe through deterministic code injection (Diff Apply) and isolated sandboxes.
+*   **Infinite Expansion**: Based on the **MCP (Model Context Protocol)**, supporting thousands of tool servers from the global developer community.
 
-### 📜 Skills：数字生命的“专家本能” (Expert Paradigms)
-> **深度视角**：通用的 LLM 往往缺乏特定领域的工程深度。Skills 系统通过将“经验”转化为“本能”，弥补了这一鸿沟。
+### 📜 Skills: The "Expert Instincts" (Expert Paradigms)
+> **Deep Perspective**: General LLMs often lack engineering depth in specific domains. The Skills system bridges this gap by turning "experience" into "instinct."
 
-*   **思维固化**：通过模块化的 `SKILL.md` 文件，将资深架构师的思维路径直接注入 AI 的决策层。
-*   **主动进化**：AI 在执行任务前会主动检索并阅读相关 Skill 手册，确保其输出符合工业标准的工程实践。
+*   **Logic Codification**: Modular `SKILL.md` files inject senior architects' thought processes (e.g., performance tuning, high-concurrency design) directly into the AI's decision layer.
+*   **Proactive Evolution**: The AI proactively retrieves and reads relevant Skill guides before execution, ensuring outputs are industrial-grade engineering practices rather than simple probability predictions.
 
-### 💾 Memory：跨越时空的“自我连续性” (Neural Persistence)
-> **深度视角**：没有记忆的 AI 只是单次调用的函数，拥有记忆的 AI 才是进化的生命。
+### 💾 Memory: "Neural Persistence" (Self-Continuity)
+> **Deep Perspective**: AI without memory is just a single function call; AI with memory is an evolving life.
 
-*   **多态记忆系统**：结合了 JSON 碎片化事实与 Markdown 结构化知识。
-*   **习惯对齐**：Photon 会持续记录你的项目规范、历史 Bug 教训以及特定的编码偏好。
+*   **Polymorphic Memory**: Combines JSON fragmented facts (for fast retrieval) with Markdown structured knowledge (for deep understanding).
+*   **Habit Alignment**: Photon continuously records your project standards, historical bug lessons, and specific coding preferences. Over time, it moves from "collaboration" to "synchronization."
 
-### 📑 Context：思维的“高维工作台” (Cognitive Workspace)
-> **深度视角**：LLM 的上下文窗口是昂贵且有限的。Context Manager 是 Photon 的“大脑管家”。
+### 📑 Context: The "Cognitive Workspace" (High-Dimensional Thinking)
+> **Deep Perspective**: LLM context windows are expensive and limited. The Context Manager is Photon's "Brain Butler."
 
-*   **智能剪裁与压缩**：当对话信息爆炸时，内置的 Context Manager 会自动识别关键决策点，利用 LLM 进行递归摘要压缩。
-*   **无损思考**：在保持核心逻辑和历史决策不丢失的前提下，极大延长了 AI 的有效思考长度。
-
----
-
-## 🛡️ 安全与合规 [Safety & Guardrails]
-
-> **"Power is nothing without control."** Photon 内核在设计之初就将工程安全置于首位。
-
-*   **确定性沙盒 (Sandboxing)**：所有外部脚本执行（如 Python/Bash）均在受限的子进程环境下运行，防止恶意代码对宿主系统造成不可逆破坏。
-*   **操作审计 (Audit Log)**：内核实时记录每一次文件修改、工具调用和系统干预，支持一键回滚 (`undo`)，确保工程状态的可溯源性。
-*   **敏感指令拦截**：内置 Photon Guard 规则引擎，自动识别并拦截高危系统指令，在执行前强制要求人工确认。
+*   **Smart Pruning & Compression**: When dialogue explodes, the built-in Context Manager identifies key decision points and uses the LLM for recursive summary compression.
+*   **Lossless Reasoning**: Maintains core logic and historical decisions while significantly extending the AI's effective thinking length, enabling it to handle massive tasks involving tens of thousands of lines of code.
 
 ---
 
-## 🌐 生态兼容 [Ecosystem & MCP]
+## 🚀 Quick Start
 
-> **"Infinite expansion through standard protocols."** Photon 深度集成 MCP 协议，连接全球 AI 工具生态。
+### 1. Download
+Download the binary for your OS from the [Releases](https://github.com/QkHearn/Photon/releases) page.
 
-*   **原生 MCP 支持**：无缝接入 [Model Context Protocol](https://modelcontextprotocol.io/)，支持与 Node.js、Python 等编写的外部 MCP Server 通信。
-*   **已验证工具链**：
-    *   **感知类**：Google Search, Brave Search, GitHub API
-    *   **执行类**：Puppeteer (浏览器控制), Postgres/MySQL (数据库交互), Docker Manager
-    *   **协作类**：Slack, Discord, Linear, Jira
-*   **自定义扩展**：开发者可以通过简单的 JSON 配置，将任何私有 API 或本地脚本封装为 Photon 的原生工具。
-
----
-
-## 🚀 快速开始 [Quick Start]
-
-### 1. 获取内核
-从 [Releases](https://github.com/QkHearn/Photon/releases) 页面下载适用于您操作系统的二进制文件。
-
-### 2. 初始化配置
-在程序同级目录下创建或编辑 `config.json`，填入您的 API 凭据：
+### 2. Configuration
+Create or edit `config.json` in the same directory as the program:
 
 ```json
 {
@@ -148,14 +132,14 @@
 }
 ```
 
-### 3. 启航
-在终端中直接运行，并指向您的项目目录：
+### 3. Launch
+Run directly in your terminal, pointing to your project directory:
 
 ```bash
-# 赋予执行权限 (Linux/macOS)
+# Grant execution permission (Linux/macOS)
 chmod +x photon
 
-# 启动分析
+# Start analysis
 ./photon /path/to/your/project
 ```
 
