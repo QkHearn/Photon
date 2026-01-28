@@ -516,8 +516,13 @@ int main(int argc, char* argv[]) {
 
     for (const auto& server : cfg.agent.lspServers) {
         if (server.command.empty()) continue;
+        std::cout << GRAY << "  [LSP] Loading " << BOLD << server.name << RESET << " (" << server.command << ")..." << "\r" << std::flush;
         auto client = std::make_unique<LSPClient>(server.command, rootUri);
-        if (!client->initialize()) continue;
+        if (!client->initialize()) {
+            std::cout << RED << "  ✖ LSP " << BOLD << server.name << RESET << RED << " failed to initialize." << RESET << std::endl;
+            continue;
+        }
+        std::cout << GREEN << "  ✔ LSP " << BOLD << server.name << RESET << GREEN << " loaded successfully.   " << RESET << std::endl;
         if (!lspFallback) lspFallback = client.get();
         for (auto ext : server.extensions) {
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
