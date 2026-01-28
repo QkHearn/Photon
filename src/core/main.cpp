@@ -432,6 +432,7 @@ int main(int argc, char* argv[]) {
 #endif
     symbolManager.registerProvider(std::make_unique<RegexSymbolProvider>());
     symbolManager.startAsyncScan();
+    symbolManager.startWatching(5); // Start real-time file watching (check every 5 seconds)
 
     // Initialize LSP clients if configured
     std::vector<std::unique_ptr<LSPClient>> lspClients;

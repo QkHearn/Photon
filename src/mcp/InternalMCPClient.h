@@ -88,6 +88,7 @@ private:
     nlohmann::json readFileLines(const nlohmann::json& args);
     nlohmann::json listDirTree(const nlohmann::json& args);
     nlohmann::json diffApply(const nlohmann::json& args);
+    nlohmann::json fileEditLines(const nlohmann::json& args);
     nlohmann::json fileUndo(const nlohmann::json& args);
     nlohmann::json memoryStore(const nlohmann::json& args);
     nlohmann::json memoryList(const nlohmann::json& args);

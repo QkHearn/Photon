@@ -137,6 +137,7 @@ void InternalMCPClient::registerTools() {
     toolHandlers["read_file_lines"] = [this](const nlohmann::json& a) { return readFileLines(a); };
     toolHandlers["list_dir_tree"] = [this](const nlohmann::json& a) { return listDirTree(a); };
     toolHandlers["diff_apply"] = [this](const nlohmann::json& a) { return diffApply(a); };
+    toolHandlers["file_edit_lines"] = [this](const nlohmann::json& a) { return fileEditLines(a); };
     toolHandlers["file_undo"] = [this](const nlohmann::json& a) { return fileUndo(a); };
     toolHandlers["memory_store"] = [this](const nlohmann::json& a) { return memoryStore(a); };
     toolHandlers["memory_list"] = [this](const nlohmann::json& a) { return memoryList(a); };
@@ -698,13 +699,13 @@ nlohmann::json InternalMCPClient::listTools() {
     // Read File Lines Tool
     tools.push_back({
         {"name", "read_file_lines"},
-        {"description", "Read specific lines from a file."},
+        {"description", "Read specific lines from a file with precise line numbers. Use this when you know exact line numbers (e.g., from symbol_search or lsp_definition)."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
                 {"path", {{"type", "string"}, {"description", "The relative path to the file"}}},
-                {"start_line", {{"type", "integer"}, {"description", "The starting line number (1-based)"}}},
-                {"end_line", {{"type", "integer"}, {"description", "The ending line number (inclusive)"}}}
+                {"start_line", {{"type", "integer"}, {"description", "The starting line number (1-based, inclusive)"}}},
+                {"end_line", {{"type", "integer"}, {"description", "The ending line number (1-based, inclusive)"}}}
             }},
             {"required", {"path", "start_line", "end_line"}}
         }}
@@ -736,6 +737,23 @@ nlohmann::json InternalMCPClient::listTools() {
                 {"replace", {{"type", "string"}, {"description", "The text to replace it with"}}}
             }},
             {"required", {"path", "search", "replace"}}
+        }}
+    });
+
+    // File Edit Lines Tool (Precise line-based editing)
+    tools.push_back({
+        {"name", "file_edit_lines"},
+        {"description", "Precisely edit a file by line numbers. Supports insert, replace, and delete operations at specific line ranges. Use this when you know exact line numbers (e.g., from symbol_search, lsp_definition, or read_file_lines)."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"path", {{"type", "string"}, {"description", "The relative path to the file"}}},
+                {"operation", {{"type", "string"}, {"description", "Operation type: 'insert', 'replace', or 'delete'"}, {"enum", {"insert", "replace", "delete"}}}},
+                {"start_line", {{"type", "integer"}, {"description", "Starting line number (1-based, inclusive). For insert, this is where to insert before. For replace/delete, this is the first line to modify."}}},
+                {"end_line", {{"type", "integer"}, {"description", "Ending line number (1-based, inclusive). Required for replace/delete. For insert, this is ignored."}}},
+                {"content", {{"type", "string"}, {"description", "Content to insert or replace with. Required for insert/replace, ignored for delete. Can be multi-line."}}}
+            }},
+            {"required", {"path", "operation", "start_line"}}
         }}
     });
 
@@ -1190,12 +1208,18 @@ nlohmann::json InternalMCPClient::contextRead(const nlohmann::json& args) {
         if (count >= maxMatches) break;
         fs::path fullPath = rootPath / fs::u8path(s.path);
         if (!fs::exists(fullPath)) continue;
+        int startLine = std::max(1, s.line - contextLines);
+        int endLine = s.line + contextLines;
         std::string window = readWindow(fullPath, s.line, contextLines);
         if (window.empty()) continue;
         std::string source = s.source.empty() ? "unknown" : s.source;
-        report += "Match [" + s.type + "|" + source + "] `" + s.name + "` in `" +
-                  s.path + "` (Line " + std::to_string(s.line) + ")\n";
-        report += window + "\n";
+        report += "📍 Match [" + s.type + "|" + source + "] `" + s.name + "` in `" +
+                  s.path + "`\n";
+        report += "   └─ Exact Location: Line " + std::to_string(s.line) + 
+                  " | Context Range: Lines " + std::to_string(startLine) + "-" + std::to_string(endLine) + "\n";
+        report += "   └─ To read exact range: read_file_lines(path=\"" + s.path + 
+                  "\", start_line=" + std::to_string(startLine) + ", end_line=" + std::to_string(endLine) + ")\n";
+        report += "\n" + window + "\n";
         count++;
     }
     if (report.empty()) {
@@ -1778,19 +1802,53 @@ nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
     int end = args["end_line"];
     fs::path fullPath = rootPath / fs::u8path(relPathStr);
 
-    if (!fs::exists(fullPath)) return {{"content", {{{"type", "text"}, {"text", "Error: File not found"}}}}};
+    if (!fs::exists(fullPath)) {
+        return {{"content", {{{"type", "text"}, {"text", "Error: File not found: " + relPathStr}}}}};
+    }
+
+    if (start < 1) start = 1;
+    if (end < start) end = start;
 
     std::ifstream file(fullPath);
+    if (!file.is_open()) {
+        return {{"content", {{{"type", "text"}, {"text", "Error: Could not open file: " + relPathStr}}}}};
+    }
+
     std::string line;
     std::string content;
+    content += "📄 File: `" + relPathStr + "` | Lines " + std::to_string(start) + "-" + std::to_string(end) + "\n";
+    content += std::string(60, '─') + "\n";
+    
     int current = 1;
+    int totalLines = 0;
+    int fileTotalLines = 0;
     while (std::getline(file, line)) {
+        fileTotalLines++;
         if (current >= start && current <= end) {
-            content += std::to_string(current) + "|" + line + "\n";
+            content += std::to_string(current) + " | " + line + "\n";
+            totalLines++;
         }
         if (current > end) break;
         current++;
     }
+    
+    if (totalLines == 0) {
+        content += "⚠️  No lines in range. ";
+        if (fileTotalLines > 0) {
+            content += "File has " + std::to_string(fileTotalLines) + " total line(s).\n";
+            content += "💡 Tip: Use start_line=1, end_line=" + std::to_string(fileTotalLines) + " to read the entire file.\n";
+        } else {
+            content += "File is empty or could not be read.\n";
+        }
+    } else {
+        content += std::string(60, '─') + "\n";
+        content += "✅ Read " + std::to_string(totalLines) + " line(s)";
+        if (fileTotalLines > totalLines) {
+            content += " (out of " + std::to_string(fileTotalLines) + " total)";
+        }
+        content += "\n";
+    }
+    
     return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(content, 8000)}}}}};
 }
 
@@ -1863,6 +1921,130 @@ nlohmann::json InternalMCPClient::diffApply(const nlohmann::json& args) {
     outFile.close();
 
     return {{"content", {{{"type", "text"}, {"text", "Successfully applied change to " + relPathStr}}}}};
+}
+
+nlohmann::json InternalMCPClient::fileEditLines(const nlohmann::json& args) {
+    std::string relPathStr = args["path"];
+    std::string operation = args["operation"];
+    int startLine = args["start_line"];
+    int endLine = args.value("end_line", -1);
+    std::string content = args.value("content", "");
+    
+    fs::path fullPath = rootPath / fs::u8path(relPathStr);
+    
+    if (!fs::exists(fullPath)) {
+        return {{"error", "File not found: " + relPathStr}};
+    }
+    
+    if (startLine < 1) {
+        return {{"error", "start_line must be >= 1 (1-based)"}};
+    }
+    
+    // Backup before modifying
+    backupFile(relPathStr);
+    
+    // Read all lines into vector
+    std::ifstream inFile(fullPath);
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(inFile, line)) {
+        lines.push_back(line);
+    }
+    inFile.close();
+    
+    int totalLines = static_cast<int>(lines.size());
+    std::string result;
+    
+    if (operation == "insert") {
+        if (content.empty()) {
+            return {{"error", "content is required for insert operation"}};
+        }
+        if (startLine > totalLines + 1) {
+            return {{"error", "start_line (" + std::to_string(startLine) + ") exceeds file length (" + std::to_string(totalLines) + ") + 1"}};
+        }
+        
+        // Split content into lines
+        std::vector<std::string> newLines;
+        std::istringstream contentStream(content);
+        std::string newLine;
+        while (std::getline(contentStream, newLine)) {
+            newLines.push_back(newLine);
+        }
+        
+        // Insert before startLine (0-based index is startLine - 1)
+        lines.insert(lines.begin() + (startLine - 1), newLines.begin(), newLines.end());
+        
+        result = "✅ Inserted " + std::to_string(newLines.size()) + " line(s) before line " + std::to_string(startLine);
+        if (totalLines > 0) {
+            result += " (file now has " + std::to_string(static_cast<int>(lines.size())) + " lines)";
+        }
+        
+    } else if (operation == "replace") {
+        if (endLine < startLine) {
+            return {{"error", "end_line must be >= start_line for replace operation"}};
+        }
+        if (endLine > totalLines) {
+            return {{"error", "end_line (" + std::to_string(endLine) + ") exceeds file length (" + std::to_string(totalLines) + ")"}};
+        }
+        if (content.empty()) {
+            return {{"error", "content is required for replace operation"}};
+        }
+        
+        // Split content into lines
+        std::vector<std::string> newLines;
+        std::istringstream contentStream(content);
+        std::string newLine;
+        while (std::getline(contentStream, newLine)) {
+            newLines.push_back(newLine);
+        }
+        
+        // Replace lines from startLine to endLine (0-based: startLine-1 to endLine-1)
+        int replaceCount = endLine - startLine + 1;
+        lines.erase(lines.begin() + (startLine - 1), lines.begin() + endLine);
+        lines.insert(lines.begin() + (startLine - 1), newLines.begin(), newLines.end());
+        
+        result = "✅ Replaced lines " + std::to_string(startLine) + "-" + std::to_string(endLine) + 
+                 " (" + std::to_string(replaceCount) + " line(s)) with " + std::to_string(newLines.size()) + " new line(s)";
+        
+    } else if (operation == "delete") {
+        if (endLine < startLine) {
+            return {{"error", "end_line must be >= start_line for delete operation"}};
+        }
+        if (endLine > totalLines) {
+            return {{"error", "end_line (" + std::to_string(endLine) + ") exceeds file length (" + std::to_string(totalLines) + ")"}};
+        }
+        
+        // Delete lines from startLine to endLine (0-based: startLine-1 to endLine)
+        int deleteCount = endLine - startLine + 1;
+        lines.erase(lines.begin() + (startLine - 1), lines.begin() + endLine);
+        
+        result = "✅ Deleted lines " + std::to_string(startLine) + "-" + std::to_string(endLine) + 
+                 " (" + std::to_string(deleteCount) + " line(s))";
+        if (static_cast<int>(lines.size()) > 0) {
+            result += " (file now has " + std::to_string(static_cast<int>(lines.size())) + " lines)";
+        } else {
+            result += " (file is now empty)";
+        }
+        
+    } else {
+        return {{"error", "Invalid operation. Must be 'insert', 'replace', or 'delete'"}};
+    }
+    
+    // Write back to file
+    std::ofstream outFile(fullPath);
+    if (!outFile.is_open()) {
+        return {{"error", "Could not open file for writing: " + relPathStr}};
+    }
+    
+    for (size_t i = 0; i < lines.size(); ++i) {
+        outFile << lines[i];
+        if (i < lines.size() - 1) {
+            outFile << "\n";
+        }
+    }
+    outFile.close();
+    
+    return {{"content", {{{"type", "text"}, {"text", result}}}}};
 }
 
 nlohmann::json InternalMCPClient::fileUndo(const nlohmann::json& args) {
@@ -2069,7 +2251,12 @@ nlohmann::json InternalMCPClient::symbolSearch(const nlohmann::json& args) {
     std::string report = "Found " + std::to_string(results.size()) + " matches:\n";
     for (const auto& s : results) {
         std::string source = s.source.empty() ? "unknown" : s.source;
-        report += "- [" + s.type + "|" + source + "] `" + s.name + "` in `" + s.path + "` (Line " + std::to_string(s.line) + ")\n";
+        report += "📍 [" + s.type + "|" + source + "] `" + s.name + "`\n";
+        report += "   └─ File: `" + s.path + "` | Line: " + std::to_string(s.line) + "\n";
+        report += "   └─ Quick read: context_read(query=\"" + s.name + "\", path=\"" + s.path + "\")\n";
+        report += "   └─ Exact read: read_file_lines(path=\"" + s.path + 
+                  "\", start_line=" + std::to_string(std::max(1, s.line - 10)) + 
+                  ", end_line=" + std::to_string(s.line + 10) + ")\n\n";
     }
     return {{"content", {{{"type", "text"}, {"text", report}}}}};
 }
@@ -2184,11 +2371,34 @@ nlohmann::json InternalMCPClient::lspDefinition(const nlohmann::json& args) {
         return fallbackToSymbolIndex("No definition found by LSP.", relPath, line, character);
     }
 
-    std::string report = "Found " + std::to_string(locations.size()) + " definitions:\n";
-    for (const auto& loc : locations) {
+    std::string report = "Found " + std::to_string(locations.size()) + " definition(s):\n\n";
+    for (size_t i = 0; i < locations.size(); ++i) {
+        const auto& loc = locations[i];
         std::string locPath = loc.uri;
         if (locPath.find("file://") == 0) locPath = locPath.substr(7);
-        report += "- File: `" + locPath + "`, Line: " + std::to_string(loc.range.start.line + 1) + "\n";
+        int startLine = loc.range.start.line + 1;
+        int endLine = loc.range.end.line + 1;
+        int startChar = loc.range.start.character;
+        int endChar = loc.range.end.character;
+        
+        report += "📍 Definition #" + std::to_string(i + 1) + ":\n";
+        report += "   └─ File: `" + locPath + "`\n";
+        if (startLine == endLine) {
+            report += "   └─ Line: " + std::to_string(startLine) + 
+                      " | Characters: " + std::to_string(startChar) + "-" + std::to_string(endChar) + "\n";
+        } else {
+            report += "   └─ Lines: " + std::to_string(startLine) + "-" + std::to_string(endLine) + 
+                      " | Start: " + std::to_string(startChar) + " | End: " + std::to_string(endChar) + "\n";
+        }
+        std::string relPath = locPath;
+        if (relPath.find(rootPath.u8string()) == 0) {
+            relPath = fs::relative(fs::u8path(locPath), rootPath).generic_string();
+        }
+        int contextStart = std::max(1, startLine - 10);
+        int contextEnd = endLine + 10;
+        report += "   └─ Read context: read_file_lines(path=\"" + relPath + 
+                  "\", start_line=" + std::to_string(contextStart) + 
+                  ", end_line=" + std::to_string(contextEnd) + ")\n\n";
     }
     return {{"content", {{{"type", "text"}, {"text", report}}}}};
 }

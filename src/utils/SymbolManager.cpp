@@ -26,6 +26,7 @@ SymbolManager::SymbolManager(const std::string& root) : rootPath(root) {
 }
 
 SymbolManager::~SymbolManager() {
+    stopWatching();
     if (scanThread.joinable()) {
         scanThread.join();
     }
@@ -73,6 +74,121 @@ void SymbolManager::performScan() {
     } catch (...) {}
     saveIndex();
     scanning = false;
+}
+
+void SymbolManager::startWatching(int intervalSeconds) {
+    if (watching) return;
+    watchInterval = intervalSeconds;
+    watching = true;
+    stopWatch = false;
+    watchThread = std::thread(&SymbolManager::watchLoop, this);
+}
+
+void SymbolManager::stopWatching() {
+    if (!watching) return;
+    stopWatch = true;
+    watching = false;
+    if (watchThread.joinable()) {
+        watchThread.join();
+    }
+}
+
+void SymbolManager::watchLoop() {
+    while (!stopWatch) {
+        std::this_thread::sleep_for(std::chrono::seconds(watchInterval));
+        if (stopWatch) break;
+        if (!scanning) {
+            checkFileChanges();
+        }
+    }
+}
+
+void SymbolManager::checkFileChanges() {
+    try {
+        fs::path root(rootPath);
+        std::unordered_set<std::string> currentFiles;
+        std::vector<fs::path> filesToUpdate;
+        
+        for (const auto& entry : fs::recursive_directory_iterator(root)) {
+            if (entry.is_regular_file()) {
+                if (shouldIgnore(entry.path())) continue;
+                std::string relPath = fs::relative(entry.path(), root).generic_string();
+                currentFiles.insert(relPath);
+                
+                FileMeta currentMeta;
+                try {
+                    currentMeta.size = fs::file_size(entry.path());
+                    auto ftime = fs::last_write_time(entry.path());
+                    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                        ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                    currentMeta.mtime = std::chrono::system_clock::to_time_t(sctp);
+                } catch (...) {
+                    continue;
+                }
+                
+                bool needsUpdate = false;
+                {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    auto it = fileMeta.find(relPath);
+                    if (it != fileMeta.end()) {
+                        if (it->second.mtime != currentMeta.mtime || it->second.size != currentMeta.size) {
+                            needsUpdate = true;
+                        }
+                    } else {
+                        needsUpdate = true;
+                    }
+                }
+                
+                if (needsUpdate) {
+                    filesToUpdate.push_back(entry.path());
+                }
+            }
+        }
+        
+        for (const auto& filePath : filesToUpdate) {
+            updateSingleFile(filePath);
+        }
+        
+        std::lock_guard<std::mutex> lock(mtx);
+        for (auto it = fileSymbols.begin(); it != fileSymbols.end(); ) {
+            if (currentFiles.find(it->first) == currentFiles.end()) {
+                fileMeta.erase(it->first);
+                symbols.erase(
+                    std::remove_if(symbols.begin(), symbols.end(),
+                        [&](const Symbol& s) { return s.path == it->first; }),
+                    symbols.end());
+                it = fileSymbols.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (!filesToUpdate.empty() || !currentFiles.empty()) {
+            saveIndex();
+        }
+    } catch (...) {}
+}
+
+void SymbolManager::updateFile(const std::string& relPath) {
+    fs::path fullPath = fs::path(rootPath) / fs::u8path(relPath);
+    if (fs::exists(fullPath) && !shouldIgnore(fullPath)) {
+        updateSingleFile(fullPath);
+        saveIndex();
+    }
+}
+
+void SymbolManager::updateSingleFile(const fs::path& filePath) {
+    std::string relPath = fs::relative(filePath, fs::path(rootPath)).generic_string();
+    std::vector<Symbol> newSymbols;
+    scanFile(filePath, newSymbols);
+    
+    std::lock_guard<std::mutex> lock(mtx);
+    symbols.erase(
+        std::remove_if(symbols.begin(), symbols.end(),
+            [&](const Symbol& s) { return s.path == relPath; }),
+        symbols.end());
+    if (!newSymbols.empty()) {
+        symbols.insert(symbols.end(), newSymbols.begin(), newSymbols.end());
+    }
 }
 
 void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& localSymbols) {

@@ -47,6 +47,15 @@ public:
     // Start asynchronous full scan
     void startAsyncScan();
 
+    // Start real-time file watching (incremental updates)
+    void startWatching(int intervalSeconds = 5);
+
+    // Stop watching
+    void stopWatching();
+
+    // Manually trigger update for a specific file
+    void updateFile(const std::string& relPath);
+
     // Search for symbols matching a query
     std::vector<Symbol> search(const std::string& query);
 
@@ -70,8 +79,17 @@ private:
     std::thread scanThread;
     bool fallbackOnEmpty = false;
 
+    // Real-time watching
+    std::atomic<bool> watching{false};
+    std::atomic<bool> stopWatch{false};
+    std::thread watchThread;
+    int watchInterval = 5;
+
     void performScan();
+    void watchLoop();
+    void checkFileChanges();
     void scanFile(const fs::path& filePath, std::vector<Symbol>& localSymbols);
+    void updateSingleFile(const fs::path& filePath);
     fs::path getIndexPath() const;
     void loadIndex();
     void saveIndex();
