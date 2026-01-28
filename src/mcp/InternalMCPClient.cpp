@@ -135,6 +135,7 @@ void InternalMCPClient::registerTools() {
     toolHandlers["harmony_search"] = [this](const nlohmann::json& a) { return harmonySearch(a); };
     toolHandlers["grep_search"] = [this](const nlohmann::json& a) { return grepSearch(a); };
     toolHandlers["read_file_lines"] = [this](const nlohmann::json& a) { return readFileLines(a); };
+    toolHandlers["read_batch_lines"] = [this](const nlohmann::json& a) { return readBatchLines(a); };
     toolHandlers["list_dir_tree"] = [this](const nlohmann::json& a) { return listDirTree(a); };
     toolHandlers["diff_apply"] = [this](const nlohmann::json& a) { return diffApply(a); };
     toolHandlers["file_edit_lines"] = [this](const nlohmann::json& a) { return fileEditLines(a); };
@@ -145,6 +146,7 @@ void InternalMCPClient::registerTools() {
     toolHandlers["project_overview"] = [this](const nlohmann::json& a) { return projectOverview(a); };
     toolHandlers["symbol_search"] = [this](const nlohmann::json& a) { return symbolSearch(a); };
     toolHandlers["lsp_definition"] = [this](const nlohmann::json& a) { return lspDefinition(a); };
+    toolHandlers["lsp_references"] = [this](const nlohmann::json& a) { return lspReferences(a); };
     toolHandlers["resolve_relative_date"] = [this](const nlohmann::json& a) { return resolveRelativeDate(a); };
     toolHandlers["skill_read"] = [this](const nlohmann::json& a) { return skillRead(a); };
     toolHandlers["schedule"] = [this](const nlohmann::json& a) { return osScheduler(a); };
@@ -621,7 +623,7 @@ nlohmann::json InternalMCPClient::listTools() {
     // Code AST Analyze Tool
     tools.push_back({
         {"name", "code_ast_analyze"},
-        {"description", "Extract classes and function signatures from a code file (C++/Python) to understand its structure without reading full content."},
+        {"description", "Analyze the high-level structure (classes, methods, functions) of a file using Tree-sitter. Perfect for seeing the 'skeleton' of an entry point or module before diving into details."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
@@ -709,6 +711,30 @@ nlohmann::json InternalMCPClient::listTools() {
                 {"end_line", {{"type", "integer"}, {"description", "The ending line number (1-based, inclusive)"}}}
             }},
             {"required", {"path", "start_line", "end_line"}}
+        }}
+    });
+
+    // Read Batch Lines Tool
+    tools.push_back({
+        {"name", "read_batch_lines"},
+        {"description", "Simultaneously read multiple line ranges from multiple files in a single call. This is the most token-efficient way to explore call chains, cross-file dependencies, or multiple code snippets at once."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"requests", {
+                    {"type", "array"},
+                    {"items", {
+                        {"type", "object"},
+                        {"properties", {
+                            {"path", {{"type", "string"}, {"description", "The relative path to the file"}}},
+                            {"start_line", {{"type", "integer"}, {"description", "The starting line number (1-based, inclusive)"}}},
+                            {"end_line", {{"type", "integer"}, {"description", "The ending line number (1-based, inclusive)"}}}
+                        }},
+                        {"required", {"path", "start_line", "end_line"}}
+                    }}
+                }}
+            }},
+            {"required", {"requests"}}
         }}
     });
 
@@ -879,7 +905,7 @@ nlohmann::json InternalMCPClient::listTools() {
     // Project Overview Tool
     tools.push_back({
         {"name", "project_overview"},
-        {"description", "Get a high-level overview of the project structure and key components. Use this at the beginning of a task to minimize redundant searches."},
+        {"description", "Get a high-level overview of the project structure and key components. Use this to identify the main entry point (e.g., main(), app.py) and core modules."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", nlohmann::json::object()},
@@ -904,6 +930,20 @@ nlohmann::json InternalMCPClient::listTools() {
     tools.push_back({
         {"name", "lsp_definition"},
         {"description", "Find the definition of a symbol at a given file location using LSP (semantic navigation)."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"path", {{"type", "string"}, {"description", "The relative path of the file"}}},
+                {"line", {{"type", "integer"}, {"description", "The line number (1-indexed)"}}},
+                {"character", {{"type", "integer"}, {"description", "The character position (0-indexed)"}}}
+            }},
+            {"required", {"path", "line", "character"}}
+        }}
+    });
+
+    tools.push_back({
+        {"name", "lsp_references"},
+        {"description", "Find all references (usages) of a symbol at a specific location using LSP. Essential for understanding call chains and impact analysis."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
@@ -1881,6 +1921,61 @@ nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
     return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(content, 8000)}}}}};
 }
 
+nlohmann::json InternalMCPClient::readBatchLines(const nlohmann::json& args) {
+    if (!args.contains("requests") || !args["requests"].is_array()) {
+        return {{"error", "Missing or invalid 'requests' array"}};
+    }
+
+    std::string report;
+    int totalFilesProcessed = 0;
+
+    for (const auto& req : args["requests"]) {
+        std::string relPathStr = req.value("path", "");
+        int start = req.value("start_line", 1);
+        int end = req.value("end_line", 1);
+        
+        fs::path fullPath = rootPath / fs::u8path(relPathStr);
+        if (!fs::exists(fullPath)) {
+            report += "❌ File not found: " + relPathStr + "\n\n";
+            continue;
+        }
+
+        std::ifstream file(fullPath);
+        if (!file.is_open()) {
+            report += "❌ Could not open file: " + relPathStr + "\n\n";
+            continue;
+        }
+
+        if (start < 1) start = 1;
+        if (end < start) end = start;
+
+        report += "📄 File: `" + relPathStr + "` | Lines " + std::to_string(start) + "-" + std::to_string(end) + "\n";
+        std::string separator;
+        for(int i=0; i<60; ++i) separator += "─";
+        report += separator + "\n";
+
+        std::string line;
+        int current = 1;
+        int linesRead = 0;
+        while (std::getline(file, line)) {
+            if (current >= start && current <= end) {
+                report += std::to_string(current) + " | " + line + "\n";
+                linesRead++;
+            }
+            if (current > end) break;
+            current++;
+        }
+        
+        if (linesRead == 0) {
+            report += "⚠️  No lines found in this range.\n";
+        }
+        report += separator + "\n\n";
+        totalFilesProcessed++;
+    }
+
+    return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(report, 12000)}}}}};
+}
+
 nlohmann::json InternalMCPClient::listDirTree(const nlohmann::json& args) {
     std::string subPathStr = args.value("path", "");
     int maxDepth = args.value("depth", 3);
@@ -2426,6 +2521,61 @@ nlohmann::json InternalMCPClient::lspDefinition(const nlohmann::json& args) {
         int contextStart = std::max(1, startLine - 10);
         int contextEnd = endLine + 10;
         report += "   └─ Read context: read_file_lines(path=\"" + relPath + 
+                  "\", start_line=" + std::to_string(contextStart) + 
+                  ", end_line=" + std::to_string(contextEnd) + ")\n\n";
+    }
+    return {{"content", {{{"type", "text"}, {"text", report}}}}};
+}
+
+nlohmann::json InternalMCPClient::lspReferences(const nlohmann::json& args) {
+    auto pickClient = [&](const std::string& relPath) -> LSPClient* {
+        if (!lspByExtension.empty()) {
+            std::string ext = fs::path(relPath).extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            auto it = lspByExtension.find(ext);
+            if (it != lspByExtension.end()) return it->second;
+        }
+        return lspClient;
+    };
+
+    std::string relPath = args["path"];
+    int line = args["line"];
+    int character = args["character"];
+    
+    LSPClient* client = pickClient(relPath);
+    if (!client) {
+        return {{"error", "LSP client not initialized for this file type."}};
+    }
+
+    fs::path fullPath = fs::absolute(rootPath / fs::u8path(relPath));
+    std::string fileUri = "file://" + fullPath.u8string();
+
+    LSPClient::Position position{line - 1, character};
+    auto locations = client->findReferences(fileUri, position);
+
+    if (locations.empty()) {
+        return {{"content", {{{"type", "text"}, {"text", "No references found by LSP."}}}}};
+    }
+
+    std::string report = "Found " + std::to_string(locations.size()) + " reference(s):\n\n";
+    for (size_t i = 0; i < locations.size(); ++i) {
+        const auto& loc = locations[i];
+        std::string locPath = loc.uri;
+        if (locPath.find("file://") == 0) locPath = locPath.substr(7);
+        int startLine = loc.range.start.line + 1;
+        int endLine = loc.range.end.line + 1;
+        
+        std::string displayPath = locPath;
+        if (displayPath.find(rootPath.u8string()) == 0) {
+            displayPath = fs::relative(fs::u8path(locPath), rootPath).generic_string();
+        }
+
+        report += "📍 Reference #" + std::to_string(i + 1) + ":\n";
+        report += "   └─ File: `" + displayPath + "` | Line: " + std::to_string(startLine) + "\n";
+        
+        int contextStart = std::max(1, startLine - 2);
+        int contextEnd = endLine + 2;
+        report += "   └─ Quick view: read_file_lines(path=\"" + displayPath + 
                   "\", start_line=" + std::to_string(contextStart) + 
                   ", end_line=" + std::to_string(contextEnd) + ")\n\n";
     }

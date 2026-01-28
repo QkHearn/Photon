@@ -586,9 +586,10 @@ int main(int argc, char* argv[]) {
                                "   - [REFLECTION]: Are there risks? Is there a better way?\n" +
                                "2. PROACTIVE INTERACTION: If a task is ambiguous or risky, DO NOT guess. Ask the user for clarification or propose multiple options.\n" +
                                "3. PROJECT MAPPING: Always start by calling 'project_overview' to establish a mental map of the codebase.\n" +
-                               "4. TOKEN EFFICIENCY: Use 'code_ast_analyze' to see file structure with line numbers first, then use 'read_file_lines' for specific content.\n" +
-                               "5. CLOSED-LOOP VERIFICATION: After any modification, you MUST call 'diagnostics_check' to verify the build and 'read_file_lines' to double-check your own work.\n" +
-                               "6. ERROR REFLECTION: If a tool fails, analyze the error output, explain why it failed, and adjust your plan accordingly.";
+                               "4. ENGINEERING STRATEGY (Entry-Point-to-Call-Chain): To understand logic, start from the main entry point (e.g., main(), app.py). Follow the call chain using 'lsp_definition' (to find implementation) and 'lsp_references' (to find callers). Use 'read_batch_lines' to see multiple links in the chain simultaneously. Avoid reading random files.\n" +
+                               "5. TOKEN EFFICIENCY: Reading full content of large files is expensive. Use 'code_ast_analyze' to see file structure first. When you need to examine multiple code locations (even across different files), ALWAYS prefer 'read_batch_lines' over multiple 'read_file_lines' calls to save tokens and maintain logical coherence.\n" +
+                               "6. CLOSED-LOOP VERIFICATION: After any modification, you MUST call 'diagnostics_check' to verify the build and 'read_file_lines' to double-check your own work.\n" +
+                               "7. ERROR REFLECTION: If a tool fails, analyze the error output, explain why it failed, and adjust your plan accordingly.";
     
     nlohmann::json messages = nlohmann::json::array();
     messages.push_back({{"role", "system"}, {"content", systemPrompt}});
@@ -741,9 +742,9 @@ int main(int argc, char* argv[]) {
 
         bool continues = true;
         int iteration = 0;
-        const int MAX_ITERATIONS = 10;
+        int max_iterations = 50; // Increased default limit to 50 rounds
 
-        while (continues && iteration < MAX_ITERATIONS) {
+        while (continues && iteration < max_iterations) {
             iteration++;
             // Apply context management
             messages = contextManager.manage(messages);
@@ -751,7 +752,7 @@ int main(int argc, char* argv[]) {
             // Update status bar during thinking
             printStatusBar(cfg.llm.model, contextManager.getSize(messages), mcpManager.getTotalTaskCount());
 
-            std::cout << YELLOW << "Thinking (Step " << iteration << "/" << MAX_ITERATIONS << ")..." << RESET << "\r" << std::flush;
+            std::cout << YELLOW << "Thinking (Step " << iteration << "/" << max_iterations << ")..." << RESET << "\r" << std::flush;
             nlohmann::json response = llmClient->chatWithTools(messages, llmTools);
             
             if (response.is_null() || !response.contains("choices") || response["choices"].empty()) {
@@ -901,16 +902,12 @@ int main(int argc, char* argv[]) {
 
                         nlohmann::json result = mcpManager.callTool(serverName, toolName, args);
                         
-                        // Display tool result summary (Observation)
-                        std::string resStr = result.dump();
-                        std::cout << GREEN << BOLD << "👀 [Observation] " << RESET << "Tool returned " << BOLD << resStr.length() << RESET << " chars." << std::endl;
-
                         // Add tool result to messages
                         messages.push_back({
                             {"role", "tool"},
                             {"tool_call_id", toolCall["id"]},
                             {"name", fullName},
-                            {"content", resStr}
+                            {"content", result.dump()}
                         });
                     }
                 }
@@ -920,8 +917,18 @@ int main(int argc, char* argv[]) {
                 continues = false;
             }
 
-            if (iteration >= MAX_ITERATIONS) {
-                std::cout << YELLOW << "⚠ Reached maximum thinking steps (" << MAX_ITERATIONS << "). Stopping loop." << RESET << std::endl;
+            if (iteration >= max_iterations && continues) {
+                std::cout << YELLOW << BOLD << "\n⚠  LIMIT REACHED: " << RESET 
+                          << "Reached maximum thinking steps (" << max_iterations << "). Continue for 20 more steps? [y/N] " << std::flush;
+                std::string confirm;
+                std::getline(std::cin, confirm);
+                std::transform(confirm.begin(), confirm.end(), confirm.begin(), ::tolower);
+                if (confirm == "y" || confirm == "yes") {
+                    max_iterations += 20;
+                } else {
+                    std::cout << YELLOW << "Stopping loop as requested." << RESET << std::endl;
+                    continues = false;
+                }
             }
         }
 

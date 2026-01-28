@@ -86,6 +86,7 @@ private:
     nlohmann::json harmonySearch(const nlohmann::json& args);
     nlohmann::json grepSearch(const nlohmann::json& args);
     nlohmann::json readFileLines(const nlohmann::json& args);
+    nlohmann::json readBatchLines(const nlohmann::json& args);
     nlohmann::json listDirTree(const nlohmann::json& args);
     nlohmann::json diffApply(const nlohmann::json& args);
     nlohmann::json fileEditLines(const nlohmann::json& args);
@@ -96,6 +97,7 @@ private:
     nlohmann::json projectOverview(const nlohmann::json& args);
     nlohmann::json symbolSearch(const nlohmann::json& args);
     nlohmann::json lspDefinition(const nlohmann::json& args);
+    nlohmann::json lspReferences(const nlohmann::json& args);
     nlohmann::json resolveRelativeDate(const nlohmann::json& args);
     nlohmann::json skillRead(const nlohmann::json& args);
     nlohmann::json osScheduler(const nlohmann::json& args);
