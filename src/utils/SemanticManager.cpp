@@ -92,7 +92,7 @@ void SemanticManager::indexFact(const std::string& key, const std::string& value
 
 void SemanticManager::chunkMarkdown(const std::string& content, const std::string& relPath) {
     // Split by headers
-    std::regex headerRegex(R"(^#{1,3}\s+(.*)$)", std::regex::multiline);
+    std::regex headerRegex(R"(^#{1,3}\s+(.*)$)");
     auto words_begin = std::sregex_iterator(content.begin(), content.end(), headerRegex);
     auto words_end = std::sregex_iterator();
 

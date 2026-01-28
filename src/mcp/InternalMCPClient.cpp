@@ -707,7 +707,9 @@ nlohmann::json InternalMCPClient::listTools() {
     // HarmonyOS Search Tool
     tools.push_back({
         {"name", "harmony_search"},
-        {"description", "Search HarmonyOS developer documentation and community for technical information."},
+        {"description", "Search HarmonyOS official developer documentation. "
+                        "IMPORTANT: This tool has a narrow scope (official docs only). If it returns no results or irrelevant snippets, "
+                        "DO NOT retry. Immediately switch to `web_search` for broader community answers or `web_fetch` for deep reading."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
@@ -1688,7 +1690,10 @@ nlohmann::json InternalMCPClient::webSearch(const nlohmann::json& args) {
     res = trySearch("www.bing.com", "/search?q={q}");
     if (!res.is_null()) return res;
 
-    return {{"error", "Search failed: All engines blocked the request or triggered CAPTCHA. Please try again later or use a different query."}};
+    return {{"error", "Search failed: All engines blocked the request or triggered CAPTCHA.\n\n"
+                      "💡 **Fallback Strategy**: External search is currently unavailable. Please DO NOT stay in a search loop. "
+                      "Instead, use `grep_search` or `semantic_search` to find similar patterns in the local codebase, "
+                      "or synthesize the solution based on existing knowledge and documentation already read."}};
 }
 
 nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
@@ -1720,6 +1725,8 @@ nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
         httplib::Client cli("https://svc-drcn.developer.huawei.com");
         cli.set_follow_location(true);
         cli.set_decompress(true);
+        cli.set_connection_timeout(5); // 5 seconds timeout
+        cli.set_read_timeout(5);       // 5 seconds timeout
         
         httplib::Headers headers = {
             {"Content-Type", "application/json"},
@@ -1733,7 +1740,7 @@ nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
             
             if (j.contains("searchResult") && j["searchResult"].is_array() && !j["searchResult"].empty()) {
                 auto& firstResult = j["searchResult"][0];
-                if (firstResult.contains("developerInfos") && firstResult["developerInfos"].is_array()) {
+                if (firstResult.contains("developerInfos") && firstResult["developerInfos"].is_array() && !firstResult["developerInfos"].empty()) {
                     int count = 0;
                     for (const auto& item : firstResult["developerInfos"]) {
                         if (count >= 8) break;
@@ -1754,10 +1761,11 @@ nlohmann::json InternalMCPClient::harmonySearch(const nlohmann::json& args) {
                         results += "### [" + title + "](" + link + ")\n" + snippet + "\n\n";
                         count++;
                     }
+                    results += "\n---\n💡 **Note**: If the above snippets do not contain the specific code or answer you need, DO NOT repeat harmony_search. Instead, use `web_fetch` on the most relevant link above, or use `web_search` for broader community solutions.";
                     return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(results, 20000)}}}}};
                 }
             }
-            return {{"content", {{{"type", "text"}, {"text", "No results found for: " + query}}}}};
+            return {{"content", {{{"type", "text"}, {"text", "❌ No results found in HarmonyOS official database for: " + query + "\n\n**Action Required**: Official docs may be missing this specific topic. Please switch to `web_search` to find community solutions or GitHub examples immediately."}}}}};
         }
     } catch (...) {}
     return {{"error", "HarmonyOS search failed due to network or parsing error"}};
