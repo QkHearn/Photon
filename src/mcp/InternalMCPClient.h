@@ -102,6 +102,8 @@ private:
     nlohmann::json listTasks(const nlohmann::json& args);
     nlohmann::json cancelTask(const nlohmann::json& args);
     
+    int getTaskCount() const override { return static_cast<int>(tasks.size()); }
+    
     std::string executeCommand(const std::string& cmd);
     
 private:

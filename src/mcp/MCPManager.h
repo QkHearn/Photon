@@ -75,6 +75,14 @@ public:
         return "";
     }
 
+    int getTotalTaskCount() {
+        int total = 0;
+        for (auto& [name, client] : clients) {
+            total += client->getTaskCount();
+        }
+        return total;
+    }
+
     IMCPClient* getClient(const std::string& name) {
         if (clients.count(name)) {
             return clients[name].get();

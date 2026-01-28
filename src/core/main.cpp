@@ -121,6 +121,66 @@ std::vector<Config::Agent::LSPServer> autoDetectLspServers() {
     return detected;
 }
 
+bool isRiskyTool(const std::string& toolName) {
+    static const std::unordered_set<std::string> risky = {
+        "file_write", "file_edit_lines", "diff_apply", "bash_execute", "git_operations"
+    };
+    return risky.count(toolName) > 0;
+}
+
+void printStatusBar(const std::string& model, size_t contextSize, int taskCount) {
+    std::cout << GRAY << "─── " 
+              << CYAN << "Model: " << BOLD << model << RESET << GRAY << " | "
+              << CYAN << "Context: " << BOLD << contextSize << RESET << GRAY << " chars | "
+              << CYAN << "Tasks: " << BOLD << taskCount << RESET << GRAY << " active ───" 
+              << RESET << std::endl;
+}
+
+void showGitDiff(const std::string& path, const std::string& newContent, bool forceFull = false) {
+    std::string tmpPath = path + ".photon.tmp";
+    std::ofstream tmpFile(tmpPath);
+    if (!tmpFile.is_open()) return;
+    tmpFile << newContent;
+    tmpFile.close();
+
+    std::string cmd = "git diff --no-index --color=always \"" + path + "\" \"" + tmpPath + "\" 2>&1";
+    
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (pipe) {
+        std::vector<std::string> diffLines;
+        char buffer[1024];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            std::string line(buffer);
+            if (line.find("--- a/") == 0 || line.find("+++ b/") == 0 || line.find("diff --git") == 0) continue;
+            diffLines.push_back(line);
+        }
+        pclose(pipe);
+
+        std::cout << GRAY << "┌─── " << BOLD << "GIT DIFF PREVIEW" << RESET << GRAY << " (Target: " << path << ") ────────────────" << RESET << std::endl;
+        
+        const size_t THRESHOLD = 20;
+        if (!forceFull && diffLines.size() > THRESHOLD) {
+            // Show first 10 lines
+            for (size_t i = 0; i < 10 && i < diffLines.size(); ++i) std::cout << diffLines[i];
+            
+            // Show folding message
+            std::cout << YELLOW << BOLD << "  ... (" << (diffLines.size() - 15) << " lines folded) ..." << RESET << std::endl;
+            std::cout << GRAY << "  Tip: Enter 'v' at the prompt to see full diff." << RESET << std::endl;
+            
+            // Show last 5 lines
+            size_t startLast = diffLines.size() > 5 ? diffLines.size() - 5 : 0;
+            if (startLast < 10) startLast = 10; // Avoid overlapping
+            for (size_t i = startLast; i < diffLines.size(); ++i) std::cout << diffLines[i];
+        } else {
+            for (const auto& line : diffLines) std::cout << line;
+            if (diffLines.empty()) std::cout << GRAY << "  (No changes detected or file is new)" << RESET << std::endl;
+        }
+        
+        std::cout << GRAY << "└──────────────────────────────────────────────────────────────────" << RESET << std::endl;
+    }
+    std::remove(tmpPath.c_str());
+}
+
 std::string renderMarkdown(const std::string& input) {
     std::string output;
     std::string remaining = input;
@@ -535,7 +595,12 @@ int main(int argc, char* argv[]) {
 
     std::string userInput;
     while (true) {
-        std::cout << "\n" << CYAN << BOLD << "You > " << RESET;
+        // Update and print status bar before prompt
+        size_t currentSize = contextManager.getSize(messages);
+        int taskCount = mcpManager.getTotalTaskCount();
+        printStatusBar(cfg.llm.model, currentSize, taskCount);
+
+        std::cout << CYAN << BOLD << "You > " << RESET;
         if (!std::getline(std::cin, userInput) || userInput == "exit") break;
         if (userInput.empty()) continue;
         
@@ -628,12 +693,45 @@ int main(int argc, char* argv[]) {
             if (lastFile.empty()) {
                 std::cout << YELLOW << "⚠ No recent file modifications recorded." << RESET << std::endl;
             } else {
-                std::cout << YELLOW << "Attempting to undo last modification to: " << BOLD << lastFile << RESET << std::endl;
-                nlohmann::json result = mcpManager.callTool("builtin", "file_undo", {{"path", lastFile}});
-                if (result.contains("content")) {
-                    std::cout << GREEN << "✔ " << result["content"][0]["text"].get<std::string>() << RESET << std::endl;
+                fs::path backupPath = fs::u8path(path) / ".photon" / "backups" / fs::u8path(lastFile);
+                if (!fs::exists(backupPath)) {
+                    std::cout << RED << "✖ No backup found for: " << lastFile << RESET << std::endl;
                 } else {
-                    std::cout << RED << "✖ Undo failed: " << result.dump() << RESET << std::endl;
+                    std::cout << YELLOW << BOLD << "Reverting changes in: " << RESET << lastFile << std::endl;
+                    
+                    // Show Diff before undo
+                    std::ifstream bFile(backupPath);
+                    std::string bContent((std::istreambuf_iterator<char>(bFile)), std::istreambuf_iterator<char>());
+                    bFile.close();
+                    
+                    showGitDiff(lastFile, bContent);
+
+                    while (true) {
+                        std::cout << YELLOW << BOLD << "⚠  CONFIRMATION: " << RESET 
+                                  << "Revert to previous backup? [y/N/v (view full)] " << std::flush;
+                        std::string confirm;
+                        std::getline(std::cin, confirm);
+                        std::transform(confirm.begin(), confirm.end(), confirm.begin(), ::tolower);
+                        
+                        if (confirm == "v") {
+                            showGitDiff(lastFile, bContent, true);
+                            continue;
+                        }
+
+                        if (confirm == "y" || confirm == "yes") {
+                            nlohmann::json result = mcpManager.callTool("builtin", "file_undo", {{"path", lastFile}});
+                            if (result.contains("content")) {
+                                std::cout << GREEN << "✔ " << result["content"][0]["text"].get<std::string>() << RESET << std::endl;
+                                // Feedback to the agent
+                                messages.push_back({{"role", "user"}, {"content", "[SYSTEM]: User has undone your last change to " + lastFile + ". Please reflect on why the change was reverted and try a different approach if necessary."}});
+                            } else {
+                                std::cout << RED << "✖ Undo failed: " << result.dump() << RESET << std::endl;
+                            }
+                        } else {
+                            std::cout << GRAY << "Undo cancelled." << RESET << std::endl;
+                        }
+                        break;
+                    }
                 }
             }
             continue;
@@ -649,6 +747,9 @@ int main(int argc, char* argv[]) {
             iteration++;
             // Apply context management
             messages = contextManager.manage(messages);
+
+            // Update status bar during thinking
+            printStatusBar(cfg.llm.model, contextManager.getSize(messages), mcpManager.getTotalTaskCount());
 
             std::cout << YELLOW << "Thinking (Step " << iteration << "/" << MAX_ITERATIONS << ")..." << RESET << "\r" << std::flush;
             nlohmann::json response = llmClient->chatWithTools(messages, llmTools);
@@ -694,6 +795,110 @@ int main(int argc, char* argv[]) {
                                   << CYAN << serverName << RESET << "::" << BOLD << toolName << RESET 
                                   << " " << GRAY << args.dump() << RESET << std::endl;
                         
+                        // Human-in-the-loop: Confirmation for risky tools
+                        if (isRiskyTool(toolName)) {
+                            // Specialized Diff Preview for file operations
+                            if (toolName == "file_write" && args.contains("content") && args.contains("path")) {
+                                showGitDiff(args["path"], args["content"]);
+                            } else if (toolName == "file_edit_lines" && args.contains("path")) {
+                                // For file_edit_lines, we need to simulate the result for the diff
+                                std::string path = args["path"];
+                                std::ifstream inFile(path);
+                                if (inFile.is_open()) {
+                                    std::vector<std::string> lines;
+                                    std::string line;
+                                    while (std::getline(inFile, line)) lines.push_back(line);
+                                    inFile.close();
+
+                                    std::string op = args["operation"];
+                                    int start = args["start_line"];
+                                    int end = args.value("end_line", start);
+                                    std::string content = args.value("content", "");
+                                    
+                                    if (start >= 1 && start <= (int)lines.size() + 1) {
+                                        std::vector<std::string> newLines;
+                                        std::istringstream iss(content);
+                                        std::string nl;
+                                        while (std::getline(iss, nl)) newLines.push_back(nl);
+
+                                        if (op == "replace" && end >= start && end <= (int)lines.size()) {
+                                            lines.erase(lines.begin() + start - 1, lines.begin() + end);
+                                            lines.insert(lines.begin() + start - 1, newLines.begin(), newLines.end());
+                                        } else if (op == "insert") {
+                                            lines.insert(lines.begin() + start - 1, newLines.begin(), newLines.end());
+                                        } else if (op == "delete" && end >= start && end <= (int)lines.size()) {
+                                            lines.erase(lines.begin() + start - 1, lines.begin() + end);
+                                        }
+
+                                        std::string simulated;
+                                        for (size_t i = 0; i < lines.size(); ++i) {
+                                            simulated += lines[i] + (i == lines.size() - 1 ? "" : "\n");
+                                        }
+                                        showGitDiff(path, simulated);
+                                    }
+                                }
+                            }
+
+                            while (true) {
+                                std::cout << YELLOW << BOLD << "⚠  CONFIRMATION REQUIRED: " << RESET 
+                                          << "Proceed? [y/N/v (view full)] " << std::flush;
+                                std::string confirm;
+                                std::getline(std::cin, confirm);
+                                std::transform(confirm.begin(), confirm.end(), confirm.begin(), ::tolower);
+                                
+                                if (confirm == "v") {
+                                    // Show full diff
+                                    if (toolName == "file_write") {
+                                        showGitDiff(args["path"], args["content"], true);
+                                    } else if (toolName == "file_edit_lines") {
+                                        // Re-run simulation and show full diff
+                                        std::string path = args["path"];
+                                        std::ifstream inFile(path);
+                                        if (inFile.is_open()) {
+                                            std::vector<std::string> lines;
+                                            std::string line;
+                                            while (std::getline(inFile, line)) lines.push_back(line);
+                                            inFile.close();
+                                            std::string op = args["operation"];
+                                            int start = args["start_line"];
+                                            int end = args.value("end_line", start);
+                                            std::string content = args.value("content", "");
+                                            std::vector<std::string> newLines;
+                                            std::istringstream iss(content);
+                                            std::string nl;
+                                            while (std::getline(iss, nl)) newLines.push_back(nl);
+                                            if (op == "replace" && end >= start && end <= (int)lines.size()) {
+                                                lines.erase(lines.begin() + start - 1, lines.begin() + end);
+                                                lines.insert(lines.begin() + start - 1, newLines.begin(), newLines.end());
+                                            } else if (op == "insert") {
+                                                lines.insert(lines.begin() + start - 1, newLines.begin(), newLines.end());
+                                            } else if (op == "delete" && end >= start && end <= (int)lines.size()) {
+                                                lines.erase(lines.begin() + start - 1, lines.begin() + end);
+                                            }
+                                            std::string simulated;
+                                            for (size_t i = 0; i < lines.size(); ++i) simulated += lines[i] + (i == lines.size() - 1 ? "" : "\n");
+                                            showGitDiff(path, simulated, true);
+                                        }
+                                    }
+                                    continue; // Ask again
+                                }
+
+                                if (confirm != "y" && confirm != "yes") {
+                                    std::cout << RED << "✖  Action cancelled by user." << RESET << std::endl;
+                                    messages.push_back({
+                                        {"role", "tool"},
+                                        {"tool_call_id", toolCall["id"]},
+                                        {"name", fullName},
+                                        {"content", "{\"error\": \"Action cancelled by user.\"}"}
+                                    });
+                                    continues = false; // Stop the loop for this turn
+                                    break;
+                                }
+                                break; // confirmed 'y'
+                            }
+                            if (!continues) break; // Break out of tool call loop if cancelled
+                        }
+
                         nlohmann::json result = mcpManager.callTool(serverName, toolName, args);
                         
                         // Display tool result summary (Observation)
@@ -721,8 +926,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Final Context Usage Display
-        size_t currentSize = contextManager.getSize(messages);
-        std::cout << CYAN << "── Memory: " << BOLD << currentSize << RESET << CYAN << " chars ──" << RESET << std::endl;
+        std::cout << CYAN << "── Memory: " << BOLD << contextManager.getSize(messages) << RESET << CYAN << " chars ──" << RESET << std::endl;
     }
 
 #ifdef _WIN32
