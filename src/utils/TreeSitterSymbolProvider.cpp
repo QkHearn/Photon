@@ -130,8 +130,11 @@ void TreeSitterSymbolProvider::collectSymbols(TSNode node,
         for (uint32_t i = 0; i < childCount; ++i) {
             TSNode child = ts_node_child(node, i);
             const char* childType = ts_node_type(child);
-            if (std::strcmp(childType, "identifier") == 0 || std::strcmp(childType, "name") == 0) {
-                auto start = ts_node_start_point(child);
+            // C++ uses 'identifier', Python uses 'identifier' for function names
+            if (std::strcmp(childType, "identifier") == 0 || std::strcmp(childType, "name") == 0 || 
+                std::strcmp(childType, "field_identifier") == 0) {
+                auto start = ts_node_start_point(node);
+                auto end = ts_node_end_point(node);
                 auto startByte = ts_node_start_byte(child);
                 auto endByte = ts_node_end_byte(child);
                 std::string name;
@@ -140,7 +143,9 @@ void TreeSitterSymbolProvider::collectSymbols(TSNode node,
                 } else {
                     name = childType;
                 }
-                out.push_back({name, symbolType, "tree_sitter", relPath, static_cast<int>(start.row + 1), ""});
+                out.push_back({name, symbolType, "tree_sitter", relPath, 
+                              static_cast<int>(start.row + 1), 
+                              static_cast<int>(end.row + 1), ""});
                 break;
             }
         }

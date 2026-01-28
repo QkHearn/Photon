@@ -300,6 +300,7 @@ void SymbolManager::loadIndex() {
                 s.type = item.value("type", "");
                 s.path = item.value("path", "");
                 s.line = item.value("line", 0);
+                s.endLine = item.value("endLine", 0);
                 s.signature = item.value("signature", "");
                 s.source = item.value("source", "legacy");
                 if (!s.name.empty() && !s.path.empty()) {
@@ -325,6 +326,7 @@ void SymbolManager::loadIndex() {
                         s.type = item.value("type", "");
                         s.path = item.value("path", relPath);
                         s.line = item.value("line", 0);
+                        s.endLine = item.value("endLine", 0);
                         s.signature = item.value("signature", "");
                         s.source = item.value("source", "legacy");
                         if (!s.name.empty() && !s.path.empty()) {
@@ -373,6 +375,7 @@ void SymbolManager::saveIndex() {
                     {"source", s.source},
                     {"path", s.path},
                     {"line", s.line},
+                    {"endLine", s.endLine},
                     {"signature", s.signature}
                 });
             }

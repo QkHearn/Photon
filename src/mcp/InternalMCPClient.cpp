@@ -1484,9 +1484,33 @@ nlohmann::json InternalMCPClient::codeAstAnalyze(const nlohmann::json& args) {
 
     if (!fs::exists(fullPath)) return {{"content", {{{"type", "text"}, {"text", "Error: File not found"}}}}};
 
+    std::string result = "## Structure of " + relPathStr + "\n\n";
+    
+    if (symbolManager) {
+        auto syms = symbolManager->getFileSymbols(relPathStr);
+        if (!syms.empty()) {
+            result += "### 🧩 Code Structure (via Tree-sitter/Index)\n\n";
+            for (const auto& s : syms) {
+                std::string lineInfo = "Line " + std::to_string(s.line);
+                if (s.endLine > s.line) {
+                    lineInfo += "-" + std::to_string(s.endLine);
+                }
+                
+                std::string typeIcon = "🔹";
+                if (s.type == "class" || s.type == "struct") typeIcon = "📦";
+                else if (s.type == "function" || s.type == "method") typeIcon = "⚙️";
+                
+                result += "- " + typeIcon + " **[" + s.type + "]** `" + s.name + "` (" + lineInfo + ")\n";
+            }
+            result += "\n*Tip: Use 'read_file_lines' with these line numbers for precise reading.*\n";
+            return {{"content", {{{"type", "text"}, {"text", result}}}}};
+        }
+    }
+
+    // Fallback to Regex if SymbolManager is not available or returned nothing
+    result += "### 🔍 Code Structure (via Regex Fallback)\n\n";
     std::ifstream file(fullPath);
     std::string line;
-    std::string result = "## Structure of " + relPathStr + "\n\n";
     int lineNum = 0;
 
     // More robust regex for C++ and Python
@@ -1503,7 +1527,7 @@ nlohmann::json InternalMCPClient::codeAstAnalyze(const nlohmann::json& args) {
 
         std::smatch match;
         if (std::regex_search(line, match, cppClass) || std::regex_search(line, match, pyClass)) {
-            result += "- **[Class]** `" + match[2].str() + "` (Line " + std::to_string(lineNum) + ")\n";
+            result += "- **[Class]** `" + match[match.size() > 1 ? (match.size() == 2 ? 1 : 2) : 0].str() + "` (Line " + std::to_string(lineNum) + ")\n";
         } else if (std::regex_search(line, match, cppFunc)) {
             result += "  - **[Method]** `" + match[2].str() + "` (Line " + std::to_string(lineNum) + ") -> Returns `" + match[1].str() + "`\n";
         } else if (std::regex_search(line, match, pyDef)) {
@@ -1817,7 +1841,9 @@ nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
     std::string line;
     std::string content;
     content += "📄 File: `" + relPathStr + "` | Lines " + std::to_string(start) + "-" + std::to_string(end) + "\n";
-    content += std::string(60, '─') + "\n";
+    std::string separator;
+    for(int i=0; i<60; ++i) separator += "─";
+    content += separator + "\n";
     
     int current = 1;
     int totalLines = 0;
@@ -1841,7 +1867,9 @@ nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
             content += "File is empty or could not be read.\n";
         }
     } else {
-        content += std::string(60, '─') + "\n";
+        std::string separator;
+    for(int i=0; i<60; ++i) separator += "─";
+    content += separator + "\n";
         content += "✅ Read " + std::to_string(totalLines) + " line(s)";
         if (fileTotalLines > totalLines) {
             content += " (out of " + std::to_string(fileTotalLines) + " total)";

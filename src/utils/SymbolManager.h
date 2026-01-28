@@ -19,6 +19,7 @@ struct Symbol {
     std::string source; // "tree_sitter", "regex", etc.
     std::string path;
     int line;
+    int endLine = 0; // 0 means unknown
     std::string signature;
 };
 

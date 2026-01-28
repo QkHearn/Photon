@@ -16,11 +16,11 @@ std::vector<Symbol> RegexSymbolProvider::extractSymbols(const std::string& conte
         lineNum++;
         std::smatch match;
         if (std::regex_search(line, match, cppClass) || std::regex_search(line, match, pyClass)) {
-            symbols.push_back({match[2].str(), "class", "regex", relPath, lineNum, line});
+            symbols.push_back({match[2].str(), "class", "regex", relPath, lineNum, 0, line});
         } else if (std::regex_search(line, match, cppFunc)) {
-            symbols.push_back({match[2].str(), "function", "regex", relPath, lineNum, line});
+            symbols.push_back({match[2].str(), "function", "regex", relPath, lineNum, 0, line});
         } else if (std::regex_search(line, match, pyDef)) {
-            symbols.push_back({match[2].str(), "function", "regex", relPath, lineNum, line});
+            symbols.push_back({match[2].str(), "function", "regex", relPath, lineNum, 0, line});
         }
     }
 

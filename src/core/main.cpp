@@ -520,10 +520,15 @@ int main(int argc, char* argv[]) {
                                "Current working directory for your tools: " + path + "\n" +
                                "Current system time: " + date_ss.str() + "\n" +
                                "CRITICAL GUIDELINES:\n" +
-                               "1. PROJECT MAPPING: Start by calling 'project_overview' to understand the architecture. This minimizes redundant file searches.\n" +
-                               "2. TOKEN EFFICIENCY: Reading full content of large files is expensive. Use 'code_ast_analyze' to see file structure with line numbers first, and 'read_file_lines' for specific content.\n" +
-                               "3. BACKGROUND SERVICES: Never use 'python_sandbox' for long-running servers. Use 'bash_execute' with 'nohup ... &' and manage them via 'tasks'.\n" +
-                               "4. RELATIVE PATHS: Always use relative paths from the current working directory.";
+                               "1. SELF-HEURISTIC THINKING: Before calling any tool, you MUST output your internal reasoning process in the 'content' field. Use this structure:\n" +
+                               "   - [THOUGHT]: What do I know? What is missing?\n" +
+                               "   - [PLAN]: What are the next 2-3 steps?\n" +
+                               "   - [REFLECTION]: Are there risks? Is there a better way?\n" +
+                               "2. PROACTIVE INTERACTION: If a task is ambiguous or risky, DO NOT guess. Ask the user for clarification or propose multiple options.\n" +
+                               "3. PROJECT MAPPING: Always start by calling 'project_overview' to establish a mental map of the codebase.\n" +
+                               "4. TOKEN EFFICIENCY: Use 'code_ast_analyze' to see file structure with line numbers first, then use 'read_file_lines' for specific content.\n" +
+                               "5. CLOSED-LOOP VERIFICATION: After any modification, you MUST call 'diagnostics_check' to verify the build and 'read_file_lines' to double-check your own work.\n" +
+                               "6. ERROR REFLECTION: If a tool fails, analyze the error output, explain why it failed, and adjust your plan accordingly.";
     
     nlohmann::json messages = nlohmann::json::array();
     messages.push_back({{"role", "system"}, {"content", systemPrompt}});
@@ -637,15 +642,18 @@ int main(int argc, char* argv[]) {
         messages.push_back({{"role", "user"}, {"content", userInput}});
 
         bool continues = true;
-        while (continues) {
+        int iteration = 0;
+        const int MAX_ITERATIONS = 10;
+
+        while (continues && iteration < MAX_ITERATIONS) {
+            iteration++;
             // Apply context management
             messages = contextManager.manage(messages);
 
-            std::cout << YELLOW << "Thinking..." << RESET << "\r" << std::flush;
+            std::cout << YELLOW << "Thinking (Step " << iteration << "/" << MAX_ITERATIONS << ")..." << RESET << "\r" << std::flush;
             nlohmann::json response = llmClient->chatWithTools(messages, llmTools);
             
             if (response.is_null() || !response.contains("choices") || response["choices"].empty()) {
-                // Already handled error printing in LLMClient
                 break;
             }
 
@@ -655,6 +663,16 @@ int main(int argc, char* argv[]) {
             // Add assistant's message to the conversation history
             messages.push_back(message);
 
+            // 1. Always display content if present (this is the "Thinking" or "Reasoning" part)
+            if (message.contains("content") && !message["content"].is_null()) {
+                std::string content = message["content"].get<std::string>();
+                if (!content.empty()) {
+                    std::cout << "           " << "\r"; // Clear "Thinking..."
+                    std::cout << GRAY << BOLD << "🤔 [Thought] " << RESET << renderMarkdown(content) << std::endl;
+                }
+            }
+
+            // 2. Handle Tool Calls
             if (message.contains("tool_calls") && !message["tool_calls"].is_null()) {
                 for (auto& toolCall : message["tool_calls"]) {
                     std::string fullName = toolCall["function"]["name"];
@@ -672,38 +690,39 @@ int main(int argc, char* argv[]) {
                         std::string serverName = fullName.substr(0, pos);
                         std::string toolName = fullName.substr(pos + 2);
 
-                        std::cout << YELLOW << "⚙️  [MCP Call] " << RESET 
+                        std::cout << YELLOW << BOLD << "⚙️  [Action] " << RESET 
                                   << CYAN << serverName << RESET << "::" << BOLD << toolName << RESET 
-                                  << " " << args.dump() << std::endl;
+                                  << " " << GRAY << args.dump() << RESET << std::endl;
                         
                         nlohmann::json result = mcpManager.callTool(serverName, toolName, args);
                         
+                        // Display tool result summary (Observation)
+                        std::string resStr = result.dump();
+                        std::cout << GREEN << BOLD << "👀 [Observation] " << RESET << "Tool returned " << BOLD << resStr.length() << RESET << " chars." << std::endl;
+
                         // Add tool result to messages
                         messages.push_back({
                             {"role", "tool"},
                             {"tool_call_id", toolCall["id"]},
                             {"name", fullName},
-                            {"content", result.dump()}
+                            {"content", resStr}
                         });
                     }
                 }
-                // Continue the loop to let LLM process tool results
                 continues = true;
             } else {
-                // No more tool calls, this is the final answer
-                std::cout << "           " << "\r"; // Clear "Thinking..."
-                if (message.contains("content") && !message["content"].is_null()) {
-                    std::string content = message["content"].get<std::string>();
-                    std::cout << MAGENTA << BOLD << "Photon > " << RESET << renderMarkdown(content) << std::endl;
-                }
-                
-                // Beautiful Context Usage Display
-                size_t currentSize = contextManager.getSize(messages);
-                std::cout << CYAN << "── Memory: " << BOLD << currentSize << RESET << CYAN << " chars ──" << RESET << std::endl;
-                
+                // No more tool calls, we are done
                 continues = false;
             }
+
+            if (iteration >= MAX_ITERATIONS) {
+                std::cout << YELLOW << "⚠ Reached maximum thinking steps (" << MAX_ITERATIONS << "). Stopping loop." << RESET << std::endl;
+            }
         }
+
+        // Final Context Usage Display
+        size_t currentSize = contextManager.getSize(messages);
+        std::cout << CYAN << "── Memory: " << BOLD << currentSize << RESET << CYAN << " chars ──" << RESET << std::endl;
     }
 
 #ifdef _WIN32
