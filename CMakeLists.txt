@@ -4,6 +4,18 @@ project(Photon)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Code coverage option
+option(ENABLE_COVERAGE "Enable code coverage" OFF)
+if(ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(STATUS "Enabling code coverage")
+        add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+        add_link_options(--coverage)
+    else()
+        message(WARNING "Code coverage is only supported with GCC or Clang")
+    endif()
+endif()
+
 # Windows specific global settings
 if(MSVC)
     # Force static runtime /MT for all targets to match vcpkg's x64-windows-static

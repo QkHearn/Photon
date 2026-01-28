@@ -37,13 +37,6 @@ jobs:
         run: |
           brew install cmake nlohmann-json openssl googletest lcov
 
-      - name: Setup vcpkg (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          # GitHub Windows runners have vcpkg pre-installed at VCPKG_INSTALLATION_ROOT
-          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_ENV
-          vcpkg integrate install
-
       - name: Install Dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
@@ -71,14 +64,13 @@ jobs:
 
       - name: Configure and Build (Windows)
         if: matrix.os == 'windows-latest'
-        shell: bash
+        shell: cmd
         run: |
-          mkdir -p build
+          mkdir build
           cd build
-          # 使用环境变量 VCPKG_ROOT 的正确方式，并用双引号保护路径
-          cmake .. -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static \
+          cmake .. -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%/scripts/buildsystems/vcpkg.cmake" ^
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
             -DPHOTON_ENABLE_TREESITTER=${{ steps.check_ts.outputs.enable_ts }}
           cmake --build . --config Release
 
@@ -134,19 +126,22 @@ jobs:
       - name: Run Unit Tests
         run: |
           cd build-coverage
+          lcov --zerocounters --directory .
           ctest --output-on-failure -V
 
       - name: Generate Coverage Report
         run: |
           cd build-coverage
           # 收集数据并排除无关目录
-          lcov --capture --directory . --output-file coverage.info \
+          lcov --capture --directory . --output-file coverage.info --rc lcov_branch_coverage=1 \
             --exclude '/usr/*' \
             --exclude '*/third_party/*' \
             --exclude '*/build*' \
             --exclude '*/tests/*'
+          # 移除不需要的数据
+          lcov --remove coverage.info '/usr/*' '*/third_party/*' '*/tests/*' --output-file coverage.info
           # 生成 HTML 报告
-          genhtml coverage.info --output-directory coverage-report --show-details
+          genhtml coverage.info --output-directory coverage-report --show-details --rc genhtml_branch_coverage=1
           # 打印摘要
           lcov --summary coverage.info
 
