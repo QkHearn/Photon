@@ -63,6 +63,13 @@ public:
     // Get all symbols in a specific file
     std::vector<Symbol> getFileSymbols(const std::string& relPath);
 
+    struct CallInfo {
+        std::string name;
+        int line;
+        int character;
+    };
+    std::vector<CallInfo> extractCalls(const std::string& relPath, int startLine, int endLine);
+
     bool isScanning() const { return scanning; }
     size_t getSymbolCount() const { 
         std::lock_guard<std::mutex> lock(mtx);

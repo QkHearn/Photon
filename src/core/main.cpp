@@ -1,3 +1,8 @@
+#include <thread>
+#include <chrono>
+#include "core/UIManager.h"
+#include <queue>
+#include <condition_variable>
 #include <iostream>
 #include <string>
 #include <memory>
@@ -20,11 +25,14 @@
 #include "mcp/LSPClient.h"
 #include "utils/SkillManager.h"
 #include "utils/SymbolManager.h"
+#include "utils/Logger.h"
 #include "utils/RegexSymbolProvider.h"
 #include "utils/TreeSitterSymbolProvider.h"
 #ifdef PHOTON_ENABLE_TREESITTER
 #include "tree-sitter-cpp.h"
 #include "tree_sitter/tree-sitter-python.h"
+#include "tree-sitter-typescript.h"
+#include "tree_sitter/tree-sitter-arkts.h"
 #endif
 #ifdef __APPLE__
     #include <mach-o/dyld.h>
@@ -65,10 +73,13 @@ std::string findExecutableInPath(const std::vector<std::string>& names) {
                     return candidate.u8string();
                 }
 #ifdef _WIN32
-                fs::path exe = candidate;
-                exe += ".exe";
-                if (fs::exists(exe) && fs::is_regular_file(exe)) {
-                    return exe.u8string();
+                // Also try common Windows script extensions
+                for (const std::string& ext : {".exe", ".cmd", ".bat"}) {
+                    fs::path script = candidate;
+                    script += ext;
+                    if (fs::exists(script) && fs::is_regular_file(script)) {
+                        return script.u8string();
+                    }
                 }
 #endif
             }
@@ -88,7 +99,35 @@ std::vector<std::string> guessExtensionsForCommand(const std::string& command) {
     if (lower.find("pyright") != std::string::npos || lower.find("pylsp") != std::string::npos) {
         return {".py"};
     }
+    if (lower.find("typescript-language-server") != std::string::npos) {
+        return {".ts", ".tsx", ".js", ".jsx"};
+    }
+    if (lower.find("arkts") != std::string::npos || lower.find("ets2panda") != std::string::npos) {
+        return {".ets"};
+    }
     return {};
+}
+
+std::string guessNameForCommand(const std::string& command) {
+    std::string lower = command;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    
+    if (lower.find("clangd") != std::string::npos) return "Clangd";
+    if (lower.find("pyright") != std::string::npos) return "Pyright";
+    if (lower.find("pylsp") != std::string::npos) return "Python-LSP";
+    if (lower.find("rust-analyzer") != std::string::npos) return "Rust-Analyzer";
+    if (lower.find("gopls") != std::string::npos) return "Gopls";
+    if (lower.find("typescript-language-server") != std::string::npos) return "TypeScript-LSP";
+    if (lower.find("arkts") != std::string::npos || lower.find("ets2panda") != std::string::npos) return "ArkTS-LSP";
+    
+    // Fallback: use the executable name
+    fs::path p(command);
+    std::string stem = p.stem().string();
+    if (!stem.empty()) {
+        stem[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(stem[0])));
+        return stem;
+    }
+    return "Unknown-LSP";
 }
 
 std::vector<Config::Agent::LSPServer> autoDetectLspServers() {
@@ -109,13 +148,23 @@ std::vector<Config::Agent::LSPServer> autoDetectLspServers() {
     };
 
     if (!findExecutableInPath({"clangd"}).empty()) {
-        addServer("clangd", "clangd", {".c", ".cpp", ".h", ".hpp"});
+        addServer("Clangd", "clangd", {".c", ".cpp", ".h", ".hpp"});
     }
 
     if (!findExecutableInPath({"pyright-langserver"}).empty()) {
-        addServer("pyright", "pyright-langserver --stdio", {".py"});
+        addServer("Pyright", "pyright-langserver --stdio", {".py"});
     } else if (!findExecutableInPath({"pylsp"}).empty()) {
-        addServer("pylsp", "pylsp", {".py"});
+        addServer("Python-LSP", "pylsp", {".py"});
+    }
+
+    if (!findExecutableInPath({"typescript-language-server"}).empty()) {
+        addServer("TypeScript-LSP", "typescript-language-server --stdio", {".ts", ".tsx", ".js", ".jsx"});
+    }
+
+    if (!findExecutableInPath({"arkts-lsp-server"}).empty()) {
+        addServer("ArkTS-LSP", "arkts-lsp-server --stdio", {".ets"});
+    } else if (!findExecutableInPath({"ets2panda"}).empty()) {
+        addServer("ArkTS-LSP", "ets2panda --lsp", {".ets"});
     }
 
     return detected;
@@ -123,17 +172,9 @@ std::vector<Config::Agent::LSPServer> autoDetectLspServers() {
 
 bool isRiskyTool(const std::string& toolName) {
     static const std::unordered_set<std::string> risky = {
-        "file_write", "file_edit_lines", "diff_apply", "bash_execute", "git_operations"
+        "file_write", "file_create", "file_edit_lines", "edit_batch_lines", "diff_apply", "bash_execute", "git_operations"
     };
     return risky.count(toolName) > 0;
-}
-
-void printStatusBar(const std::string& model, size_t contextSize, int taskCount) {
-    std::cout << GRAY << "─── " 
-              << CYAN << "Model: " << BOLD << model << RESET << GRAY << " | "
-              << CYAN << "Context: " << BOLD << contextSize << RESET << GRAY << " chars | "
-              << CYAN << "Tasks: " << BOLD << taskCount << RESET << GRAY << " active ───" 
-              << RESET << std::endl;
 }
 
 void showGitDiff(const std::string& path, const std::string& newContent, bool forceFull = false) {
@@ -143,40 +184,19 @@ void showGitDiff(const std::string& path, const std::string& newContent, bool fo
     tmpFile << newContent;
     tmpFile.close();
 
-    std::string cmd = "git diff --no-index --color=always \"" + path + "\" \"" + tmpPath + "\" 2>&1";
+    std::string cmd = "git diff --no-index --color=none \"" + path + "\" \"" + tmpPath + "\" 2>&1";
     
     FILE* pipe = popen(cmd.c_str(), "r");
     if (pipe) {
-        std::vector<std::string> diffLines;
+        std::string diff;
         char buffer[1024];
         while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
             std::string line(buffer);
             if (line.find("--- a/") == 0 || line.find("+++ b/") == 0 || line.find("diff --git") == 0) continue;
-            diffLines.push_back(line);
+            diff += line;
         }
         pclose(pipe);
-
-        std::cout << GRAY << "┌─── " << BOLD << "GIT DIFF PREVIEW" << RESET << GRAY << " (Target: " << path << ") ────────────────" << RESET << std::endl;
-        
-        const size_t THRESHOLD = 20;
-        if (!forceFull && diffLines.size() > THRESHOLD) {
-            // Show first 10 lines
-            for (size_t i = 0; i < 10 && i < diffLines.size(); ++i) std::cout << diffLines[i];
-            
-            // Show folding message
-            std::cout << YELLOW << BOLD << "  ... (" << (diffLines.size() - 15) << " lines folded) ..." << RESET << std::endl;
-            std::cout << GRAY << "  Tip: Enter 'v' at the prompt to see full diff." << RESET << std::endl;
-            
-            // Show last 5 lines
-            size_t startLast = diffLines.size() > 5 ? diffLines.size() - 5 : 0;
-            if (startLast < 10) startLast = 10; // Avoid overlapping
-            for (size_t i = startLast; i < diffLines.size(); ++i) std::cout << diffLines[i];
-        } else {
-            for (const auto& line : diffLines) std::cout << line;
-            if (diffLines.empty()) std::cout << GRAY << "  (No changes detected or file is new)" << RESET << std::endl;
-        }
-        
-        std::cout << GRAY << "└──────────────────────────────────────────────────────────────────" << RESET << std::endl;
+        UIManager::getInstance().setDiff(diff);
     }
     std::remove(tmpPath.c_str());
 }
@@ -263,6 +283,10 @@ std::string renderMarkdown(const std::string& input) {
 
     // 3. Inline Elements (Bold, Italic, Code, Links)
     output = processed_text;
+    // Trim trailing newline
+    if (!output.empty() && output.back() == '\n') {
+        output.pop_back();
+    }
     output = std::regex_replace(output, std::regex(R"(\*\*\*(.*?)\*\*\*)"), BOLD + ITALIC + "$1" + RESET);
     output = std::regex_replace(output, std::regex(R"(\*\*(.*?)\*\*)"), BOLD + "$1" + RESET);
     output = std::regex_replace(output, std::regex(R"(\*(.*?)\*)"), ITALIC + "$1" + RESET);
@@ -292,9 +316,11 @@ void printLogo() {
     };
 
     std::cout << "\n" << frame << std::endl;
-    for (const auto& line : lines) std::cout << line << std::endl;
+    for (const auto& line : lines) {
+        std::cout << line << std::endl;
+    }
     std::cout << frame << std::endl;
-    std::cout << GRAY << "        ─── " << ITALIC << "The Native Agentic Core v1.0 [Cyber Falcon Edition]" << RESET << GRAY << " ───\n" << std::endl;
+    std::cout << GRAY << "        ─── " << ITALIC << "The Native Agentic Core v1.0" << RESET << GRAY << " ───\n" << std::endl;
 }
 
 void printUsage() {
@@ -341,9 +367,13 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
+    // Initialize UIManager
+    // Default mode is CLI
+    UIManager::getInstance().setMode(UIManager::Mode::CLI);
+
     // Global exception handler to prevent silent crash
     try {
-        printLogo(); // 先展示 Logo 动画
+        printLogo(); // 恢复 Logo 展示
 
         std::string path = ".";
         
@@ -408,82 +438,73 @@ int main(int argc, char* argv[]) {
 
     // Initialize MCP Manager and connect all servers
     MCPManager mcpManager;
-    if (cfg.agent.useBuiltinTools) {
-        std::cout << GRAY << "  [1/2] Initializing built-in core tools..." << RESET << "\r" << std::flush;
-        mcpManager.initBuiltin(path, cfg.agent.searchApiKey);
-    }
-    
-    std::cout << GRAY << "  [2/2] Connecting to external MCP servers..." << RESET << "\r" << std::flush;
-    int externalCount = mcpManager.initFromConfig(cfg.mcpServers);
+    auto mcpFuture = std::async(std::launch::async, [&]() {
+        if (cfg.agent.useBuiltinTools) {
+            mcpManager.initBuiltin(path, cfg.agent.searchApiKey);
+        }
+        return mcpManager.initFromConfig(cfg.mcpServers);
+    });
 
-    // Initialize Skill Manager
+    // Initialize Skill Manager (Async)
     SkillManager skillManager;
-
-    // 1. Load bundled internal skills (Low priority)
-    // We already have static skills loaded in constructor, 
-    // but we still try to load from directory to allow updating without recompiling.
-    try {
-        fs::path exeDir;
+    auto skillFuture = std::async(std::launch::async, [&]() {
+        // 1. Load bundled internal skills
+        try {
+            fs::path exeDir;
 #ifdef _WIN32
-        wchar_t szPath[MAX_PATH];
-        if (GetModuleFileNameW(NULL, szPath, MAX_PATH) != 0) {
-            exeDir = fs::path(szPath).parent_path();
-        }
+            wchar_t szPath[MAX_PATH];
+            if (GetModuleFileNameW(NULL, szPath, MAX_PATH) != 0) exeDir = fs::path(szPath).parent_path();
 #elif defined(__APPLE__)
-        char szPath[4096];
-        uint32_t size = sizeof(szPath);
-        if (_NSGetExecutablePath(szPath, &size) == 0) {
-            exeDir = fs::canonical(szPath).parent_path();
-        }
+            char szPath[4096];
+            uint32_t size = sizeof(szPath);
+            if (_NSGetExecutablePath(szPath, &size) == 0) exeDir = fs::canonical(szPath).parent_path();
 #else
-        exeDir = fs::canonical("/proc/self/exe").parent_path();
+            exeDir = fs::canonical("/proc/self/exe").parent_path();
 #endif
-        
-        fs::path builtinPath;
-        if (!exeDir.empty() && fs::exists(exeDir / "builtin_skills")) {
-            builtinPath = exeDir / "builtin_skills";
-        } else if (fs::exists(fs::path("builtin_skills"))) {
-            builtinPath = fs::path("builtin_skills");
-        }
+            fs::path builtinPath;
+            if (!exeDir.empty() && fs::exists(exeDir / "builtin_skills")) builtinPath = exeDir / "builtin_skills";
+            else if (fs::exists(fs::path("builtin_skills"))) builtinPath = fs::path("builtin_skills");
 
-        if (!builtinPath.empty() && fs::is_directory(builtinPath)) {
-            skillManager.loadFromRoot(builtinPath.u8string(), true); // Mark as builtin
-        }
-    } catch (...) {}
+            if (!builtinPath.empty() && fs::is_directory(builtinPath)) {
+                skillManager.loadFromRoot(builtinPath.u8string(), true);
+            }
+        } catch (...) {}
 
-    // 2. Sync & Load specialized skills from config (High priority, can override)
-    // Now syncing to globalDataPath/skills instead of project-local
-    std::cout << GRAY << "  [3/3] Syncing & Loading specialized skills..." << RESET << "\r" << std::flush;
-    
-    // Determine globalDataPath for SkillManager sync
-    fs::path globalDataPath;
-    try {
-        fs::path exeDir;
+        // 2. Sync & Load specialized skills
+        fs::path globalDataPath;
+        try {
+            fs::path exeDir;
 #ifdef _WIN32
-        wchar_t szPath[MAX_PATH];
-        if (GetModuleFileNameW(NULL, szPath, MAX_PATH) != 0) exeDir = fs::path(szPath).parent_path();
+            wchar_t szPath[MAX_PATH];
+            if (GetModuleFileNameW(NULL, szPath, MAX_PATH) != 0) exeDir = fs::path(szPath).parent_path();
 #elif defined(__APPLE__)
-        char szPath[4096];
-        uint32_t size = sizeof(szPath);
-        if (_NSGetExecutablePath(szPath, &size) == 0) exeDir = fs::canonical(szPath).parent_path();
+            char szPath[4096];
+            uint32_t size = sizeof(szPath);
+            if (_NSGetExecutablePath(szPath, &size) == 0) exeDir = fs::canonical(szPath).parent_path();
 #else
-        exeDir = fs::canonical("/proc/self/exe").parent_path();
+            exeDir = fs::canonical("/proc/self/exe").parent_path();
 #endif
-        globalDataPath = exeDir / ".photon";
-    } catch (...) {
-        globalDataPath = fs::u8path(path) / ".photon";
-    }
-
-    skillManager.syncAndLoad(cfg.agent.skillRoots, globalDataPath.u8string());
+            globalDataPath = exeDir / ".photon";
+        } catch (...) {
+            globalDataPath = fs::u8path(path) / ".photon";
+        }
+        skillManager.syncAndLoad(cfg.agent.skillRoots, globalDataPath.u8string());
+    });
     
     // Initialize Symbol Manager and start async scan
     SymbolManager symbolManager(path);
     symbolManager.setFallbackOnEmpty(cfg.agent.symbolFallbackOnEmpty);
+    
+    // Initialize Semantic Manager
+    auto semanticManager = std::make_shared<SemanticManager>(path, llmClient);
+    
 #ifdef PHOTON_ENABLE_TREESITTER
     if (cfg.agent.enableTreeSitter) {
         auto treeProvider = std::make_unique<TreeSitterSymbolProvider>();
         treeProvider->registerLanguage("cpp", {".cpp", ".h", ".hpp"}, tree_sitter_cpp());
         treeProvider->registerLanguage("python", {".py"}, tree_sitter_python());
+        treeProvider->registerLanguage("typescript", {".ts", ".tsx"}, tree_sitter_typescript());
+        treeProvider->registerLanguage("arkts", {".ets"}, tree_sitter_arkts());
         for (const auto& lang : cfg.agent.treeSitterLanguages) {
             treeProvider->registerLanguageFromLibrary(lang.name, lang.extensions, lang.libraryPath, lang.symbol);
         }
@@ -492,9 +513,10 @@ int main(int argc, char* argv[]) {
 #endif
     symbolManager.registerProvider(std::make_unique<RegexSymbolProvider>());
     symbolManager.startAsyncScan();
-    symbolManager.startWatching(5); // Start real-time file watching (check every 5 seconds)
+    symbolManager.startWatching(5);
+    semanticManager->startAsyncIndexing();
 
-    // Initialize LSP clients if configured
+    // Initialize LSP clients (Parallel initialization)
     std::vector<std::unique_ptr<LSPClient>> lspClients;
     std::unordered_map<std::string, LSPClient*> lspByExt;
     LSPClient* lspFallback = nullptr;
@@ -503,56 +525,49 @@ int main(int argc, char* argv[]) {
         rootUri = "file://" + fs::absolute(fs::u8path(path)).u8string();
     }
 
-    if (cfg.agent.lspServers.empty() && !cfg.agent.lspServerPath.empty()) {
-        Config::Agent::LSPServer server;
-        server.name = "default";
-        server.command = cfg.agent.lspServerPath;
-        server.extensions = guessExtensionsForCommand(server.command);
-        cfg.agent.lspServers.push_back(std::move(server));
-    }
-    if (cfg.agent.lspServers.empty()) {
-        cfg.agent.lspServers = autoDetectLspServers();
-    }
-
-    for (const auto& server : cfg.agent.lspServers) {
-        if (server.command.empty()) continue;
-        std::cout << GRAY << "  [LSP] Loading " << BOLD << server.name << RESET << " (" << server.command << ")..." << "\r" << std::flush;
-        auto client = std::make_unique<LSPClient>(server.command, rootUri);
-        if (!client->initialize()) {
-            std::cout << RED << "  ✖ LSP " << BOLD << server.name << RESET << RED << " failed to initialize." << RESET << std::endl;
-            continue;
+    auto lspInitFuture = std::async(std::launch::async, [&]() {
+        if (cfg.agent.lspServers.empty() && !cfg.agent.lspServerPath.empty()) {
+            Config::Agent::LSPServer server;
+            server.command = cfg.agent.lspServerPath;
+            server.name = guessNameForCommand(server.command);
+            server.extensions = guessExtensionsForCommand(server.command);
+            cfg.agent.lspServers.push_back(std::move(server));
         }
-        std::cout << GREEN << "  ✔ LSP " << BOLD << server.name << RESET << GREEN << " loaded successfully.   " << RESET << std::endl;
-        if (!lspFallback) lspFallback = client.get();
-        for (auto ext : server.extensions) {
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            lspByExt[ext] = client.get();
+        if (cfg.agent.lspServers.empty()) {
+            cfg.agent.lspServers = autoDetectLspServers();
         }
-        lspClients.push_back(std::move(client));
-    }
 
-    // Inject SkillManager and SymbolManager into Builtin Tools
+        std::vector<std::future<std::pair<const Config::Agent::LSPServer*, std::unique_ptr<LSPClient>>>> lspFutures;
+        for (const auto& server : cfg.agent.lspServers) {
+            if (server.command.empty()) continue;
+            lspFutures.push_back(std::async(std::launch::async, [&server, rootUri]() {
+                auto client = std::make_unique<LSPClient>(server.command, rootUri);
+                if (client->initialize()) return std::make_pair(&server, std::move(client));
+                return std::make_pair(&server, std::unique_ptr<LSPClient>(nullptr));
+            }));
+        }
+
+        std::vector<std::unique_ptr<LSPClient>> clients;
+        for (auto& f : lspFutures) {
+            auto res = f.get();
+            if (res.second) clients.push_back(std::move(res.second));
+        }
+        return clients;
+    });
+
+    // Inject into Builtin Tools
     if (auto* builtin = dynamic_cast<InternalMCPClient*>(mcpManager.getClient("builtin"))) {
         builtin->setSkillManager(&skillManager);
         builtin->setSymbolManager(&symbolManager);
-        if (!lspClients.empty()) {
-            builtin->setLSPClients(lspByExt, lspFallback);
-        }
+        builtin->setSemanticManager(semanticManager.get());
     }
 
-    std::cout << GREEN << "  ✔ Engine active. " 
-              << BOLD << (cfg.agent.useBuiltinTools ? "Built-in" : "") 
-              << (cfg.agent.useBuiltinTools && externalCount > 0 ? " + " : "")
-              << (externalCount > 0 ? std::to_string(externalCount) + " External" : "") 
-              << (skillManager.getCount() > 0 ? " + " + std::to_string(skillManager.getCount()) + " Skills" : "")
-              << " loaded." << RESET << "          " << std::endl;
+    std::cout << GREEN << "  ✔ Engine active. " << RESET << std::endl;
 
-    // Get all available tools and format them for the LLM
+    // Get tools and format
     auto mcpTools = mcpManager.getAllTools();
     nlohmann::json llmTools = formatToolsForLLM(mcpTools);
 
-    std::cout << "  " << CYAN << "Target " << RESET << " : " << BOLD << path << RESET << std::endl;
-    std::cout << "  " << CYAN << "Config " << RESET << " : " << BOLD << configPath << RESET << std::endl;
     std::cout << "  " << CYAN << "Model  " << RESET << " : " << PURPLE << cfg.llm.model << RESET << std::endl;
     
     std::cout << "\n  " << YELLOW << "Shortcuts:" << RESET << std::endl;
@@ -590,25 +605,66 @@ int main(int argc, char* argv[]) {
                                "   - [PLAN]: What are the next 2-3 steps?\n" +
                                "   - [REFLECTION]: Are there risks? Is there a better way?\n" +
                                "2. PROACTIVE INTERACTION: If a task is ambiguous or risky, DO NOT guess. Ask the user for clarification or propose multiple options.\n" +
-                               "3. PROJECT MAPPING: Always start by calling 'project_overview' to establish a mental map of the codebase.\n" +
-                               "4. ENGINEERING STRATEGY (Entry-Point-to-Call-Chain): To understand logic, start from the main entry point (e.g., main(), app.py). Follow the call chain using 'lsp_definition' (to find implementation) and 'lsp_references' (to find callers). Use 'read_batch_lines' to see multiple links in the chain simultaneously. Avoid reading random files.\n" +
+                               "3. PROJECT MAPPING: Always start by calling 'project_overview' to establish a mental map of the codebase. Then, use 'generate_logic_map' starting from the main entry point to understand the core logic flow.\n" +
+                               "4. ENGINEERING STRATEGY (Logic-Map-First): To understand logic, do NOT just read files. Start by generating a logic map from the entry point (e.g., main(), app.py, EntryComponent). This gives you a topological view of how components interact. Then follow the call chain using 'lsp_definition' and 'lsp_references' for deeper drill-down. Use 'read_batch_lines' to see multiple links in the chain simultaneously.\n" +
                                "5. TOKEN EFFICIENCY: Reading full content of large files is expensive. Use 'code_ast_analyze' to see file structure first. When you need to examine multiple code locations (even across different files), ALWAYS prefer 'read_batch_lines' over multiple 'read_file_lines' calls to save tokens and maintain logical coherence.\n" +
-                               "6. CLOSED-LOOP VERIFICATION: After any modification, you MUST call 'diagnostics_check' to verify the build and 'read_file_lines' to double-check your own work.\n" +
-                               "7. ERROR REFLECTION: If a tool fails, analyze the error output, explain why it failed, and adjust your plan accordingly.";
+                               "6. AVOID CIRCULAR REASONING: If you find yourself repeatedly searching for the same symbols or reading the same files, STOP. Use 'generate_logic_map' or 'project_overview' to get a higher-level view and break the loop.\n" +
+                               "7. CLOSED-LOOP VERIFICATION: After any modification, you MUST call 'diagnostics_check' to verify the build and 'read_file_lines' to double-check your own work.\n" +
+                               "8. ERROR REFLECTION: If a tool fails, analyze the error output, explain why it failed, and adjust your plan accordingly.\n" +
+                               "9. SEARCH & FETCH STRATEGY: Avoid repetitive searching. If you find a promising URL, use 'web_fetch' to read the full content immediately. One deep read is better than ten shallow searches. If you are stuck in a loop, use 'sequential_thinking' to revise your strategy.\n" +
+                               "10. HARMONYOS SPECIFIC: For HarmonyOS API issues, prioritize searching for the module name (e.g., '@ohos.window') and fetching the official 'references' or 'guides' pages.";
     
     nlohmann::json messages = nlohmann::json::array();
     messages.push_back({{"role", "system"}, {"content", systemPrompt}});
 
-    std::string userInput;
-    while (true) {
-        // Update and print status bar before prompt
-        size_t currentSize = contextManager.getSize(messages);
-        int taskCount = mcpManager.getTotalTaskCount();
-        printStatusBar(cfg.llm.model, currentSize, taskCount);
+    // Lazy initialization flag
+    bool engineInitialized = false;
+    std::unordered_set<std::string> recentQueries; // 记录最近的搜索，防止死循环
 
-        std::cout << CYAN << BOLD << "You > " << RESET;
-        if (!std::getline(std::cin, userInput) || userInput == "exit") break;
+    while (true) {
+        std::string userInput;
+        
+        // CLI Mode
+        std::cout << CYAN << BOLD << "You > " << RESET << std::flush;
+        
+        if (!std::getline(std::cin, userInput)) break;
         if (userInput.empty()) continue;
+
+        if (userInput == "exit") break;
+
+        // Reset query tracking for new user input
+        recentQueries.clear();
+
+        // Lazy wait for background tasks only when needed
+        if (!engineInitialized) {
+            std::cout << GRAY << "  (Finishing engine initialization...)" << RESET << "\r" << std::flush;
+            mcpFuture.get();
+            skillFuture.get();
+            auto loadedLspClients = lspInitFuture.get();
+            
+            // Setup LSP mappings
+            lspClients = std::move(loadedLspClients);
+            for (const auto& server : cfg.agent.lspServers) {
+                for (auto& client : lspClients) {
+                    for (auto ext : server.extensions) {
+                        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                        lspByExt[ext] = client.get();
+                    }
+                }
+            }
+            if (!lspClients.empty()) lspFallback = lspClients[0].get();
+
+            // Inject into Builtin Tools
+            if (auto* builtin = dynamic_cast<InternalMCPClient*>(mcpManager.getClient("builtin"))) {
+                builtin->setSkillManager(&skillManager);
+                builtin->setSymbolManager(&symbolManager);
+                builtin->setSemanticManager(semanticManager.get());
+                if (!lspClients.empty()) builtin->setLSPClients(lspByExt, lspFallback);
+            }
+            
+            std::cout << "                                        \r" << std::flush;
+            engineInitialized = true;
+        }
         
         if (userInput == "clear") {
             messages = nlohmann::json::array();
@@ -748,17 +804,17 @@ int main(int argc, char* argv[]) {
         bool continues = true;
         int iteration = 0;
         int max_iterations = 50; // Increased default limit to 50 rounds
+        bool authorizeAll = false; // Batch authorization flag for this turn
 
         while (continues && iteration < max_iterations) {
             iteration++;
-            // Apply context management
-            messages = contextManager.manage(messages);
+        // Apply context management
+        messages = contextManager.manage(messages);
 
-            // Update status bar during thinking
-            printStatusBar(cfg.llm.model, contextManager.getSize(messages), mcpManager.getTotalTaskCount());
+        // Update status bar during thinking
+        // UIManager::getInstance().updateStatus(cfg.llm.model, (int)contextManager.getSize(messages), mcpManager.getTotalTaskCount());
 
-            std::cout << YELLOW << "Thinking (Step " << iteration << "/" << max_iterations << ")..." << RESET << "\r" << std::flush;
-            nlohmann::json response = llmClient->chatWithTools(messages, llmTools);
+        nlohmann::json response = llmClient->chatWithTools(messages, llmTools);
             
             if (response.is_null() || !response.contains("choices") || response["choices"].empty()) {
                 break;
@@ -770,17 +826,22 @@ int main(int argc, char* argv[]) {
             // Add assistant's message to the conversation history
             messages.push_back(message);
 
-            // 1. Always display content if present (this is the "Thinking" or "Reasoning" part)
+            // 1. Handle content (Thought or final response)
             if (message.contains("content") && !message["content"].is_null()) {
                 std::string content = message["content"].get<std::string>();
                 if (!content.empty()) {
-                    std::cout << "           " << "\r"; // Clear "Thinking..."
-                    std::cout << GRAY << BOLD << "🤔 [Thought] " << RESET << renderMarkdown(content) << std::endl;
+                    if (message.contains("tool_calls") && !message["tool_calls"].is_null()) {
+                        Logger::getInstance().thought(renderMarkdown(content));
+                    } else {
+                        // Final response
+                        std::cout << "\n" << MAGENTA << BOLD << "🐼 Photon > " << RESET << renderMarkdown(content) << std::endl;
+                    }
                 }
             }
 
             // 2. Handle Tool Calls
             if (message.contains("tool_calls") && !message["tool_calls"].is_null()) {
+                continues = true;
                 for (auto& toolCall : message["tool_calls"]) {
                     std::string fullName = toolCall["function"]["name"];
                     std::string argsStr = toolCall["function"]["arguments"];
@@ -797,12 +858,24 @@ int main(int argc, char* argv[]) {
                         std::string serverName = fullName.substr(0, pos);
                         std::string toolName = fullName.substr(pos + 2);
 
-                        std::cout << YELLOW << BOLD << "⚙️  [Action] " << RESET 
-                                  << CYAN << serverName << RESET << "::" << BOLD << toolName << RESET 
-                                  << " " << GRAY << args.dump() << RESET << std::endl;
+                        // 优化：检测重复搜索死循环
+                        if (toolName.find("search") != std::string::npos) {
+                            std::string query = args.value("query", "");
+                            if (!query.empty()) {
+                                if (recentQueries.count(query)) {
+                                    std::cout << YELLOW << "  ⚠ Detected repetitive search loop. Forcing strategy shift." << RESET << std::endl;
+                                    nlohmann::json loopError = {{"error", "Repetitive search detected. Please change your search strategy or use web_fetch to read existing results."}};
+                                    messages.push_back({{"role", "tool"}, {"tool_call_id", toolCall["id"]}, {"name", fullName}, {"content", loopError.dump()}});
+                                    continue;
+                                }
+                                recentQueries.insert(query);
+                            }
+                        }
+
+                        Logger::getInstance().action(serverName + "::" + toolName + " " + args.dump());
                         
                         // Human-in-the-loop: Confirmation for risky tools
-                        if (isRiskyTool(toolName)) {
+                        if (isRiskyTool(toolName) && !authorizeAll) {
                             // Specialized Diff Preview for file operations
                             if (toolName == "file_write" && args.contains("content") && args.contains("path")) {
                                 showGitDiff(args["path"], args["content"]);
@@ -843,11 +916,48 @@ int main(int argc, char* argv[]) {
                                         showGitDiff(path, simulated);
                                     }
                                 }
+                            } else if (toolName == "edit_batch_lines" && args.contains("edits")) {
+                                std::cout << YELLOW << BOLD << "📦 BATCH EDIT PREVIEW:" << RESET << std::endl;
+                                for (const auto& edit : args["edits"]) {
+                                    std::string path = edit["path"];
+                                    std::ifstream inFile(path);
+                                    if (inFile.is_open()) {
+                                        std::vector<std::string> lines;
+                                        std::string line;
+                                        while (std::getline(inFile, line)) lines.push_back(line);
+                                        inFile.close();
+
+                                        std::string op = edit["operation"];
+                                        int start = edit["start_line"];
+                                        int end = edit.value("end_line", start);
+                                        std::string content = edit.value("content", "");
+                                        
+                                        std::vector<std::string> newLines;
+                                        std::istringstream iss(content);
+                                        std::string nl;
+                                        while (std::getline(iss, nl)) newLines.push_back(nl);
+
+                                        if (op == "replace" && end >= start && end <= (int)lines.size()) {
+                                            lines.erase(lines.begin() + start - 1, lines.begin() + end);
+                                            lines.insert(lines.begin() + start - 1, newLines.begin(), newLines.end());
+                                        } else if (op == "insert") {
+                                            lines.insert(lines.begin() + start - 1, newLines.begin(), newLines.end());
+                                        } else if (op == "delete" && end >= start && end <= (int)lines.size()) {
+                                            lines.erase(lines.begin() + start - 1, lines.begin() + end);
+                                        }
+
+                                        std::string simulated;
+                                        for (size_t i = 0; i < lines.size(); ++i) {
+                                            simulated += lines[i] + (i == lines.size() - 1 ? "" : "\n");
+                                        }
+                                        showGitDiff(path, simulated);
+                                    }
+                                }
                             }
 
                             while (true) {
                                 std::cout << YELLOW << BOLD << "⚠  CONFIRMATION REQUIRED: " << RESET 
-                                          << "Proceed? [y/N/v (view full)] " << std::flush;
+                                          << "Proceed? [y/N/a (all)/v (view full)] " << std::flush;
                                 std::string confirm;
                                 std::getline(std::cin, confirm);
                                 std::transform(confirm.begin(), confirm.end(), confirm.begin(), ::tolower);
@@ -889,6 +999,11 @@ int main(int argc, char* argv[]) {
                                     continue; // Ask again
                                 }
 
+                                if (confirm == "a" || confirm == "all") {
+                                    authorizeAll = true;
+                                    break;
+                                }
+
                                 if (confirm != "y" && confirm != "yes") {
                                     std::cout << RED << "✖  Action cancelled by user." << RESET << std::endl;
                                     messages.push_back({
@@ -907,6 +1022,10 @@ int main(int argc, char* argv[]) {
 
                         nlohmann::json result = mcpManager.callTool(serverName, toolName, args);
                         
+                        if (result.contains("error")) {
+                            Logger::getInstance().error("Tool " + toolName + " failed: " + result["error"].get<std::string>());
+                        }
+
                         // Add tool result to messages
                         messages.push_back({
                             {"role", "tool"},
@@ -937,19 +1056,27 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Final Context Usage Display
-        std::cout << CYAN << "── Memory: " << BOLD << contextManager.getSize(messages) << RESET << CYAN << " chars ──" << RESET << std::endl;
+        // Final Status Display
+        size_t currentSize = contextManager.getSize(messages);
+        int taskCount = mcpManager.getTotalTaskCount();
+        std::cout << GRAY << "─── " 
+                  << CYAN << "Model: " << BOLD << cfg.llm.model << RESET << GRAY << " | "
+                  << CYAN << "Context: " << BOLD << currentSize << RESET << GRAY << " chars | "
+                  << CYAN << "Tasks: " << BOLD << taskCount << RESET << GRAY << " active ───" 
+                  << RESET << std::endl;
     }
 
 #ifdef _WIN32
     WSACleanup();
 #endif
     } catch (const std::exception& e) {
+        Logger::getInstance().error("FATAL ERROR: " + std::string(e.what()));
         std::cerr << "\n" << RED << BOLD << "█ FATAL ERROR: " << RESET << e.what() << std::endl;
         std::cerr << "Press Enter to exit..." << std::endl;
         std::cin.get();
         return 1;
     } catch (...) {
+        Logger::getInstance().error("UNKNOWN FATAL ERROR");
         std::cerr << "\n" << RED << BOLD << "█ UNKNOWN FATAL ERROR" << RESET << std::endl;
         std::cerr << "Press Enter to exit..." << std::endl;
         std::cin.get();

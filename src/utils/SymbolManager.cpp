@@ -439,6 +439,26 @@ std::vector<SymbolManager::Symbol> SymbolManager::getFileSymbols(const std::stri
     return it->second;
 }
 
+std::vector<SymbolManager::CallInfo> SymbolManager::extractCalls(const std::string& relPath, int startLine, int endLine) {
+    fs::path fullPath = fs::path(rootPath) / fs::u8path(relPath);
+    std::ifstream file(fullPath);
+    if (!file.is_open()) return {};
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+
+    std::vector<CallInfo> allCalls;
+    std::lock_guard<std::mutex> lock(mtx);
+    for (const auto& provider : providers) {
+        if (auto* tsProvider = dynamic_cast<TreeSitterSymbolProvider*>(provider.get())) {
+            auto calls = tsProvider->extractCalls(content, relPath, startLine, endLine);
+            for (const auto& c : calls) {
+                allCalls.push_back({c.name, c.line, c.character});
+            }
+        }
+    }
+    return allCalls;
+}
+
 bool SymbolManager::shouldIgnore(const fs::path& path) {
     std::string p = path.string();
     return p.find("node_modules") != std::string::npos || 

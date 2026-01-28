@@ -7,6 +7,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
 #else
 #include <unistd.h>
 #include <sys/types.h>
@@ -14,6 +16,8 @@
 #include <fcntl.h>
 #include <signal.h>
 #endif
+
+namespace fs = std::filesystem;
 
 namespace {
 std::string toLower(const std::string& s) {
@@ -23,10 +27,12 @@ std::string toLower(const std::string& s) {
 }
 
 std::string guessLanguageId(const std::string& path) {
-    if (path.size() >= 4 && path.substr(path.size() - 4) == ".cpp") return "cpp";
-    if (path.size() >= 4 && path.substr(path.size() - 4) == ".hpp") return "cpp";
-    if (path.size() >= 2 && path.substr(path.size() - 2) == ".h") return "cpp";
-    if (path.size() >= 3 && path.substr(path.size() - 3) == ".py") return "python";
+    std::string ext = toLower(fs::path(path).extension().string());
+    if (ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".c") return "cpp";
+    if (ext == ".py") return "python";
+    if (ext == ".ts" || ext == ".tsx") return "typescript";
+    if (ext == ".js" || ext == ".jsx") return "javascript";
+    if (ext == ".ets") return "arkts";
     return "plaintext";
 }
 } // namespace
@@ -41,13 +47,15 @@ LSPClient::~LSPClient() {
 bool LSPClient::initialize() {
     if (initialized) return true;
     if (serverPath.empty()) return false;
-#ifdef _WIN32
-    return false;
-#else
+
     if (!startProcess()) return false;
 
     nlohmann::json params = {
+#ifdef _WIN32
+        {"processId", static_cast<int>(GetCurrentProcessId())},
+#else
         {"processId", static_cast<int>(getpid())},
+#endif
         {"rootUri", rootUri},
         {"capabilities", nlohmann::json::object()}
     };
@@ -56,7 +64,6 @@ bool LSPClient::initialize() {
     sendNotification("initialized", nlohmann::json::object());
     initialized = true;
     return true;
-#endif
 }
 
 std::vector<LSPClient::Location> LSPClient::goToDefinition(const std::string& fileUri, const Position& position) {
@@ -98,7 +105,53 @@ std::vector<LSPClient::Location> LSPClient::findReferences(const std::string& fi
 
 bool LSPClient::startProcess() {
 #ifdef _WIN32
-    return false;
+    if (processHandle) return true;
+
+    SECURITY_ATTRIBUTES saAttr;
+    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+    saAttr.bInheritHandle = TRUE;
+    saAttr.lpSecurityDescriptor = NULL;
+
+    HANDLE hChildStd_IN_Rd = NULL;
+    HANDLE hChildStd_IN_Wr = NULL;
+    HANDLE hChildStd_OUT_Rd = NULL;
+    HANDLE hChildStd_OUT_Wr = NULL;
+
+    if (!CreatePipe(&hChildStd_OUT_Rd, &hChildStd_OUT_Wr, &saAttr, 0)) return false;
+    if (!SetHandleInformation(hChildStd_OUT_Rd, HANDLE_FLAG_INHERIT, 0)) return false;
+    if (!CreatePipe(&hChildStd_IN_Rd, &hChildStd_IN_Wr, &saAttr, 0)) return false;
+    if (!SetHandleInformation(hChildStd_IN_Wr, HANDLE_FLAG_INHERIT, 0)) return false;
+
+    PROCESS_INFORMATION piProcInfo;
+    STARTUPINFOA siStartInfo;
+    ZeroMemory(&piProcInfo, sizeof(PROCESS_INFORMATION));
+    ZeroMemory(&siStartInfo, sizeof(STARTUPINFOA));
+    siStartInfo.cb = sizeof(STARTUPINFOA);
+    siStartInfo.hStdError = hChildStd_OUT_Wr;
+    siStartInfo.hStdOutput = hChildStd_OUT_Wr;
+    siStartInfo.hStdInput = hChildStd_IN_Rd;
+    siStartInfo.dwFlags |= STARTF_USESTDHANDLES;
+
+    std::string cmd = "cmd.exe /c " + serverPath;
+    if (!CreateProcessA(NULL, const_cast<char*>(cmd.c_str()), NULL, NULL, TRUE, 0, NULL, NULL, &siStartInfo, &piProcInfo)) {
+        CloseHandle(hChildStd_IN_Rd);
+        CloseHandle(hChildStd_IN_Wr);
+        CloseHandle(hChildStd_OUT_Rd);
+        CloseHandle(hChildStd_OUT_Wr);
+        return false;
+    }
+
+    processHandle = piProcInfo.hProcess;
+    threadHandle = piProcInfo.hThread;
+    stdinWrite = hChildStd_IN_Wr;
+    stdoutRead = hChildStd_OUT_Rd;
+
+    CloseHandle(hChildStd_IN_Rd);
+    CloseHandle(hChildStd_OUT_Wr);
+
+    stopReader = false;
+    readerThread = std::thread(&LSPClient::readerLoop, this);
+    return true;
 #else
     if (pid > 0) return true;
     auto args = splitArgs(serverPath);
@@ -154,7 +207,18 @@ bool LSPClient::startProcess() {
 
 void LSPClient::stopProcess() {
 #ifdef _WIN32
-    return;
+    if (!processHandle) return;
+    stopReader = true;
+    if (stdinWrite) CloseHandle(static_cast<HANDLE>(stdinWrite));
+    if (stdoutRead) CloseHandle(static_cast<HANDLE>(stdoutRead));
+    if (readerThread.joinable()) readerThread.join();
+    TerminateProcess(static_cast<HANDLE>(processHandle), 0);
+    CloseHandle(static_cast<HANDLE>(processHandle));
+    CloseHandle(static_cast<HANDLE>(threadHandle));
+    processHandle = nullptr;
+    threadHandle = nullptr;
+    stdinWrite = nullptr;
+    stdoutRead = nullptr;
 #else
     if (pid <= 0) return;
     stopReader = true;
@@ -169,14 +233,16 @@ void LSPClient::stopProcess() {
 }
 
 void LSPClient::readerLoop() {
-#ifdef _WIN32
-    return;
-#else
     std::string buffer;
     char temp[4096];
     while (!stopReader) {
+#ifdef _WIN32
+        DWORD n = 0;
+        if (!ReadFile(static_cast<HANDLE>(stdoutRead), temp, sizeof(temp), &n, NULL) || n == 0) break;
+#else
         ssize_t n = read(readFd, temp, sizeof(temp));
         if (n <= 0) break;
+#endif
         buffer.append(temp, temp + n);
 
         while (true) {
@@ -214,22 +280,28 @@ void LSPClient::readerLoop() {
             }
         }
     }
-#endif
 }
 
 bool LSPClient::sendMessage(const nlohmann::json& msg) {
-#ifdef _WIN32
-    (void)msg;
-    return false;
-#else
-    if (writeFd < 0) return false;
     std::string payload = msg.dump();
     std::string header = "Content-Length: " + std::to_string(payload.size()) + "\r\n\r\n";
     std::string full = header + payload;
-    ssize_t total = 0;
     const char* data = full.c_str();
-    ssize_t len = static_cast<ssize_t>(full.size());
+    size_t len = full.size();
+
+#ifdef _WIN32
+    if (!stdinWrite) return false;
+    DWORD total = 0;
     while (total < len) {
+        DWORD n = 0;
+        if (!WriteFile(static_cast<HANDLE>(stdinWrite), data + total, static_cast<DWORD>(len - total), &n, NULL)) return false;
+        total += n;
+    }
+    return true;
+#else
+    if (writeFd < 0) return false;
+    ssize_t total = 0;
+    while (total < static_cast<ssize_t>(len)) {
         ssize_t n = write(writeFd, data + total, len - total);
         if (n <= 0) return false;
         total += n;

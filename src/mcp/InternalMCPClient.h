@@ -17,6 +17,7 @@
 #include <csignal> // For kill
 #include "utils/SkillManager.h"
 #include "utils/SymbolManager.h"
+#include "utils/SemanticManager.h"
 #include "mcp/LSPClient.h"
 
 namespace fs = std::filesystem;
@@ -38,6 +39,10 @@ public:
         this->symbolManager = mgr;
     }
 
+    void setSemanticManager(SemanticManager* mgr) {
+        this->semanticManager = mgr;
+    }
+
     void setLSPClient(LSPClient* client) { this->lspClient = client; }
     void setLSPClients(const std::unordered_map<std::string, LSPClient*>& byExt, LSPClient* fallback) {
         lspByExtension = byExt;
@@ -57,6 +62,7 @@ private:
     std::string searchApiKey;
     SkillManager* skillManager = nullptr;
     SymbolManager* symbolManager = nullptr;
+    SemanticManager* semanticManager = nullptr;
     LSPClient* lspClient = nullptr;
     std::unordered_map<std::string, LSPClient*> lspByExtension;
 
@@ -90,14 +96,22 @@ private:
     nlohmann::json listDirTree(const nlohmann::json& args);
     nlohmann::json diffApply(const nlohmann::json& args);
     nlohmann::json fileEditLines(const nlohmann::json& args);
+    nlohmann::json editBatchLines(const nlohmann::json& args);
     nlohmann::json fileUndo(const nlohmann::json& args);
     nlohmann::json memoryStore(const nlohmann::json& args);
     nlohmann::json memoryList(const nlohmann::json& args);
     nlohmann::json memoryRetrieve(const nlohmann::json& args);
     nlohmann::json projectOverview(const nlohmann::json& args);
+
+    // Consolidated File Operations
+    nlohmann::json toolFileRead(const nlohmann::json& args);
+    nlohmann::json toolFileWrite(const nlohmann::json& args);
+    nlohmann::json toolFileExplore(const nlohmann::json& args);
     nlohmann::json symbolSearch(const nlohmann::json& args);
+    nlohmann::json semanticSearch(const nlohmann::json& args);
     nlohmann::json lspDefinition(const nlohmann::json& args);
     nlohmann::json lspReferences(const nlohmann::json& args);
+    nlohmann::json generateLogicMap(const nlohmann::json& args);
     nlohmann::json resolveRelativeDate(const nlohmann::json& args);
     nlohmann::json skillRead(const nlohmann::json& args);
     nlohmann::json osScheduler(const nlohmann::json& args);

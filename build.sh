@@ -67,7 +67,7 @@ TS_OBJS=""
 
 if [ "$ENABLE_TS" = "ON" ]; then
     echo -e "${GREEN}正在编译 Tree-sitter 依赖...${NC}"
-    TS_INCLUDES="-Ithird_party/tree-sitter/lib/include -Ithird_party/tree-sitter-cpp/bindings/c -Ithird_party/tree-sitter-python/bindings/c"
+    TS_INCLUDES="-Ithird_party/tree-sitter/lib/include -Ithird_party/tree-sitter-cpp/bindings/c -Ithird_party/tree-sitter-python/bindings/c -Ithird_party/tree-sitter-typescript/bindings/c -Ithird_party/tree-sitter-arkts/bindings/c"
     CXXFLAGS="$CXXFLAGS $TS_INCLUDES -DPHOTON_ENABLE_TREESITTER"
     CFLAGS="-std=c11 -O3 -Wall $TS_INCLUDES"
 
@@ -78,16 +78,24 @@ if [ "$ENABLE_TS" = "ON" ]; then
         "third_party/tree-sitter-cpp/src/scanner.c"
         "third_party/tree-sitter-python/src/parser.c"
         "third_party/tree-sitter-python/src/scanner.c"
+        "third_party/tree-sitter-typescript/typescript/src/parser.c"
+        "third_party/tree-sitter-typescript/typescript/src/scanner.c"
+        "third_party/tree-sitter-arkts/src/parser.c"
     )
     for SRC in "${TS_SRCS[@]}"; do
         OBJ="build/ts/${SRC//\//_}.o"
-        $CC $CFLAGS -c "$SRC" -o "$OBJ" || { echo -e "${RED}Tree-sitter 编译失败: $SRC${NC}"; exit 1; }
+        # TypeScript scanner needs common/ include
+        CURRENT_CFLAGS="$CFLAGS"
+        if [[ "$SRC" == *"tree-sitter-typescript"* ]]; then
+            CURRENT_CFLAGS="$CFLAGS -Ithird_party/tree-sitter-typescript/common -Ithird_party/tree-sitter-typescript/typescript/src"
+        fi
+        $CC $CURRENT_CFLAGS -c "$SRC" -o "$OBJ" || { echo -e "${RED}Tree-sitter 编译失败: $SRC${NC}"; exit 1; }
         TS_OBJS="$TS_OBJS $OBJ"
     done
 fi
 
 # 源文件列表
-SRCS="src/core/main.cpp src/utils/FileManager.cpp src/utils/SymbolManager.cpp src/utils/RegexSymbolProvider.cpp src/utils/TreeSitterSymbolProvider.cpp src/core/LLMClient.cpp src/core/ContextManager.cpp src/mcp/MCPClient.cpp src/mcp/LSPClient.cpp src/mcp/InternalMCPClient.cpp"
+SRCS="src/core/main.cpp src/utils/FileManager.cpp src/utils/SymbolManager.cpp src/utils/SemanticManager.cpp src/utils/RegexSymbolProvider.cpp src/utils/TreeSitterSymbolProvider.cpp src/core/LLMClient.cpp src/core/ContextManager.cpp src/mcp/MCPClient.cpp src/mcp/LSPClient.cpp src/mcp/InternalMCPClient.cpp"
 
 echo -e "${GREEN}正在手动编译 Photon...${NC}"
 $CXX $SRCS $CXXFLAGS $LIBS $TS_OBJS -o photon

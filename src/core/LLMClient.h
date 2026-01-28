@@ -13,6 +13,7 @@ public:
     virtual nlohmann::json chatWithTools(const nlohmann::json& messages, const nlohmann::json& tools);
     
     virtual std::string summarize(const std::string& text);
+    virtual std::vector<float> getEmbedding(const std::string& text);
 
 private:
     std::string apiKey;

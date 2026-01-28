@@ -3,12 +3,13 @@
     #include <winsock2.h>
 #endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
-#include "utils/httplib.h"
+#include "httplib.h"
 #include <iostream>
 #include <regex>
 
 // ANSI Color Codes
 static const std::string RED = "\033[31m";
+static const std::string YELLOW = "\033[33m";
 static const std::string RESET = "\033[0m";
 
 LLMClient::LLMClient(const std::string& apiKey, const std::string& baseUrl, const std::string& model) 
@@ -75,12 +76,77 @@ nlohmann::json LLMClient::chatWithTools(const nlohmann::json& messages, const nl
     std::string bodyStr = body.dump();
 
     httplib::Result res;
+    int retryCount = 0;
+    const int maxRetries = 3;
+    
+    while (retryCount < maxRetries) {
+        try {
+            if (isSsl) {
+                httplib::SSLClient cli(host, port);
+                cli.set_follow_location(true);
+                cli.set_connection_timeout(10);
+                cli.set_read_timeout(60);
+                res = cli.Post(endpoint.c_str(), headers, bodyStr, "application/json");
+            } else {
+                httplib::Client cli(host, port);
+                cli.set_follow_location(true);
+                cli.set_connection_timeout(10);
+                cli.set_read_timeout(60);
+                res = cli.Post(endpoint.c_str(), headers, bodyStr, "application/json");
+            }
+            
+            if (res && res->status == 200) break;
+            
+            // If we get here, it's either a connection failure or non-200 status
+            retryCount++;
+            if (retryCount < maxRetries) {
+                std::cerr << YELLOW << "  ⚠ API request failed (Status: " << (res ? std::to_string(res->status) : "Timeout") 
+                          << "). Retrying (" << retryCount << "/" << maxRetries << ")..." << RESET << "\r" << std::flush;
+                std::this_thread::sleep_for(std::chrono::seconds(2 * retryCount));
+            }
+        } catch (...) {
+            retryCount++;
+            if (retryCount >= maxRetries) throw;
+            std::this_thread::sleep_for(std::chrono::seconds(2 * retryCount));
+        }
+    }
+
+    if (res && res->status == 200) {
+        return nlohmann::json::parse(res->body);
+    } else {
+        std::cerr << RED << "✖ API Error after " << maxRetries << " attempts: " 
+                  << (res ? std::to_string(res->status) : "Connection failed") << RESET << std::endl;
+        if (res && !res->body.empty()) std::cerr << "  Body: " << res->body << std::endl;
+        return nlohmann::json::object();
+    }
+}
+
+std::string LLMClient::summarize(const std::string& text) {
+    std::string prompt = "Please summarize the following content briefly while preserving key information:\n\n" + text;
+    return chat(prompt, "You are an expert summarizer. Your goal is to compress information while maintaining context.");
+}
+
+std::vector<float> LLMClient::getEmbedding(const std::string& text) {
+    httplib::Headers headers = {
+        {"Authorization", "Bearer " + apiKey},
+        {"Content-Type", "application/json"}
+    };
+
+    nlohmann::json body = {
+        {"model", "text-embedding-3-small"}, // Default embedding model
+        {"input", text}
+    };
+
+    std::string endpoint = pathPrefix + "/embeddings";
+    std::string bodyStr = body.dump();
+
+    httplib::Result res;
     try {
         if (isSsl) {
             httplib::SSLClient cli(host, port);
             cli.set_follow_location(true);
-            cli.set_connection_timeout(10); // 10 seconds timeout
-            cli.set_read_timeout(60);       // 60 seconds timeout
+            cli.set_connection_timeout(10);
+            cli.set_read_timeout(60);
             res = cli.Post(endpoint.c_str(), headers, bodyStr, "application/json");
         } else {
             httplib::Client cli(host, port);
@@ -89,24 +155,17 @@ nlohmann::json LLMClient::chatWithTools(const nlohmann::json& messages, const nl
             cli.set_read_timeout(60);
             res = cli.Post(endpoint.c_str(), headers, bodyStr, "application/json");
         }
-    } catch (const std::exception& e) {
-        std::cerr << RED << "✖ Network Exception: " << e.what() << RESET << std::endl;
-        return nlohmann::json::object();
     } catch (...) {
-        std::cerr << RED << "✖ Unknown Network Exception" << RESET << std::endl;
-        return nlohmann::json::object();
+        return {};
     }
 
     if (res && res->status == 200) {
-        return nlohmann::json::parse(res->body);
-    } else {
-        std::cerr << "API Error: " << (res ? std::to_string(res->status) : "Connection failed") << " for host " << host << std::endl;
-        if (res) std::cerr << "Body: " << res->body << std::endl;
-        return nlohmann::json::object();
+        try {
+            auto j = nlohmann::json::parse(res->body);
+            if (j.contains("data") && !j["data"].empty()) {
+                return j["data"][0]["embedding"].get<std::vector<float>>();
+            }
+        } catch (...) {}
     }
-}
-
-std::string LLMClient::summarize(const std::string& text) {
-    std::string prompt = "Please summarize the following content briefly while preserving key information:\n\n" + text;
-    return chat(prompt, "You are an expert summarizer. Your goal is to compress information while maintaining context.");
+    return {};
 }

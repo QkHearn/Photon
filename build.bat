@@ -39,7 +39,7 @@ set TS_FLAG=OFF
 for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content config.json | ConvertFrom-Json).agent.enable_tree_sitter"`) do set TS_FLAG=%%i
 if /I "%TS_FLAG%"=="True" (
     set TS_DEFINE=/D PHOTON_ENABLE_TREESITTER
-    set TS_INCLUDES=/I third_party\tree-sitter\lib\include /I third_party\tree-sitter-cpp\bindings\c /I third_party\tree-sitter-python\bindings\c
+    set TS_INCLUDES=/I third_party\tree-sitter\lib\include /I third_party\tree-sitter-cpp\bindings\c /I third_party\tree-sitter-python\bindings\c /I third_party\tree-sitter-typescript\bindings\c /I third_party\tree-sitter-arkts\bindings\c
     if not exist "third_party\tree-sitter" (
         echo [Error] Tree-sitter not found in third_party.
         exit /b 1
@@ -52,6 +52,14 @@ if /I "%TS_FLAG%"=="True" (
         echo [Error] tree-sitter-python not found in third_party.
         exit /b 1
     )
+    if not exist "third_party\tree-sitter-typescript" (
+        echo [Error] tree-sitter-typescript not found in third_party.
+        exit /b 1
+    )
+    if not exist "third_party\tree-sitter-arkts" (
+        echo [Error] tree-sitter-arkts not found in third_party.
+        exit /b 1
+    )
     if not exist "build\ts" mkdir build\ts
     echo [Photon] Compiling Tree-sitter C sources...
     cl /nologo /TC /c third_party\tree-sitter\lib\src\lib.c %TS_INCLUDES% /Fo build\ts\tree-sitter_lib_src_lib.obj
@@ -59,7 +67,10 @@ if /I "%TS_FLAG%"=="True" (
     cl /nologo /TC /c third_party\tree-sitter-cpp\src\scanner.c %TS_INCLUDES% /Fo build\ts\tree-sitter-cpp_src_scanner.obj
     cl /nologo /TC /c third_party\tree-sitter-python\src\parser.c %TS_INCLUDES% /Fo build\ts\tree-sitter-python_src_parser.obj
     cl /nologo /TC /c third_party\tree-sitter-python\src\scanner.c %TS_INCLUDES% /Fo build\ts\tree-sitter-python_src_scanner.obj
-    set TS_OBJS=build\ts\tree-sitter_lib_src_lib.obj build\ts\tree-sitter-cpp_src_parser.obj build\ts\tree-sitter-cpp_src_scanner.obj build\ts\tree-sitter-python_src_parser.obj build\ts\tree-sitter-python_src_scanner.obj
+    cl /nologo /TC /c third_party\tree-sitter-typescript\typescript\src\parser.c %TS_INCLUDES% /I third_party\tree-sitter-typescript\common /I third_party\tree-sitter-typescript\typescript\src /Fo build\ts\tree-sitter-typescript_src_parser.obj
+    cl /nologo /TC /c third_party\tree-sitter-typescript\typescript\src\scanner.c %TS_INCLUDES% /I third_party\tree-sitter-typescript\common /I third_party\tree-sitter-typescript\typescript\src /Fo build\ts\tree-sitter-typescript_src_scanner.obj
+    cl /nologo /TC /c third_party\tree-sitter-arkts\src\parser.c %TS_INCLUDES% /Fo build\ts\tree-sitter-arkts_src_parser.obj
+    set TS_OBJS=build\ts\tree-sitter_lib_src_lib.obj build\ts\tree-sitter-cpp_src_parser.obj build\ts\tree-sitter-cpp_src_scanner.obj build\ts\tree-sitter-python_src_parser.obj build\ts\tree-sitter-python_src_scanner.obj build\ts\tree-sitter-typescript_src_parser.obj build\ts\tree-sitter-typescript_src_scanner.obj build\ts\tree-sitter-arkts_src_parser.obj
 ) else (
     set TS_DEFINE=
     set TS_INCLUDES=

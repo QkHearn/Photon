@@ -167,3 +167,72 @@ void TreeSitterSymbolProvider::collectSymbols(TSNode node,
     }
 }
 #endif
+
+std::vector<TreeSitterSymbolProvider::CallInfo> TreeSitterSymbolProvider::extractCalls(const std::string& content, const std::string& relPath, int startLine, int endLine) const {
+    std::vector<CallInfo> calls;
+#ifdef PHOTON_ENABLE_TREESITTER
+    const Language* lang = languageForExtension(fs::path(relPath).extension().u8string());
+    if (!lang || !lang->language) return calls;
+
+    TSParser* parser = ts_parser_new();
+    ts_parser_set_language(parser, lang->language);
+    TSTree* tree = ts_parser_parse_string(parser, nullptr, content.c_str(), content.size());
+    TSNode root = ts_tree_root_node(tree);
+
+    std::vector<TSNode> stack;
+    stack.push_back(root);
+
+    while (!stack.empty()) {
+        TSNode node = stack.back();
+        stack.pop_back();
+
+        auto start = ts_node_start_point(node);
+        auto end = ts_node_end_point(node);
+
+        // If node is outside the range, skip it
+        if (static_cast<int>(end.row + 1) < startLine || static_cast<int>(start.row + 1) > endLine) {
+            continue;
+        }
+
+        const char* type = ts_node_type(node);
+        if (std::strcmp(type, "call_expression") == 0) {
+            // Find the function name/identifier
+            TSNode funcNode = ts_node_child_by_field_name(node, "function", 8);
+            if (ts_node_is_null(funcNode)) {
+                uint32_t childCount = ts_node_child_count(node);
+                for (uint32_t i = 0; i < childCount; ++i) {
+                    TSNode child = ts_node_child(node, i);
+                    if (std::strcmp(ts_node_type(child), "identifier") == 0) {
+                        funcNode = child;
+                        break;
+                    }
+                }
+            }
+
+            if (!ts_node_is_null(funcNode)) {
+                if (std::strcmp(ts_node_type(funcNode), "field_expression") == 0) {
+                    funcNode = ts_node_child_by_field_name(funcNode, "field", 5);
+                }
+
+                auto fStart = ts_node_start_point(funcNode);
+                auto fStartByte = ts_node_start_byte(funcNode);
+                auto fEndByte = ts_node_end_byte(funcNode);
+
+                if (fEndByte > fStartByte && fEndByte <= content.size()) {
+                    std::string name = content.substr(fStartByte, fEndByte - fStartByte);
+                    calls.push_back({name, static_cast<int>(fStart.row + 1), static_cast<int>(fStart.column)});
+                }
+            }
+        }
+
+        uint32_t childCount = ts_node_child_count(node);
+        for (int32_t i = static_cast<int32_t>(childCount) - 1; i >= 0; --i) {
+            stack.push_back(ts_node_child(node, i));
+        }
+    }
+
+    ts_tree_delete(tree);
+    ts_parser_delete(parser);
+#endif
+    return calls;
+}

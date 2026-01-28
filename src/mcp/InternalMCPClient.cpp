@@ -2,13 +2,14 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include "mcp/InternalMCPClient.h"
+#include "utils/LogicMapper.h"
 #include <algorithm>
 #include <regex>
 #ifdef __APPLE__
     #include <mach-o/dyld.h>
 #endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
-#include "utils/httplib.h"
+#include "httplib.h"
 #include <sstream>
 #include <iomanip>
 #include <chrono>
@@ -118,11 +119,11 @@ void InternalMCPClient::syncKnowledgeIndex() {
 }
 
 void InternalMCPClient::registerTools() {
-    toolHandlers["file_search"] = [this](const nlohmann::json& a) { return fileSearch(a); };
-    toolHandlers["file_read"] = [this](const nlohmann::json& a) { return fileRead(a); };
+    toolHandlers["read"] = [this](const nlohmann::json& a) { return toolFileRead(a); };
+    toolHandlers["write"] = [this](const nlohmann::json& a) { return toolFileWrite(a); };
+    toolHandlers["explore"] = [this](const nlohmann::json& a) { return toolFileExplore(a); };
     toolHandlers["context_read"] = [this](const nlohmann::json& a) { return contextRead(a); };
     toolHandlers["diagnostics_check"] = [this](const nlohmann::json& a) { return diagnosticsCheck(a); };
-    toolHandlers["file_write"] = [this](const nlohmann::json& a) { return fileWrite(a); };
     toolHandlers["python_sandbox"] = [this](const nlohmann::json& a) { return pythonSandbox(a); };
     toolHandlers["pip_install"] = [this](const nlohmann::json& a) { return pipInstall(a); };
     toolHandlers["sequential_thinking"] = [this](const nlohmann::json& a) { return sequentialThinking(a); };
@@ -134,19 +135,16 @@ void InternalMCPClient::registerTools() {
     toolHandlers["web_search"] = [this](const nlohmann::json& a) { return webSearch(a); };
     toolHandlers["harmony_search"] = [this](const nlohmann::json& a) { return harmonySearch(a); };
     toolHandlers["grep_search"] = [this](const nlohmann::json& a) { return grepSearch(a); };
-    toolHandlers["read_file_lines"] = [this](const nlohmann::json& a) { return readFileLines(a); };
-    toolHandlers["read_batch_lines"] = [this](const nlohmann::json& a) { return readBatchLines(a); };
-    toolHandlers["list_dir_tree"] = [this](const nlohmann::json& a) { return listDirTree(a); };
-    toolHandlers["diff_apply"] = [this](const nlohmann::json& a) { return diffApply(a); };
-    toolHandlers["file_edit_lines"] = [this](const nlohmann::json& a) { return fileEditLines(a); };
     toolHandlers["file_undo"] = [this](const nlohmann::json& a) { return fileUndo(a); };
     toolHandlers["memory_store"] = [this](const nlohmann::json& a) { return memoryStore(a); };
     toolHandlers["memory_list"] = [this](const nlohmann::json& a) { return memoryList(a); };
     toolHandlers["memory_retrieve"] = [this](const nlohmann::json& a) { return memoryRetrieve(a); };
     toolHandlers["project_overview"] = [this](const nlohmann::json& a) { return projectOverview(a); };
     toolHandlers["symbol_search"] = [this](const nlohmann::json& a) { return symbolSearch(a); };
+    toolHandlers["semantic_search"] = [this](const nlohmann::json& a) { return semanticSearch(a); };
     toolHandlers["lsp_definition"] = [this](const nlohmann::json& a) { return lspDefinition(a); };
     toolHandlers["lsp_references"] = [this](const nlohmann::json& a) { return lspReferences(a); };
+    toolHandlers["generate_logic_map"] = [this](const nlohmann::json& a) { return generateLogicMap(a); };
     toolHandlers["resolve_relative_date"] = [this](const nlohmann::json& a) { return resolveRelativeDate(a); };
     toolHandlers["skill_read"] = [this](const nlohmann::json& a) { return skillRead(a); };
     toolHandlers["schedule"] = [this](const nlohmann::json& a) { return osScheduler(a); };
@@ -483,29 +481,76 @@ std::string urlDecode(const std::string& value) {
 nlohmann::json InternalMCPClient::listTools() {
     nlohmann::json tools = nlohmann::json::array();
 
-    // File Search Tool
+    // Consolidated Read Tool
     tools.push_back({
-        {"name", "file_search"},
-        {"description", "Search for files in the workspace by name or content."},
+        {"name", "read"},
+        {"description", "Read file content. Supports full read, line-range read, and multi-file batch read. "
+                        "Use 'path' for single file, 'start_line'/'end_line' for range, or 'requests' array for batch."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
-                {"query", {{"type", "string"}, {"description", "The search query (filename or content snippet)"}}}
-            }},
-            {"required", {"query"}}
+                {"path", {{"type", "string"}, {"description", "Relative path for single file read"}}},
+                {"start_line", {{"type", "integer"}, {"description", "Start line (1-based)"}}},
+                {"end_line", {{"type", "integer"}, {"description", "End line (1-based)"}}},
+                {"requests", {
+                    {"type", "array"},
+                    {"items", {
+                        {"type", "object"},
+                        {"properties", {
+                            {"path", {{"type", "string"}}},
+                            {"start_line", {{"type", "integer"}}},
+                            {"end_line", {{"type", "integer"}}}
+                        }},
+                        {"required", {"path", "start_line", "end_line"}}
+                    }}
+                }}
+            }}
         }}
     });
 
-    // File Read Tool
+    // Consolidated Write Tool
     tools.push_back({
-        {"name", "file_read"},
-        {"description", "Read the content of a specific file. WARNING: For large files, this consumes significant tokens. Use 'read_file_lines' for partial reads or 'code_ast_analyze' for structure overview instead."},
+        {"name", "write"},
+        {"description", "Modify file content. Supports full write, precise line edit, search-replace (diff), and atomic batch edits."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
-                {"path", {{"type", "string"}, {"description", "The relative path to the file"}}}
-            }},
-            {"required", {"path"}}
+                {"path", {{"type", "string"}, {"description", "Relative path to the file"}}},
+                {"content", {{"type", "string"}, {"description", "Full content or edit content"}}},
+                {"operation", {{"type", "string"}, {"enum", {"insert", "replace", "delete"}}, {"description", "Line edit type"}}},
+                {"start_line", {{"type", "integer"}}},
+                {"end_line", {{"type", "integer"}}},
+                {"search", {{"type", "string"}, {"description", "Text to find for diff-style edit"}}},
+                {"replace", {{"type", "string"}, {"description", "Text to replace for diff-style edit"}}},
+                {"edits", {
+                    {"type", "array"},
+                    {"items", {
+                        {"type", "object"},
+                        {"properties", {
+                            {"path", {{"type", "string"}}},
+                            {"operation", {{"type", "string"}, {"enum", {"insert", "replace", "delete"}}}},
+                            {"start_line", {{"type", "integer"}}},
+                            {"end_line", {{"type", "integer"}}},
+                            {"content", {{"type", "string"}}}
+                        }},
+                        {"required", {"path", "operation", "start_line"}}
+                    }}
+                }}
+            }}
+        }}
+    });
+
+    // Consolidated Explore Tool
+    tools.push_back({
+        {"name", "explore"},
+        {"description", "Explore project structure. Supports file searching and directory tree listing."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"query", {{"type", "string"}, {"description", "Search query for files"}}},
+                {"path", {{"type", "string"}, {"description", "Directory path for tree listing"}}},
+                {"depth", {{"type", "integer"}, {"description", "Tree depth"}}}
+            }}
         }}
     });
 
@@ -534,20 +579,6 @@ nlohmann::json InternalMCPClient::listTools() {
             {"properties", {
                 {"command", {{"type", "string"}, {"description", "Optional build command (if not provided, will be auto-detected)"}}}
             }}
-        }}
-    });
-
-    // File Write Tool
-    tools.push_back({
-        {"name", "file_write"},
-        {"description", "Write or overwrite a file with specific content."},
-        {"inputSchema", {
-            {"type", "object"},
-            {"properties", {
-                {"path", {{"type", "string"}, {"description", "The relative path to the file"}}},
-                {"content", {{"type", "string"}, {"description", "The content to write"}}}
-            }},
-            {"required", {"path", "content"}}
         }}
     });
 
@@ -699,91 +730,6 @@ nlohmann::json InternalMCPClient::listTools() {
         }}
     });
 
-    // Read File Lines Tool
-    tools.push_back({
-        {"name", "read_file_lines"},
-        {"description", "Read specific lines from a file with precise line numbers. Use this when you know exact line numbers (e.g., from symbol_search or lsp_definition)."},
-        {"inputSchema", {
-            {"type", "object"},
-            {"properties", {
-                {"path", {{"type", "string"}, {"description", "The relative path to the file"}}},
-                {"start_line", {{"type", "integer"}, {"description", "The starting line number (1-based, inclusive)"}}},
-                {"end_line", {{"type", "integer"}, {"description", "The ending line number (1-based, inclusive)"}}}
-            }},
-            {"required", {"path", "start_line", "end_line"}}
-        }}
-    });
-
-    // Read Batch Lines Tool
-    tools.push_back({
-        {"name", "read_batch_lines"},
-        {"description", "Simultaneously read multiple line ranges from multiple files in a single call. This is the most token-efficient way to explore call chains, cross-file dependencies, or multiple code snippets at once."},
-        {"inputSchema", {
-            {"type", "object"},
-            {"properties", {
-                {"requests", {
-                    {"type", "array"},
-                    {"items", {
-                        {"type", "object"},
-                        {"properties", {
-                            {"path", {{"type", "string"}, {"description", "The relative path to the file"}}},
-                            {"start_line", {{"type", "integer"}, {"description", "The starting line number (1-based, inclusive)"}}},
-                            {"end_line", {{"type", "integer"}, {"description", "The ending line number (1-based, inclusive)"}}}
-                        }},
-                        {"required", {"path", "start_line", "end_line"}}
-                    }}
-                }}
-            }},
-            {"required", {"requests"}}
-        }}
-    });
-
-    // List Dir Tree Tool
-    tools.push_back({
-        {"name", "list_dir_tree"},
-        {"description", "Show the directory structure of the workspace as a tree."},
-        {"inputSchema", {
-            {"type", "object"},
-            {"properties", {
-                {"path", {{"type", "string"}, {"description", "The relative path to start (default: root)"}}},
-                {"depth", {{"type", "integer"}, {"description", "Maximum depth to show (default: 3)"}}}
-            }},
-            {"required", nlohmann::json::array()}
-        }}
-    });
-
-    // Diff Apply Tool
-    tools.push_back({
-        {"name", "diff_apply"},
-        {"description", "Apply a search-and-replace style change to a file. Automatically creates a backup for undo."},
-        {"inputSchema", {
-            {"type", "object"},
-            {"properties", {
-                {"path", {{"type", "string"}, {"description", "The relative path to the file"}}},
-                {"search", {{"type", "string"}, {"description", "The exact text to find in the file"}}},
-                {"replace", {{"type", "string"}, {"description", "The text to replace it with"}}}
-            }},
-            {"required", {"path", "search", "replace"}}
-        }}
-    });
-
-    // File Edit Lines Tool (Precise line-based editing)
-    tools.push_back({
-        {"name", "file_edit_lines"},
-        {"description", "Precisely edit a file by line numbers. Supports insert, replace, and delete operations at specific line ranges. Use this when you know exact line numbers (e.g., from symbol_search, lsp_definition, or read_file_lines)."},
-        {"inputSchema", {
-            {"type", "object"},
-            {"properties", {
-                {"path", {{"type", "string"}, {"description", "The relative path to the file"}}},
-                {"operation", {{"type", "string"}, {"description", "Operation type: 'insert', 'replace', or 'delete'"}, {"enum", {"insert", "replace", "delete"}}}},
-                {"start_line", {{"type", "integer"}, {"description", "Starting line number (1-based, inclusive). For insert, this is where to insert before. For replace/delete, this is the first line to modify."}}},
-                {"end_line", {{"type", "integer"}, {"description", "Ending line number (1-based, inclusive). Required for replace/delete. For insert, this is ignored."}}},
-                {"content", {{"type", "string"}, {"description", "Content to insert or replace with. Required for insert/replace, ignored for delete. Can be multi-line."}}}
-            }},
-            {"required", {"path", "operation", "start_line"}}
-        }}
-    });
-
     // File Undo Tool
     tools.push_back({
         {"name", "file_undo"},
@@ -926,6 +872,20 @@ nlohmann::json InternalMCPClient::listTools() {
         }}
     });
 
+    // Semantic Search Tool
+    tools.push_back({
+        {"name", "semantic_search"},
+        {"description", "Perform a semantic search across the entire project, including code, documentation (Markdown), and stored knowledge. Use this when you don't know the exact symbol name but know the functionality or concept you're looking for."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"query", {{"type", "string"}, {"description", "The concept, functionality, or question to search for"}}},
+                {"top_k", {{"type", "integer"}, {"description", "Maximum number of results to return (default: 5)"}}}
+            }},
+            {"required", {"query"}}
+        }}
+    });
+
     // LSP Definition Tool
     tools.push_back({
         {"name", "lsp_definition"},
@@ -952,6 +912,20 @@ nlohmann::json InternalMCPClient::listTools() {
                 {"character", {{"type", "integer"}, {"description", "The character position (0-indexed)"}}}
             }},
             {"required", {"path", "line", "character"}}
+        }}
+    });
+
+    // Logic Map Tool
+    tools.push_back({
+        {"name", "generate_logic_map"},
+        {"description", "Generate a dynamic call topology graph starting from an entry point (e.g., main). Uses LSP and Tree-sitter to trace the logic flow. Essential for understanding project architecture quickly."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"entry_symbol", {{"type", "string"}, {"description", "The name of the entry symbol (e.g., 'main', 'app', 'EntryComponent')"}}},
+                {"max_depth", {{"type", "integer"}, {"description", "Maximum recursion depth for the call chain (default: 3)"}}}
+            }},
+            {"required", {"entry_symbol"}}
         }}
     });
 
@@ -2171,6 +2145,96 @@ nlohmann::json InternalMCPClient::fileEditLines(const nlohmann::json& args) {
     return {{"content", {{{"type", "text"}, {"text", result}}}}};
 }
 
+nlohmann::json InternalMCPClient::editBatchLines(const nlohmann::json& args) {
+    if (!args.contains("edits") || !args["edits"].is_array()) {
+        return {{"error", "Missing or invalid 'edits' array"}};
+    }
+
+    struct FileEdit {
+        std::string path;
+        std::string operation;
+        int startLine;
+        int endLine;
+        std::string content;
+    };
+
+    std::map<std::string, std::vector<FileEdit>> groupedEdits;
+    for (const auto& edit : args["edits"]) {
+        FileEdit fe;
+        fe.path = edit.value("path", "");
+        fe.operation = edit.value("operation", "");
+        fe.startLine = edit.value("start_line", 0);
+        fe.endLine = edit.value("end_line", fe.startLine);
+        fe.content = edit.value("content", "");
+        
+        if (fe.path.empty() || fe.operation.empty() || fe.startLine < 1) {
+            return {{"error", "Invalid edit parameters in batch"}};
+        }
+        groupedEdits[fe.path].push_back(fe);
+    }
+
+    std::map<std::string, std::vector<std::string>> fileContents;
+    for (auto const& [path, edits] : groupedEdits) {
+        fs::path fullPath = rootPath / fs::u8path(path);
+        if (!fs::exists(fullPath)) {
+            return {{"error", "File not found: " + path}};
+        }
+
+        std::ifstream inFile(fullPath);
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(inFile, line)) {
+            lines.push_back(line);
+        }
+        inFile.close();
+
+        // Sort edits for this file in reverse order to keep line numbers valid
+        auto sortedEdits = edits;
+        std::sort(sortedEdits.begin(), sortedEdits.end(), [](const FileEdit& a, const FileEdit& b) {
+            return a.startLine > b.startLine;
+        });
+
+        for (const auto& fe : sortedEdits) {
+            int totalLines = static_cast<int>(lines.size());
+            if (fe.operation == "insert") {
+                if (fe.startLine > totalLines + 1) return {{"error", "Line out of range in " + fe.path}};
+                std::vector<std::string> newLines;
+                std::istringstream iss(fe.content);
+                std::string nl;
+                while (std::getline(iss, nl)) newLines.push_back(nl);
+                lines.insert(lines.begin() + (fe.startLine - 1), newLines.begin(), newLines.end());
+            } else if (fe.operation == "replace") {
+                if (fe.endLine > totalLines || fe.endLine < fe.startLine) return {{"error", "Line range out of bounds in " + fe.path}};
+                std::vector<std::string> newLines;
+                std::istringstream iss(fe.content);
+                std::string nl;
+                while (std::getline(iss, nl)) newLines.push_back(nl);
+                lines.erase(lines.begin() + (fe.startLine - 1), lines.begin() + fe.endLine);
+                lines.insert(lines.begin() + (fe.startLine - 1), newLines.begin(), newLines.end());
+            } else if (fe.operation == "delete") {
+                if (fe.endLine > totalLines || fe.endLine < fe.startLine) return {{"error", "Line range out of bounds in " + fe.path}};
+                lines.erase(lines.begin() + (fe.startLine - 1), lines.begin() + fe.endLine);
+            }
+        }
+        fileContents[path] = lines;
+    }
+
+    // If we reached here, all edits are valid. Now write them.
+    std::string report = "✅ Atomic batch edit successful:\n";
+    for (auto const& [path, lines] : fileContents) {
+        backupFile(path);
+        fs::path fullPath = rootPath / fs::u8path(path);
+        std::ofstream outFile(fullPath);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            outFile << lines[i] << (i == lines.size() - 1 ? "" : "\n");
+        }
+        outFile.close();
+        report += "- Updated `" + path + "` (" + std::to_string(lines.size()) + " lines)\n";
+    }
+
+    return {{"content", {{{"type", "text"}, {"text", report}}}}};
+}
+
 nlohmann::json InternalMCPClient::fileUndo(const nlohmann::json& args) {
     std::string relPathStr = args["path"];
     fs::path fullPath = rootPath / fs::u8path(relPathStr);
@@ -2385,6 +2449,46 @@ nlohmann::json InternalMCPClient::symbolSearch(const nlohmann::json& args) {
     return {{"content", {{{"type", "text"}, {"text", report}}}}};
 }
 
+nlohmann::json InternalMCPClient::semanticSearch(const nlohmann::json& args) {
+    if (!semanticManager) {
+        return {{"content", {{{"type", "text"}, {"text", "SemanticManager not initialized."}}}}};
+    }
+
+    std::string query = args.value("query", "");
+    if (query.empty()) {
+        return {{"content", {{{"type", "text"}, {"text", "Error: query is required."}}}}};
+    }
+    int topK = args.value("top_k", 5);
+
+    auto results = semanticManager->search(query, topK);
+    if (results.empty()) {
+        return {{"content", {{{"type", "text"}, {"text", "No semantic matches found for: " + query}}}}};
+    }
+
+    std::string report = "Semantic Search Results for: `" + query + "`\n\n";
+    for (const auto& chunk : results) {
+        std::string typeIcon = "🧩";
+        if (chunk.type == "code") typeIcon = "⚙️";
+        else if (chunk.type == "markdown") typeIcon = "📄";
+        else if (chunk.type == "fact") typeIcon = "💡";
+        else if (chunk.type == "skill") typeIcon = "📜";
+
+        report += "📍 " + typeIcon + " **[" + chunk.type + "]** in `" + chunk.path + "`";
+        if (chunk.startLine > 0) {
+            report += " (Line " + std::to_string(chunk.startLine) + ")";
+        }
+        report += " | Score: " + std::to_string(static_cast<int>(chunk.score * 100)) + "%\n";
+        
+        // Preview content
+        std::string preview = chunk.content;
+        if (preview.length() > 300) preview = preview.substr(0, 300) + "...";
+        report += "   > " + preview + "\n\n";
+    }
+
+    report += "*Tip: Use 'read_file_lines' or 'context_read' to examine the full context of these matches.*";
+    return {{"content", {{{"type", "text"}, {"text", report}}}}};
+}
+
 nlohmann::json InternalMCPClient::lspDefinition(const nlohmann::json& args) {
     auto extractIdentifierAt = [](const fs::path& path, int line, int character) -> std::string {
         if (line <= 0 || character < 0) return "";
@@ -2580,6 +2684,42 @@ nlohmann::json InternalMCPClient::lspReferences(const nlohmann::json& args) {
                   ", end_line=" + std::to_string(contextEnd) + ")\n\n";
     }
     return {{"content", {{{"type", "text"}, {"text", report}}}}};
+}
+
+nlohmann::json InternalMCPClient::generateLogicMap(const nlohmann::json& args) {
+    if (!symbolManager) return {{"error", "Symbol manager not initialized"}};
+    
+    std::string entrySymbol = args["entry_symbol"];
+    int maxDepth = args.value("max_depth", 3);
+    
+    // Check cache
+    fs::path cachePath = globalDataPath / "index" / "logic_map.json";
+    nlohmann::json cache;
+    if (fs::exists(cachePath)) {
+        std::ifstream f(cachePath);
+        try {
+            f >> cache;
+            if (cache.contains(entrySymbol) && cache[entrySymbol].value("max_depth", 0) >= maxDepth) {
+                // Check if any files have changed since cache was created
+                // For simplicity, we'll just return the cache for now.
+                // In a full implementation, we'd check mtimes.
+                return {{"content", {{{"type", "text"}, {"text", cache[entrySymbol]["map"].dump(2)}}}}};
+            }
+        } catch (...) {}
+    }
+
+    LogicMapper mapper(*symbolManager, lspByExtension, lspClient);
+    nlohmann::json map = mapper.generateMap(entrySymbol, maxDepth);
+    
+    // Save to cache
+    try {
+        fs::create_directories(cachePath.parent_path());
+        cache[entrySymbol] = {{"max_depth", maxDepth}, {"map", map}};
+        std::ofstream f(cachePath);
+        f << cache.dump(2);
+    } catch (...) {}
+
+    return {{"content", {{{"type", "text"}, {"text", map.dump(2)}}}}};
 }
 
 nlohmann::json InternalMCPClient::resolveRelativeDate(const nlohmann::json& args) {
@@ -2786,6 +2926,36 @@ nlohmann::json InternalMCPClient::cancelTask(const nlohmann::json& args) {
         return {{"content", {{{"type", "text"}, {"text", "Task cancelled: " + targetId}}}}};
     }
     return {{"error", "Task ID not found: " + targetId}};
+}
+
+nlohmann::json InternalMCPClient::toolFileRead(const nlohmann::json& args) {
+    if (args.contains("requests")) {
+        return readBatchLines(args);
+    }
+    if (args.contains("start_line") || args.contains("end_line")) {
+        return readFileLines(args);
+    }
+    return fileRead(args);
+}
+
+nlohmann::json InternalMCPClient::toolFileWrite(const nlohmann::json& args) {
+    if (args.contains("edits")) {
+        return editBatchLines(args);
+    }
+    if (args.contains("operation")) {
+        return fileEditLines(args);
+    }
+    if (args.contains("search") && args.contains("replace")) {
+        return diffApply(args);
+    }
+    return fileWrite(args);
+}
+
+nlohmann::json InternalMCPClient::toolFileExplore(const nlohmann::json& args) {
+    if (args.contains("query")) {
+        return fileSearch(args);
+    }
+    return listDirTree(args);
 }
 
 std::string InternalMCPClient::executeCommand(const std::string& cmd) {

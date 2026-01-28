@@ -14,6 +14,13 @@ public:
     std::vector<Symbol> extractSymbols(const std::string& content, const std::string& relPath) const override;
     bool supportsExtension(const std::string& ext) const override;
 
+    struct CallInfo {
+        std::string name;
+        int line;
+        int character;
+    };
+    std::vector<CallInfo> extractCalls(const std::string& content, const std::string& relPath, int startLine, int endLine) const;
+
 #ifdef PHOTON_ENABLE_TREESITTER
     void registerLanguage(const std::string& name,
                           const std::vector<std::string>& extensions,

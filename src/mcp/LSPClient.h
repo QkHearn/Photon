@@ -36,6 +36,8 @@ public:
     std::vector<Location> goToDefinition(const std::string& fileUri, const Position& position);
     std::vector<Location> findReferences(const std::string& fileUri, const Position& position);
 
+    static std::string uriToPath(const std::string& uri);
+
 private:
     std::string serverPath;
     std::string rootUri;
@@ -70,6 +72,5 @@ private:
     void sendNotification(const std::string& method, const nlohmann::json& params);
     bool ensureDocumentOpen(const std::string& fileUri);
     std::vector<Location> parseLocations(const nlohmann::json& result);
-    static std::string uriToPath(const std::string& uri);
     static std::vector<std::string> splitArgs(const std::string& cmd);
 };
