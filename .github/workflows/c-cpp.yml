@@ -133,6 +133,7 @@ jobs:
         run: |
           cd build-coverage
           # 收集数据并排除无关目录，增加忽略错误标志
+          # 注意：genhtml 在不同版本下对 --ignore-errors 的支持参数不同，这里使用更通用的组合
           lcov --capture --directory . --output-file coverage.info --rc lcov_branch_coverage=1 \
             --ignore-errors mismatch,inconsistent,unsupported,format,unused \
             --exclude '/usr/*' \
@@ -143,8 +144,9 @@ jobs:
           # 移除不需要的数据
           lcov --remove coverage.info '/usr/*' '*/third_party/*' '*/tests/*' '*/src/utils/httplib.h' --output-file coverage.info --ignore-errors unused,inconsistent,format
           # 生成 HTML 报告
+          # 兼容性修复：移除 genhtml 中可能不支持的 'missing' 参数，改用 'source'
           genhtml coverage.info --output-directory coverage-report --show-details --rc genhtml_branch_coverage=1 \
-            --ignore-errors source,missing,format,inconsistent,corrupt,category
+            --ignore-errors source,format,inconsistent,corrupt,category
           # 打印摘要
           lcov --summary coverage.info --ignore-errors unused,inconsistent,format
 

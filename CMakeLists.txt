@@ -115,6 +115,8 @@ target_link_libraries(photon PRIVATE Threads::Threads)
 # --- Optional Tree-sitter ---
 option(PHOTON_ENABLE_TREESITTER "Enable Tree-sitter parser support" OFF)
 if(PHOTON_ENABLE_TREESITTER)
+    # Force tree-sitter to build as a static library to avoid DLL issues on Windows
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
     add_subdirectory(third_party/tree-sitter)
 
     add_library(tree-sitter-cpp STATIC
