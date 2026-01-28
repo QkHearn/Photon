@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ["main"]
 
+# 显式声明权限，修复 GITHUB_TOKEN 权限报错
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   build:
     name: Build on ${{ matrix.os }}
@@ -34,9 +39,10 @@ jobs:
 
       - name: Setup vcpkg (Windows)
         if: matrix.os == 'windows-latest'
-        uses: microsoft/setup-vcpkg@v3
-        with:
-          vcpkgGitCommitSha: "HEAD"
+        run: |
+          # GitHub Windows runners have vcpkg pre-installed at VCPKG_INSTALLATION_ROOT
+          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_ENV
+          vcpkg integrate install
 
       - name: Install Dependencies (Windows)
         if: matrix.os == 'windows-latest'
@@ -45,6 +51,7 @@ jobs:
 
       - name: Check Tree-sitter config
         id: check_ts
+        shell: bash
         run: |
           if [ -f config.json ]; then
             ENABLE_TS=$(python3 -c "import json; f=open('config.json'); d=json.load(f); print('ON' if d.get('agent', {}).get('enable_tree_sitter', False) else 'OFF')" 2>/dev/null || echo "OFF")
@@ -57,60 +64,39 @@ jobs:
       - name: Configure and Build (Unix)
         if: matrix.os != 'windows-latest'
         run: |
-          mkdir build
+          mkdir -p build
           cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DPHOTON_ENABLE_TREESITTER=${{ steps.check_ts.outputs.enable_ts }}
           cmake --build . --config Release
-
-      - name: Check Tree-sitter config (Windows)
-        if: matrix.os == 'windows-latest'
-        id: check_ts_win
-        shell: bash
-        run: |
-          if [ -f config.json ]; then
-            ENABLE_TS=$(python3 -c "import json; f=open('config.json'); d=json.load(f); print('ON' if d.get('agent', {}).get('enable_tree_sitter', False) else 'OFF')" 2>/dev/null || echo "OFF")
-          else
-            ENABLE_TS="OFF"
-          fi
-          echo "enable_ts=$ENABLE_TS" >> $GITHUB_OUTPUT
-          echo "Tree-sitter will be: $ENABLE_TS"
 
       - name: Configure and Build (Windows)
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          mkdir build
+          mkdir -p build
           cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static -DPHOTON_ENABLE_TREESITTER=${{ steps.check_ts_win.outputs.enable_ts }}
+          # 使用环境变量 VCPKG_ROOT 的正确方式，并用双引号保护路径
+          cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static \
+            -DPHOTON_ENABLE_TREESITTER=${{ steps.check_ts.outputs.enable_ts }}
           cmake --build . --config Release
 
       - name: Run Unit Tests
+        shell: bash
         run: |
           cd build
-          # Windows 上测试可执行文件可能在 Release 或 Debug 目录
+          # 增强的测试查找逻辑，覆盖 Unix 和 Windows 路径
           TEST_EXE=""
-          if [ -f agent_tests ]; then
-            TEST_EXE="agent_tests"
-          elif [ -f agent_tests.exe ]; then
-            TEST_EXE="agent_tests.exe"
-          elif [ -f Release/agent_tests.exe ]; then
-            TEST_EXE="Release/agent_tests.exe"
-          elif [ -f Debug/agent_tests.exe ]; then
-            TEST_EXE="Debug/agent_tests.exe"
-          fi
-
+          for f in agent_tests agent_tests.exe Release/agent_tests.exe Debug/agent_tests.exe; do
+            if [ -f "$f" ]; then TEST_EXE="$f"; break; fi
+          done
+          
           if [ -n "$TEST_EXE" ]; then
             echo "Running unit tests: $TEST_EXE"
-            ctest --output-on-failure -V
-            TEST_RESULT=$?
-            if [ $TEST_RESULT -ne 0 ]; then
-              echo "❌ Unit tests failed"
-              exit $TEST_RESULT
-            fi
-            echo "✅ All unit tests passed"
+            ctest --output-on-failure -V -C Release
           else
-            echo "⚠️  Test executable not found. Searched: agent_tests, agent_tests.exe, Release/agent_tests.exe, Debug/agent_tests.exe"
-            echo "    Build may have succeeded but tests were not built."
+            echo "⚠️ Test executable not found. Skipping tests."
           fi
 
       - name: Archive Build Artifacts
@@ -123,11 +109,9 @@ jobs:
             build/Release/photon.exe
           if-no-files-found: warn
 
-  # Separate job for unit tests and code coverage (Linux only for coverage)
   test-and-coverage:
     name: Unit Tests & Code Coverage
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -139,50 +123,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake libssl-dev nlohmann-json3-dev libgtest-dev lcov gcov
 
-      - name: Check Tree-sitter config
-        id: check_ts
-        run: |
-          if [ -f config.json ]; then
-            ENABLE_TS=$(python3 -c "import json; f=open('config.json'); d=json.load(f); print('ON' if d.get('agent', {}).get('enable_tree_sitter', False) else 'OFF')" 2>/dev/null || echo "OFF")
-          else
-            ENABLE_TS="OFF"
-          fi
-          echo "enable_ts=$ENABLE_TS" >> $GITHUB_OUTPUT
-          echo "Tree-sitter will be: $ENABLE_TS"
-
       - name: Configure CMake with Coverage
         run: |
           mkdir -p build-coverage
           cd build-coverage
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DPHOTON_ENABLE_TREESITTER=${{ steps.check_ts.outputs.enable_ts }} \
-            -DENABLE_COVERAGE=ON
-
-      - name: Build with Coverage
-        run: |
-          cd build-coverage
+          # 覆盖率测试通常在 Debug 模式下运行，且关闭 Tree-sitter 以减少环境干扰
+          cmake .. -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON -DPHOTON_ENABLE_TREESITTER=OFF
           cmake --build . --config Debug
 
       - name: Run Unit Tests
         run: |
           cd build-coverage
           ctest --output-on-failure -V
-          TEST_RESULT=$?
-          if [ $TEST_RESULT -ne 0 ]; then
-            echo "❌ Unit tests failed"
-            exit $TEST_RESULT
-          fi
-          echo "✅ All unit tests passed"
 
       - name: Generate Coverage Report
         run: |
           cd build-coverage
-          # Collect coverage data
-          lcov --capture --directory . --output-file coverage.info --exclude '/usr/*' --exclude '*/third_party/*' --exclude '*/build*' --exclude '*/tests/*'
-          # Generate HTML report
+          # 收集数据并排除无关目录
+          lcov --capture --directory . --output-file coverage.info \
+            --exclude '/usr/*' \
+            --exclude '*/third_party/*' \
+            --exclude '*/build*' \
+            --exclude '*/tests/*'
+          # 生成 HTML 报告
           genhtml coverage.info --output-directory coverage-report --show-details
-          # Print summary
+          # 打印摘要
           lcov --summary coverage.info
 
       - name: Upload Coverage Report
