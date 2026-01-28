@@ -36,9 +36,16 @@ TEST_F(FileManagerTest, ReadsAllFilesSuccessfully) {
     FileManager fm(testDir);
     auto files = fm.readAllFiles();
     
-    EXPECT_EQ(files.size(), 3);
-    EXPECT_NE(files.find(testDir + "/file1.txt"), files.end());
-    EXPECT_EQ(files[testDir + "/file1.txt"], "hello world");
+    // Normalize paths to generic format (forward slashes) for cross-platform comparison
+    std::map<std::string, std::string> normalizedFiles;
+    for (const auto& [p, c] : files) {
+        normalizedFiles[fs::path(p).generic_string()] = c;
+    }
+    
+    std::string f1Path = fs::path(testDir + "/file1.txt").generic_string();
+    EXPECT_EQ(normalizedFiles.size(), 3);
+    EXPECT_NE(normalizedFiles.find(f1Path), normalizedFiles.end());
+    EXPECT_EQ(normalizedFiles[f1Path], "hello world");
 }
 
 TEST_F(FileManagerTest, SearchesContentCorrectly) {
@@ -46,5 +53,5 @@ TEST_F(FileManagerTest, SearchesContentCorrectly) {
     auto matches = fm.searchFiles("agent");
     
     EXPECT_EQ(matches.size(), 1);
-    EXPECT_EQ(matches[0], testDir + "/file2.md");
+    EXPECT_EQ(fs::path(matches[0]).generic_string(), fs::path(testDir + "/file2.md").generic_string());
 }
