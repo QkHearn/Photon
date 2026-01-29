@@ -101,6 +101,7 @@ find_package(GTest REQUIRED)
 add_executable(agent_tests 
     tests/test_FileManager.cpp 
     tests/test_ContextManager.cpp
+    tests/test_InternalMCPClient.cpp
 )
 target_link_libraries(agent_tests PRIVATE GTest::gtest GTest::gtest_main agent_lib)
 

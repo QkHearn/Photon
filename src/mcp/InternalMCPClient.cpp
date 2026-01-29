@@ -488,10 +488,12 @@ nlohmann::json InternalMCPClient::listTools() {
     tools.push_back({
         {"name", "read"},
         {"description", "Read file content. STRONGLY PREFER targeted reads using 'start_line' and 'end_line' or symbol-based 'query' to save tokens. "
+                        "Before each read, use 'grep_search' to locate the target. "
                         "Full-file reads (only 'path') should be avoided for large files."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
+                {"summary", {{"type", "string"}, {"description", "Optional short summary of the previous read"}}},
                 {"start_line", {{"type", "integer"}, {"description", "Start line (1-based) for targeted read"}}},
                 {"end_line", {{"type", "integer"}, {"description", "End line (1-based) for targeted read"}}},
                 {"query", {{"type", "string"}, {"description", "Symbol or identifier to locate via the index for context read"}}},
@@ -518,6 +520,7 @@ nlohmann::json InternalMCPClient::listTools() {
     tools.push_back({
         {"name", "write"},
         {"description", "Modify file content. [POLICY] Surgical edits are MANDATORY. Full-file overwrites are FORBIDDEN for existing files. "
+                        "You MUST read the file before writing to it. "
                         "Methods: 1) 'operation' (insert/replace/delete) with 'start_line'/'end_line' for precise line edits, or 2) 'search' and 'replace' for diff-style edits. "
                         "Full-file overwrites (only 'path' and 'content') are only allowed when creating NEW files."},
         {"inputSchema", {
@@ -963,6 +966,18 @@ nlohmann::json InternalMCPClient::callTool(const std::string& name, const nlohma
         return {{"error", "Tool not found: " + name}};
     }
 
+    if (name == "read") {
+        auto hasReadArgs = [&](const nlohmann::json& args) {
+            return args.contains("query") || args.contains("requests") ||
+                   args.contains("start_line") || args.contains("end_line") ||
+                   args.contains("path");
+        };
+        if (!allowNextRead && hasReadArgs(arguments)) {
+            return {{"content", {{{"type", "text"},
+                {"text", "⚠️ 读取前请先使用 grep_search 定位目标位置，然后再 read。"}}}}};
+        }
+    }
+
     auto startTime = std::chrono::high_resolution_clock::now();
     nlohmann::json result = it->second(arguments);
     auto endTime = std::chrono::high_resolution_clock::now();
@@ -970,6 +985,31 @@ nlohmann::json InternalMCPClient::callTool(const std::string& name, const nlohma
 
     // Add Telemetry to the result
     if (result.contains("content") && result["content"].is_array() && !result["content"].empty()) {
+        if (name == "grep_search" || name == "context_read" || name == "lsp_definition" ||
+            name == "lsp_references" || name == "symbol_search" || name == "semantic_search" ||
+            name == "explore") {
+            allowNextRead = true;
+        }
+        if (name == "read") {
+            bool didRead = !(result.contains("error"));
+            if (didRead) {
+                allowNextRead = false;
+                if (arguments.contains("path")) {
+                    readPaths.insert(arguments.value("path", ""));
+                } else if (arguments.contains("requests")) {
+                    for (const auto& req : arguments["requests"]) {
+                        if (req.contains("path")) {
+                            readPaths.insert(req.value("path", ""));
+                        }
+                    }
+                }
+                if (result["content"][0].contains("text")) {
+                    std::string currentText = result["content"][0]["text"];
+                    currentText += "\n\n💡 阅读完成后可简要总结，便于后续定位与修改。";
+                    result["content"][0]["text"] = currentText;
+                }
+            }
+        }
         std::string telemetry = "\n\n[Telemetry] Execution time: " + std::to_string(duration) + "ms";
         if (result["content"][0].contains("text")) {
             std::string currentText = result["content"][0]["text"];
@@ -1051,6 +1091,14 @@ nlohmann::json InternalMCPClient::fileRead(const nlohmann::json& args) {
 
     if (!fs::exists(fullPath)) {
         return {{"content", {{{"type", "text"}, {"text", "Error: File not found: " + relPathStr}}}}};
+    }
+    if (!fs::is_regular_file(fullPath)) {
+        if (fs::is_directory(fullPath)) {
+            return {{"content", {{{"type", "text"},
+                {"text", "Error: Path is a directory, not a file: " + relPathStr}}}}};
+        }
+        return {{"content", {{{"type", "text"},
+            {"text", "Error: Path is not a regular file: " + relPathStr}}}}};
     }
 
     // Size check for token optimization
@@ -1243,6 +1291,37 @@ nlohmann::json InternalMCPClient::contextRead(const nlohmann::json& args) {
         return hotFiles.find(s.path) != hotFiles.end();
     });
 
+    auto pickClient = [&](const std::string& relPath) -> LSPClient* {
+        if (!lspByExtension.empty()) {
+            std::string ext = fs::path(relPath).extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            auto it = lspByExtension.find(ext);
+            if (it != lspByExtension.end()) return it->second;
+        }
+        return lspClient;
+    };
+    auto toRelPath = [&](const std::string& path) -> std::string {
+        std::string rel = path;
+        if (rel.find("file://") == 0) rel = rel.substr(7);
+        if (rel.find(rootPath.u8string()) == 0) {
+            rel = fs::relative(fs::u8path(rel), rootPath).generic_string();
+        }
+        return rel;
+    };
+    auto findColumn = [&](const fs::path& filePath, int line, const std::string& name) -> int {
+        std::ifstream file(filePath);
+        if (!file.is_open()) return -1;
+        std::string textLine;
+        int current = 1;
+        while (std::getline(file, textLine)) {
+            if (current == line) break;
+            current++;
+        }
+        if (current != line) return -1;
+        auto pos = textLine.find(name);
+        if (pos == std::string::npos) return -1;
+        return static_cast<int>(pos);
+    };
     auto readWindow = [&](const fs::path& filePath, int line, int ctx) -> std::string {
         std::ifstream file(filePath);
         if (!file.is_open()) return "";
@@ -1261,7 +1340,7 @@ nlohmann::json InternalMCPClient::contextRead(const nlohmann::json& args) {
         return out;
     };
 
-    std::string report;
+        std::string report;
     int count = 0;
     for (const auto& s : results) {
         if (count >= maxMatches) break;
@@ -1278,6 +1357,36 @@ nlohmann::json InternalMCPClient::contextRead(const nlohmann::json& args) {
                   " | Context Range: Lines " + std::to_string(startLine) + "-" + std::to_string(endLine) + "\n";
         report += "   └─ To read exact range: read_file_lines(path=\"" + s.path + 
                   "\", start_line=" + std::to_string(startLine) + ", end_line=" + std::to_string(endLine) + ")\n";
+        LSPClient* client = pickClient(s.path);
+        if (client) {
+            int col = findColumn(fullPath, s.line, s.name);
+            if (col >= 0) {
+                std::string fileUri = "file://" + fs::absolute(fullPath).u8string();
+                LSPClient::Position pos{s.line - 1, col};
+                auto defs = client->goToDefinition(fileUri, pos);
+                auto refs = client->findReferences(fileUri, pos);
+                if (!defs.empty()) {
+                    report += "   └─ LSP Definitions: " + std::to_string(defs.size()) + "\n";
+                    size_t limit = std::min<size_t>(defs.size(), 3);
+                    for (size_t i = 0; i < limit; ++i) {
+                        const auto& loc = defs[i];
+                        std::string rel = toRelPath(loc.uri);
+                        int line = loc.range.start.line + 1;
+                        report += "      • " + rel + ":" + std::to_string(line) + "\n";
+                    }
+                }
+                if (!refs.empty()) {
+                    report += "   └─ LSP References: " + std::to_string(refs.size()) + "\n";
+                    size_t limit = std::min<size_t>(refs.size(), 3);
+                    for (size_t i = 0; i < limit; ++i) {
+                        const auto& loc = refs[i];
+                        std::string rel = toRelPath(loc.uri);
+                        int line = loc.range.start.line + 1;
+                        report += "      • " + rel + ":" + std::to_string(line) + "\n";
+                    }
+                }
+            }
+        }
         report += "\n" + window + "\n";
         count++;
     }
@@ -2082,6 +2191,20 @@ nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
 
     if (start < 1) start = 1;
     if (end < start) end = start;
+    const int MAX_RANGE_LINES = 200;
+    const int MAX_FILE_BUDGET = 800;
+    int requestedLines = end - start + 1;
+    if (requestedLines > MAX_RANGE_LINES) {
+        return {{"content", {{{"type", "text"},
+            {"text", "⚠️  读取范围过大（" + std::to_string(requestedLines) +
+                     " 行）。请缩小范围或使用 read(query) / context_read。"}}}}};
+    }
+    int usedLines = fileReadLineCounts[relPathStr];
+    if (usedLines + requestedLines > MAX_FILE_BUDGET) {
+        return {{"content", {{{"type", "text"},
+            {"text", "⚠️  单文件读取预算已达上限（" + std::to_string(MAX_FILE_BUDGET) +
+                     " 行）。请改用搜索或符号定位。"}}}}};
+    }
 
     std::ifstream file(fullPath);
     if (!file.is_open()) {
@@ -2112,7 +2235,7 @@ nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
         content += "⚠️  No lines in range. ";
         if (fileTotalLines > 0) {
             content += "File has " + std::to_string(fileTotalLines) + " total line(s).\n";
-            content += "💡 Tip: Use start_line=1, end_line=" + std::to_string(fileTotalLines) + " to read the entire file.\n";
+            content += "💡 Tip: Use smaller ranges or read(query) for precise context.\n";
         } else {
             content += "File is empty or could not be read.\n";
         }
@@ -2127,6 +2250,7 @@ nlohmann::json InternalMCPClient::readFileLines(const nlohmann::json& args) {
         content += "\n";
     }
     
+    fileReadLineCounts[relPathStr] = usedLines + totalLines;
     return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(content, 8000)}}}}};
 }
 
@@ -2157,6 +2281,20 @@ nlohmann::json InternalMCPClient::readBatchLines(const nlohmann::json& args) {
 
         if (start < 1) start = 1;
         if (end < start) end = start;
+        const int MAX_RANGE_LINES = 200;
+        const int MAX_FILE_BUDGET = 800;
+        int requestedLines = end - start + 1;
+        if (requestedLines > MAX_RANGE_LINES) {
+            report += "⚠️  读取范围过大（" + std::to_string(requestedLines) +
+                      " 行）：`" + relPathStr + "`. 请缩小范围或使用 read(query).\n\n";
+            continue;
+        }
+        int usedLines = fileReadLineCounts[relPathStr];
+        if (usedLines + requestedLines > MAX_FILE_BUDGET) {
+            report += "⚠️  单文件读取预算已达上限（" + std::to_string(MAX_FILE_BUDGET) +
+                      " 行）：`" + relPathStr + "`. 请改用搜索或符号定位。\n\n";
+            continue;
+        }
 
         report += "📄 File: `" + relPathStr + "` | Lines " + std::to_string(start) + "-" + std::to_string(end) + "\n";
         std::string separator;
@@ -2180,6 +2318,7 @@ nlohmann::json InternalMCPClient::readBatchLines(const nlohmann::json& args) {
         }
         report += separator + "\n\n";
         totalFilesProcessed++;
+        fileReadLineCounts[relPathStr] = usedLines + linesRead;
     }
 
     return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(report, 12000)}}}}};
@@ -3218,6 +3357,34 @@ nlohmann::json InternalMCPClient::toolFileRead(const nlohmann::json& args) {
     if (args.contains("start_line") || args.contains("end_line")) {
         return readFileLines(args);
     }
+    if (args.contains("path")) {
+        const std::uintmax_t MAX_FULL_READ_SIZE = 4096; // 4KB cap for path-only reads
+        fs::path fullPath = rootPath / fs::u8path(args["path"].get<std::string>());
+        if (fs::exists(fullPath)) {
+            if (!fs::is_regular_file(fullPath)) {
+                if (fs::is_directory(fullPath)) {
+                    return {{"content", {{{"type", "text"},
+                        {"text", "⚠️ 读取目标是目录，请改用 explore(path=...) 查看目录结构。"}}}}};
+                }
+                return {{"content", {{{"type", "text"},
+                    {"text", "⚠️ 读取目标不是普通文件。请确认路径。"}}}}};
+            }
+            std::uintmax_t fileSize = fs::file_size(fullPath);
+            if (fileSize > MAX_FULL_READ_SIZE) {
+                return {{"content", {{{"type", "text"},
+                    {"text", "⚠️ 已阻止仅凭 path 的读取（>4KB）。请使用 read(query) 或 read(start_line/end_line) 进行定点读取。"}}}}};
+            }
+        }
+        auto res = fileRead(args);
+        if (res.contains("content") && res["content"].is_array() && !res["content"].empty()) {
+            auto& item = res["content"][0];
+            if (item.contains("type") && item["type"] == "text" && item.contains("text")) {
+                item["text"] = item["text"].get<std::string>() +
+                    "\n\n💡 阅读后请先总结文件职责、关键结构与依赖，再决定是否需要 read(query)/LSP 继续定位。";
+            }
+        }
+        return res;
+    }
     return fileRead(args);
 }
 
@@ -3243,6 +3410,50 @@ nlohmann::json InternalMCPClient::toolFileWrite(const nlohmann::json& args) {
             {"is_high_risk", true},
             {"content", {{{"type", "text"}, {"text", "⚠️ 安全拦截：修改核心源码（src/）需要您的显式授权。请告知用户需要点击授权按钮或调用 'authorize' 工具来开启本次对话的执行权限。"}}}}
         };
+    }
+
+    auto isNewFileWrite = [&](const nlohmann::json& a) {
+        if (!a.contains("path") || !a.contains("content")) return false;
+        if (a.contains("operation")) return false;
+        if (a.contains("search") && a.contains("replace")) return false;
+        std::string path = a["path"];
+        fs::path full = rootPath / fs::u8path(path);
+        return !fs::exists(full);
+    };
+    auto requiresPriorRead = [&](const std::string& relPath) {
+        fs::path full = rootPath / fs::u8path(relPath);
+        if (!fs::exists(full)) return false;
+        return readPaths.find(relPath) == readPaths.end();
+    };
+    auto isFullOverwrite = [&](const nlohmann::json& a) {
+        if (!a.contains("path") || !a.contains("content")) return false;
+        if (a.contains("operation")) return false;
+        if (a.contains("search") && a.contains("replace")) return false;
+        return true;
+    };
+
+    if (args.contains("path")) {
+        std::string path = args["path"];
+        if (requiresPriorRead(path)) {
+            return {{"content", {{{"type", "text"},
+                {"text", "⚠️ 写入前请先 read 该文件并完成摘要，再进行修改：`" + path + "`"}}}}};
+        }
+        if (isFullOverwrite(args)) {
+            fs::path full = rootPath / fs::u8path(path);
+            if (fs::exists(full)) {
+                return {{"content", {{{"type", "text"},
+                    {"text", "⚠️ 禁止对已存在文件进行整文件覆写。请使用 operation 或 search/replace。"}}}}};
+            }
+        }
+    } else if (args.contains("edits")) {
+        for (const auto& edit : args["edits"]) {
+            if (!edit.contains("path")) continue;
+            std::string path = edit["path"];
+            if (requiresPriorRead(path)) {
+                return {{"content", {{{"type", "text"},
+                    {"text", "⚠️ 写入前请先 read 该文件并完成摘要，再进行修改：`" + path + "`"}}}}};
+            }
+        }
     }
 
     // Level 2 Logging: Log normal file writes

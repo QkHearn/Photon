@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cctype>
 #include <unordered_map>
+#include <unordered_set>
 #ifdef _WIN32
     #include <winsock2.h>
 #endif
@@ -606,6 +607,7 @@ int main(int argc, char* argv[]) {
 
     // Initialize LSP clients (Parallel initialization)
     std::vector<std::unique_ptr<LSPClient>> lspClients;
+    std::vector<Config::Agent::LSPServer> availableLspServers;
     std::unordered_map<std::string, LSPClient*> lspByExt;
     LSPClient* lspFallback = nullptr;
     auto rootUri = cfg.agent.lspRootUri;
@@ -613,39 +615,65 @@ int main(int argc, char* argv[]) {
         rootUri = "file://" + fs::absolute(fs::u8path(path)).u8string();
     }
 
-    auto lspInitFuture = std::async(std::launch::async, [&]() {
-        if (cfg.agent.lspServers.empty() && !cfg.agent.lspServerPath.empty()) {
+    struct LspInitResult {
+        std::vector<std::unique_ptr<LSPClient>> clients;
+        std::vector<Config::Agent::LSPServer> availableServers;
+    };
+
+    auto lspInitFuture = std::async(std::launch::async, [&]() -> LspInitResult {
+        std::vector<Config::Agent::LSPServer> merged = cfg.agent.lspServers;
+        std::unordered_set<std::string> seen;
+        for (const auto& s : merged) seen.insert(s.command);
+
+        if (!cfg.agent.lspServerPath.empty()) {
             Config::Agent::LSPServer server;
             server.command = cfg.agent.lspServerPath;
             server.name = guessNameForCommand(server.command);
             server.extensions = guessExtensionsForCommand(server.command);
-            cfg.agent.lspServers.push_back(std::move(server));
-        }
-        if (cfg.agent.lspServers.empty()) {
-            cfg.agent.lspServers = autoDetectLspServers();
+            if (!server.command.empty() && seen.insert(server.command).second) {
+                merged.push_back(std::move(server));
+            }
         }
 
-        std::vector<std::future<std::pair<const Config::Agent::LSPServer*, std::unique_ptr<LSPClient>>>> lspFutures;
+        for (auto& s : autoDetectLspServers()) {
+            if (s.command.empty()) continue;
+            if (seen.insert(s.command).second) {
+                merged.push_back(std::move(s));
+            }
+        }
+
+        cfg.agent.lspServers = merged;
+
+        struct LspInitItem {
+            Config::Agent::LSPServer server;
+            std::unique_ptr<LSPClient> client;
+            bool ok = false;
+        };
+
+        std::vector<std::future<LspInitItem>> lspFutures;
         for (const auto& server : cfg.agent.lspServers) {
             if (server.command.empty()) continue;
-            lspFutures.push_back(std::async(std::launch::async, [&server, rootUri]() {
-                Logger::getInstance().info("Starting LSP client for: " + server.name + " (" + server.command + ")");
+            lspFutures.push_back(std::async(std::launch::async, [server, rootUri]() {
+                LspInitItem item;
+                item.server = server;
                 auto client = std::make_unique<LSPClient>(server.command, rootUri);
                 if (client->initialize()) {
-                    Logger::getInstance().info("LSP client '" + server.name + "' initialized successfully.");
-                    return std::make_pair(&server, std::move(client));
+                    item.client = std::move(client);
+                    item.ok = true;
                 }
-                Logger::getInstance().error("Failed to initialize LSP client: " + server.name);
-                return std::make_pair(&server, std::unique_ptr<LSPClient>(nullptr));
+                return item;
             }));
         }
 
-        std::vector<std::unique_ptr<LSPClient>> clients;
+        LspInitResult result;
         for (auto& f : lspFutures) {
-            auto res = f.get();
-            if (res.second) clients.push_back(std::move(res.second));
+            auto item = f.get();
+            if (item.ok) {
+                result.availableServers.push_back(item.server);
+                result.clients.push_back(std::move(item.client));
+            }
         }
-        return clients;
+        return result;
     });
 
     // Inject into Builtin Tools
@@ -668,11 +696,13 @@ int main(int argc, char* argv[]) {
     std::cout << GRAY << "  │ " << RESET << BOLD << "tools   " << RESET << GRAY << " List all sensors   " 
               << "│ " << RESET << BOLD << "undo    " << RESET << GRAY << " Revert change     " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "skills  " << RESET << GRAY << " List active skills " 
-              << "│ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory    " << "│" << RESET << std::endl;
+              << "│ " << RESET << BOLD << "lsp     " << RESET << GRAY << " List LSP servers  " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "tasks   " << RESET << GRAY << " List sched tasks   " 
-              << "│ " << RESET << BOLD << "clear   " << RESET << GRAY << " Reset context     " << "│" << RESET << std::endl;
+              << "│ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory    " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "memory  " << RESET << GRAY << " Show long-term mem " 
-              << "│ " << RESET << BOLD << "exit    " << RESET << GRAY << " Terminate agent   " << "│" << RESET << std::endl;
+              << "│ " << RESET << BOLD << "clear   " << RESET << GRAY << " Reset context     " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "exit    " << RESET << GRAY << " Terminate agent    " 
+              << "│ " << RESET << BOLD << "        " << RESET << GRAY << "                   " << "│" << RESET << std::endl;
     std::cout << GRAY << "  └──────────────────────────────────────────────────────────┘" << RESET << std::endl;
 
     // Optimization: Define the core identity as an Autonomous Agent.
@@ -755,11 +785,12 @@ int main(int argc, char* argv[]) {
             std::cout << GRAY << "  (Finishing engine initialization...)" << RESET << "\r" << std::flush;
             mcpFuture.get();
             skillFuture.get();
-            auto loadedLspClients = lspInitFuture.get();
+            auto lspInitResult = lspInitFuture.get();
             
             // Setup LSP mappings
-            lspClients = std::move(loadedLspClients);
-            for (const auto& server : cfg.agent.lspServers) {
+            lspClients = std::move(lspInitResult.clients);
+            availableLspServers = std::move(lspInitResult.availableServers);
+            for (const auto& server : availableLspServers) {
                 for (auto& client : lspClients) {
                     for (auto ext : server.extensions) {
                         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -838,6 +869,28 @@ int main(int argc, char* argv[]) {
                 if (!hasExternal) std::cout << GRAY << "  (无外置技能)" << RESET << std::endl;
             }
             std::cout << CYAN << "\n---------------------\n" << RESET << std::endl;
+            continue;
+        }
+
+        if (userInput == "lsp") {
+            std::cout << CYAN << "\n--- Available LSP Servers ---" << RESET << std::endl;
+            if (availableLspServers.empty()) {
+                std::cout << GRAY << "  (No LSP servers available)" << RESET << std::endl;
+            } else {
+                for (const auto& server : availableLspServers) {
+                    std::cout << GREEN << BOLD << "  • " << server.name << RESET << std::endl;
+                    std::cout << GRAY << "    Command: " << server.command << RESET << std::endl;
+                    if (!server.extensions.empty()) {
+                        std::string exts;
+                        for (size_t i = 0; i < server.extensions.size(); ++i) {
+                            exts += server.extensions[i];
+                            if (i + 1 < server.extensions.size()) exts += ", ";
+                        }
+                        std::cout << GRAY << "    Extensions: " << exts << RESET << std::endl;
+                    }
+                }
+            }
+            std::cout << CYAN << "----------------------------\n" << RESET << std::endl;
             continue;
         }
 

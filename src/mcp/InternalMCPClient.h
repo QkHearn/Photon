@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <atomic>
 #include <thread>
@@ -70,6 +71,11 @@ private:
 
     // 冲突检测：记录文件读取时的内容哈希
     std::unordered_map<std::string, std::string> fileReadHashes;
+    std::unordered_map<std::string, int> fileReadLineCounts;
+    std::unordered_set<std::string> readPaths;
+    bool readSummaryRequired = false;
+    std::string lastReadTarget;
+    bool allowNextRead = false;
     std::string calculateHash(const std::string& content);
 
     using ToolHandler = std::function<nlohmann::json(const nlohmann::json&)>;
