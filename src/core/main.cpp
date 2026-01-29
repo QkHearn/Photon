@@ -1053,6 +1053,7 @@ int main(int argc, char* argv[]) {
                         args = nlohmann::json::parse(argsStr);
                     } catch (...) {
                         args = nlohmann::json::object();
+                        Logger::getInstance().warn("Tool args parse failed for " + fullName + ": " + argsStr);
                     }
 
                     // Policy Enforcement: Discourage full-file overwrites in tool calls
@@ -1239,6 +1240,11 @@ int main(int argc, char* argv[]) {
 
                             if (result.contains("error")) {
                                 Logger::getInstance().error("Tool " + toolName + " failed: " + result["error"].get<std::string>());
+                                Logger::getInstance().error("Tool " + toolName + " args: " + args.dump());
+                                Logger::getInstance().error("Tool " + toolName + " result: " + result.dump());
+                            } else if (result.is_null() || (result.is_object() && result.empty())) {
+                                Logger::getInstance().warn("Tool " + toolName + " returned empty result.");
+                                Logger::getInstance().warn("Tool " + toolName + " args: " + args.dump());
                             }
 
                             // Add tool result to messages
