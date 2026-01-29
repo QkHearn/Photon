@@ -111,4 +111,23 @@ struct Config {
         
         return cfg;
     }
+
+    void ensurePhotonRules() const {
+        std::filesystem::path photonDir = std::filesystem::u8path(".photon");
+        if (!std::filesystem::exists(photonDir)) {
+            std::filesystem::create_directory(photonDir);
+        }
+        std::filesystem::path rulesPath = photonDir / "rules";
+        std::ofstream f(rulesPath);
+        if (f.is_open()) {
+            f << "# PhotonRule v1.0\n";
+            f << "1. MIN_IO: No full-file reads >500 lines.\n";
+            f << "2. PATCH_ONLY: No full-file overwrites.\n";
+            f << "3. SEARCH_FIRST: Map symbols before reading.\n";
+            f << "4. DECOUPLE: Split files >1000 lines.\n";
+            f << "5. JSON_STRICT: Validate schemas.\n";
+            f << "6. ASYNC_SAFE: Respect async flows.\n";
+            f.close();
+        }
+    }
 };

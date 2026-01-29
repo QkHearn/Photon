@@ -68,6 +68,10 @@ private:
     LSPClient* lspClient = nullptr;
     std::unordered_map<std::string, LSPClient*> lspByExtension;
 
+    // 冲突检测：记录文件读取时的内容哈希
+    std::unordered_map<std::string, std::string> fileReadHashes;
+    std::string calculateHash(const std::string& content);
+
     using ToolHandler = std::function<nlohmann::json(const nlohmann::json&)>;
     std::map<std::string, ToolHandler> toolHandlers;
 
@@ -119,8 +123,10 @@ private:
     nlohmann::json osScheduler(const nlohmann::json& args);
     nlohmann::json listTasks(const nlohmann::json& args);
     nlohmann::json cancelTask(const nlohmann::json& args);
+    nlohmann::json readTaskLog(const nlohmann::json& args);
     
     int getTaskCount() const override { return static_cast<int>(tasks.size()); }
+    void setAuthorized(bool authorized) override { sessionAuthorized = authorized; }
     
     std::string executeCommand(const std::string& cmd);
     
@@ -132,6 +138,7 @@ private:
         bool isPeriodic;
         int interval;
         std::time_t startTime;
+        std::string logPath; // Path to the log file for this task
     };
     std::vector<BackgroundTask> tasks;
     std::string generateTaskId();

@@ -3,6 +3,8 @@
 #include <fstream>
 #include <chrono>
 #include <iomanip>
+#include <regex>
+#include <sstream>
 
 // ANSI Color Codes (Reusing from main.cpp logic)
 namespace {
@@ -38,7 +40,7 @@ void Logger::printToConsole(LogLevel level, const std::string& message) {
     std::string prefix;
     switch (level) {
         case LogLevel::THOUGHT:
-            prefix = GRAY + BOLD + "🤔  [Think] " + RESET;
+            prefix = GRAY + BOLD + "🤔 [Think] " + RESET;
             break;
         case LogLevel::ACTION:
             prefix = YELLOW + BOLD + "⚙️ [Action] " + RESET;
@@ -66,5 +68,36 @@ void Logger::printToConsole(LogLevel level, const std::string& message) {
         trimmedMsg.pop_back();
     }
 
-    std::cout << prefix << trimmedMsg << std::endl;
+    // Style Internal Monologue tags if present
+    if (level == LogLevel::THOUGHT) {
+        // Remove redundant [Think] prefixes if they exist in the message content
+        trimmedMsg = std::regex_replace(trimmedMsg, std::regex(R"(^🤔 \[Think\] )"), "");
+        trimmedMsg = std::regex_replace(trimmedMsg, std::regex(R"(\n🤔 \[Think\] )"), "\n");
+        
+        trimmedMsg = std::regex_replace(trimmedMsg, std::regex(R"(\[THOUGHT\]:?)"), BOLD + CYAN + "💭 [Thought]" + RESET);
+        trimmedMsg = std::regex_replace(trimmedMsg, std::regex(R"(\[PLAN\]:?)"), BOLD + MAGENTA + "📋 [Plan]" + RESET);
+        trimmedMsg = std::regex_replace(trimmedMsg, std::regex(R"(\[REFLECTION\]:?)"), BOLD + YELLOW + "🧐 [Reflect]" + RESET);
+    }
+
+    // Handle multi-line messages by prepending prefix to each line
+    std::stringstream ss(trimmedMsg);
+    std::string line;
+    bool first = true;
+    while (std::getline(ss, line)) {
+        if (level == LogLevel::THOUGHT) {
+            if (first) {
+                std::cout << prefix << line << std::endl;
+            } else {
+                // For subsequent thought lines, use a simpler indentation or vertical line
+                std::cout << GRAY << "  │ " << RESET << line << std::endl;
+            }
+        } else {
+            if (!first) {
+                std::cout << prefix << line << std::endl;
+            } else {
+                std::cout << prefix << line << std::endl;
+            }
+        }
+        first = false;
+    }
 }

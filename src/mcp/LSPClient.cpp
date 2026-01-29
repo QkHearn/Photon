@@ -1,4 +1,5 @@
 #include "mcp/LSPClient.h"
+#include "utils/Logger.h"
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -48,21 +49,31 @@ bool LSPClient::initialize() {
     if (initialized) return true;
     if (serverPath.empty()) return false;
 
-    if (!startProcess()) return false;
+    Logger::getInstance().info("Initializing LSP server: " + serverPath);
+    if (!startProcess()) {
+        Logger::getInstance().error("Failed to start LSP process: " + serverPath);
+        return false;
+    }
 
     nlohmann::json params = {
+        {"processId", 
 #ifdef _WIN32
-        {"processId", static_cast<int>(GetCurrentProcessId())},
+            static_cast<int>(GetCurrentProcessId())
 #else
-        {"processId", static_cast<int>(getpid())},
+            static_cast<int>(getpid())
 #endif
+        },
         {"rootUri", rootUri},
         {"capabilities", nlohmann::json::object()}
     };
+    
+    Logger::getInstance().info("Sending 'initialize' request to LSP server...");
     auto result = sendRequest("initialize", params);
     (void)result;
+    
     sendNotification("initialized", nlohmann::json::object());
     initialized = true;
+    Logger::getInstance().info("LSP server initialized successfully.");
     return true;
 }
 

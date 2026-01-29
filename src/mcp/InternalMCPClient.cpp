@@ -135,6 +135,7 @@ void InternalMCPClient::registerTools() {
     toolHandlers["web_search"] = [this](const nlohmann::json& a) { return webSearch(a); };
     toolHandlers["harmony_search"] = [this](const nlohmann::json& a) { return harmonySearch(a); };
     toolHandlers["grep_search"] = [this](const nlohmann::json& a) { return grepSearch(a); };
+    toolHandlers["diff_apply"] = [this](const nlohmann::json& a) { return fileWrite(a); };
     toolHandlers["file_undo"] = [this](const nlohmann::json& a) { return fileUndo(a); };
     toolHandlers["memory_store"] = [this](const nlohmann::json& a) { return memoryStore(a); };
     toolHandlers["memory_list"] = [this](const nlohmann::json& a) { return memoryList(a); };
@@ -149,6 +150,8 @@ void InternalMCPClient::registerTools() {
     toolHandlers["skill_read"] = [this](const nlohmann::json& a) { return skillRead(a); };
     toolHandlers["schedule"] = [this](const nlohmann::json& a) { return osScheduler(a); };
     toolHandlers["tasks"] = [this](const nlohmann::json& a) { return listTasks(a); };
+    toolHandlers["cancel_task"] = [this](const nlohmann::json& a) { return cancelTask(a); };
+    toolHandlers["read_task_log"] = [this](const nlohmann::json& a) { return readTaskLog(a); };
     toolHandlers["authorize"] = [this](const nlohmann::json& a) { return authorizeSession(a); };
 }
 
@@ -484,14 +487,17 @@ nlohmann::json InternalMCPClient::listTools() {
     // Consolidated Read Tool
     tools.push_back({
         {"name", "read"},
-        {"description", "Read file content. Supports full read, line-range read, and multi-file batch read. "
-                        "Use 'path' for single file, 'start_line'/'end_line' for range, or 'requests' array for batch."},
+        {"description", "Read file content. STRONGLY PREFER targeted reads using 'start_line' and 'end_line' or symbol-based 'query' to save tokens. "
+                        "Full-file reads (only 'path') should be avoided for large files."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
-                {"path", {{"type", "string"}, {"description", "Relative path for single file read"}}},
-                {"start_line", {{"type", "integer"}, {"description", "Start line (1-based)"}}},
-                {"end_line", {{"type", "integer"}, {"description", "End line (1-based)"}}},
+                {"start_line", {{"type", "integer"}, {"description", "Start line (1-based) for targeted read"}}},
+                {"end_line", {{"type", "integer"}, {"description", "End line (1-based) for targeted read"}}},
+                {"query", {{"type", "string"}, {"description", "Symbol or identifier to locate via the index for context read"}}},
+                {"path", {{"type", "string"}, {"description", "Relative path of the file"}}},
+                {"context_lines", {{"type", "integer"}, {"description", "Lines of context above and below the match (default: 20)"}}},
+                {"max_matches", {{"type", "integer"}, {"description", "Maximum number of matches to return (default: 3)"}}},
                 {"requests", {
                     {"type", "array"},
                     {"items", {
@@ -511,17 +517,19 @@ nlohmann::json InternalMCPClient::listTools() {
     // Consolidated Write Tool
     tools.push_back({
         {"name", "write"},
-        {"description", "Modify file content. Supports full write, precise line edit, search-replace (diff), and atomic batch edits."},
+        {"description", "Modify file content. [POLICY] Surgical edits are MANDATORY. Full-file overwrites are FORBIDDEN for existing files. "
+                        "Methods: 1) 'operation' (insert/replace/delete) with 'start_line'/'end_line' for precise line edits, or 2) 'search' and 'replace' for diff-style edits. "
+                        "Full-file overwrites (only 'path' and 'content') are only allowed when creating NEW files."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
+                {"operation", {{"type", "string"}, {"enum", {"insert", "replace", "delete"}}, {"description", "Line edit type for surgical modification"}}},
+                {"start_line", {{"type", "integer"}, {"description", "Start line for surgical edit"}}},
+                {"end_line", {{"type", "integer"}, {"description", "End line for surgical edit"}}},
+                {"search", {{"type", "string"}, {"description", "Text to find for diff-style surgical edit"}}},
+                {"replace", {{"type", "string"}, {"description", "Text to replace for diff-style surgical edit"}}},
                 {"path", {{"type", "string"}, {"description", "Relative path to the file"}}},
-                {"content", {{"type", "string"}, {"description", "Full content or edit content"}}},
-                {"operation", {{"type", "string"}, {"enum", {"insert", "replace", "delete"}}, {"description", "Line edit type"}}},
-                {"start_line", {{"type", "integer"}}},
-                {"end_line", {{"type", "integer"}}},
-                {"search", {{"type", "string"}, {"description", "Text to find for diff-style edit"}}},
-                {"replace", {{"type", "string"}, {"description", "Text to replace for diff-style edit"}}},
+                {"content", {{"type", "string"}, {"description", "Content for the edit or full file content"}}},
                 {"edits", {
                     {"type", "array"},
                     {"items", {
@@ -565,26 +573,10 @@ nlohmann::json InternalMCPClient::listTools() {
         }}
     });
 
-    // Context Read Tool (index -> windowed read, prioritize hot files)
-    tools.push_back({
-        {"name", "context_read"},
-        {"description", "Use symbol index to locate matches and read windowed context. Prioritizes changed/hot files to reduce redundant reads."},
-        {"inputSchema", {
-            {"type", "object"},
-            {"properties", {
-                {"query", {{"type", "string"}, {"description", "Symbol or identifier to locate via the index"}}},
-                {"context_lines", {{"type", "integer"}, {"description", "Lines of context above and below the match (default: 20)"}}},
-                {"max_matches", {{"type", "integer"}, {"description", "Maximum number of matches to return (default: 3)"}}},
-                {"path", {{"type", "string"}, {"description", "Optional relative path to restrict matches to a single file"}}}
-            }},
-            {"required", {"query"}}
-        }}
-    });
-
     // Diagnostics Check Tool
     tools.push_back({
         {"name", "diagnostics_check"},
-        {"description", "Run build/compilation and capture errors/warnings. Automatically detects build systems (CMake, Make, NPM, Cargo, Go). Use this after making changes to verify correctness."},
+        {"description", "Run build/compilation and capture errors/warnings. Automatically detects build systems. If the build fails, analyze the output to perform self-healing by fixing the reported issues. Use this after making changes to verify correctness."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
@@ -596,11 +588,16 @@ nlohmann::json InternalMCPClient::listTools() {
     // Python Sandbox Tool
     tools.push_back({
         {"name", "python_sandbox"},
-        {"description", "Execute transient Python code and get the output. NOTE: This tool is for short-lived tasks. For long-running servers (like Flask), use 'bash_execute' with background commands (e.g., 'nohup python app.py &') and manage them via 'tasks'."},
+        {"description", "Execute transient Python code and get the output. NOTE: This tool is for short-lived, synchronous tasks. It has a 30s timeout. If execution fails, analyze the returned Traceback to fix and heal the code. For long-running tasks, use 'schedule' or 'bash_execute'."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
-                {"code", {{"type", "string"}, {"description", "The Python code to execute"}}}
+                {"code", {{"type", "string"}, {"description", "The Python code to execute"}}},
+                {"inputs", {
+                    {"type", "array"},
+                    {"items", {{"type", "string"}}},
+                    {"description", "Optional list of pre-filled inputs for the 'input()' function. If provided, 'input()' will consume these values sequentially. If empty or exhausted, 'input()' will raise an EOFError."}
+                }}
             }},
             {"required", {"code"}}
         }}
@@ -652,7 +649,7 @@ nlohmann::json InternalMCPClient::listTools() {
 
     tools.push_back({
         {"name", "bash_execute"},
-        {"description", "Execute a bash command in the workspace."},
+        {"description", "Execute a bash command in the workspace. NOTE: Interactive prompts (e.g., y/n) are NOT supported and will cause the command to fail. Use non-interactive flags (e.g., 'apt-get -y'). For periodic or delayed tasks, use 'schedule'."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
@@ -810,7 +807,7 @@ nlohmann::json InternalMCPClient::listTools() {
     // List Tasks Tool
     tools.push_back({
         {"name", "tasks"},
-        {"description", "List all active background scheduled tasks."},
+        {"description", "List all active background scheduled tasks and their log paths."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", nlohmann::json::object()},
@@ -820,7 +817,7 @@ nlohmann::json InternalMCPClient::listTools() {
 
     // Cancel Task Tool
     tools.push_back({
-        {"name", "cancel"},
+        {"name", "cancel_task"},
         {"description", "Cancel a running background task by ID."},
         {"inputSchema", {
             {"type", "object"},
@@ -831,10 +828,24 @@ nlohmann::json InternalMCPClient::listTools() {
         }}
     });
 
+    // Read Task Log Tool
+    tools.push_back({
+        {"name", "read_task_log"},
+        {"description", "Read the logs of a background task for diagnosis and self-healing analysis."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {
+                {"task_id", {{"type", "string"}, {"description", "The ID of the task"}}},
+                {"lines", {{"type", "integer"}, {"description", "Number of recent lines to read (default: 50)"}}}
+            }},
+            {"required", {"task_id"}}
+        }}
+    });
+
     // OS Timed Task Tool
     tools.push_back({
         {"name", "schedule"},
-        {"description", "Schedule an asynchronous task to run after a delay. Supports periodic execution. Providing a task_id will overwrite any existing task with that ID."},
+        {"description", "Schedule a background task (one-time or periodic). Use this for monitoring, reminders, or recurring maintenance. Features: 1) Log capture for failure analysis, 2) Persistent task tracking. If a task fails, use 'read_task_log' to diagnose and then reschedule if needed. For immediate system commands, use 'bash_execute'."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
@@ -1028,6 +1039,12 @@ nlohmann::json InternalMCPClient::fileSearch(const nlohmann::json& args) {
     return {{"content", {{{"type", "text"}, {"text", nlohmann::json(matches).dump(2)}}}}};
 }
 
+std::string InternalMCPClient::calculateHash(const std::string& content) {
+    // 简单的哈希实现，用于检测内容变动
+    std::hash<std::string> hasher;
+    return std::to_string(hasher(content));
+}
+
 nlohmann::json InternalMCPClient::fileRead(const nlohmann::json& args) {
     std::string relPathStr = args["path"];
     fs::path fullPath = rootPath / fs::u8path(relPathStr);
@@ -1045,6 +1062,12 @@ nlohmann::json InternalMCPClient::fileRead(const nlohmann::json& args) {
         return {{"content", {{{"type", "text"}, {"text", "Error: Could not open file: " + relPathStr}}}}};
     }
 
+    std::string contentStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+
+    // 记录读取时的哈希值，用于后续冲突检测
+    fileReadHashes[relPathStr] = calculateHash(contentStr);
+
     if (fileSize > MAX_READ_SIZE) {
         // Optimization: Instead of just first 2000 chars, provide a summary of symbols + first/last parts
         std::string report = "⚠️ WARNING: File is too large (" + std::to_string(fileSize / 1024) + " KB).\n";
@@ -1061,25 +1084,28 @@ nlohmann::json InternalMCPClient::fileRead(const nlohmann::json& args) {
             }
         }
 
-        char head[1001];
-        file.read(head, 1000);
-        head[file.gcount()] = '\0';
-        
-        report += "--- BEGINNING OF FILE ---\n" + std::string(head) + "\n...\n";
-        
-        if (fileSize > 2000) {
-            file.seekg(-1000, std::ios::end);
-            char tail[1001];
-            file.read(tail, 1000);
-            tail[file.gcount()] = '\0';
-            report += "--- END OF FILE ---\n" + std::string(tail);
+        // Re-open file to read head/tail since we already read it all into contentStr
+        std::ifstream file2(fullPath);
+        if (file2.is_open()) {
+            char head[1001];
+            file2.read(head, 1000);
+            head[file2.gcount()] = '\0';
+            report += "--- BEGINNING OF FILE ---\n" + std::string(head) + "\n...\n";
+            
+            if (fileSize > 2000) {
+                file2.seekg(-1000, std::ios::end);
+                char tail[1001];
+                file2.read(tail, 1000);
+                tail[file2.gcount()] = '\0';
+                report += "--- END OF FILE ---\n" + std::string(tail);
+            }
+            file2.close();
         }
 
         return {{"content", {{{"type", "text"}, {"text", report}}}}};
     }
 
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(content, 100000)}}}}};
+    return {{"content", {{{"type", "text"}, {"text", sanitizeUtf8(contentStr, 100000)}}}}};
 }
 
 std::string InternalMCPClient::autoDetectBuildCommand() {
@@ -1162,7 +1188,7 @@ nlohmann::json InternalMCPClient::diagnosticsCheck(const nlohmann::json& args) {
         return {{"content", {{{"type", "text"}, {"text", "✅ Build successful. No errors or warnings found.\n\nFull Output:\n" + output}}}}};
     }
 
-    return {{"content", {{{"type", "text"}, {"text", "❌ Build issues found:\n\n" + filtered + "\n\nUse 'context_read' or 'read_file_lines' on the reported paths/lines to fix them."}}}}};
+    return {{"content", {{{"type", "text"}, {"text", "❌ Build issues found:\n\n" + filtered + "\n\n💡 Healing Strategy: Analyze the error patterns above. Use 'grep_search' or 'context_read' to locate the problematic code. If the error is in a file you recently modified, review your changes using 'git_operations' (diff) and apply a fix."}}}}};
 }
 
 nlohmann::json InternalMCPClient::contextRead(const nlohmann::json& args) {
@@ -1262,26 +1288,126 @@ nlohmann::json InternalMCPClient::contextRead(const nlohmann::json& args) {
 }
 
 nlohmann::json InternalMCPClient::fileWrite(const nlohmann::json& args) {
-    std::string relPathStr = args["path"];
-    std::string content = args["content"];
-    fs::path fullPath = rootPath / fs::u8path(relPathStr);
+    auto processSingleWrite = [this](const nlohmann::json& writeArgs) -> nlohmann::json {
+        std::string relPathStr = writeArgs["path"];
+        fs::path fullPath = rootPath / fs::u8path(relPathStr);
 
-    try {
-        // Backup before writing
-        backupFile(relPathStr);
-        
-        // Ensure directory exists
-        fs::create_directories(fullPath.parent_path());
-        
-        std::ofstream file(fullPath);
-        if (!file.is_open()) {
-            return {{"error", "Could not open file for writing: " + relPathStr}};
+        // Security Check: High-risk path authorization
+        if (isHighRiskPath(relPathStr) && !sessionAuthorized) {
+            return {
+                {"status", "requires_confirmation"},
+                {"is_high_risk", true},
+                {"path", relPathStr},
+                {"content", {{{"type", "text"}, {"text", "⚠️ 安全拦截：修改核心文件（" + relPathStr + "）属于高风险操作，需要您的显式授权。"}}}}
+            };
         }
-        file << content;
-        file.close();
-        return {{"content", {{{"type", "text"}, {"text", "Successfully wrote to " + relPathStr}}}}};
-    } catch (const std::exception& e) {
-        return {{"error", e.what()}};
+
+        // Conflict Detection
+        if (fs::exists(fullPath)) {
+            std::ifstream currentFile(fullPath);
+            if (currentFile.is_open()) {
+                std::string currentContent((std::istreambuf_iterator<char>(currentFile)), std::istreambuf_iterator<char>());
+                currentFile.close();
+                
+                std::string currentHash = calculateHash(currentContent);
+                if (fileReadHashes.count(relPathStr) && fileReadHashes[relPathStr] != currentHash) {
+                    return {{"error", "CONFLICT DETECTED: The file '" + relPathStr + "' has been modified by someone else since you last read it."}};
+                }
+            }
+        }
+
+        try {
+            backupFile(relPathStr);
+            fs::create_directories(fullPath.parent_path());
+
+            std::string finalContent;
+            if (writeArgs.contains("operation")) {
+                // Line-based editing
+                std::string op = writeArgs["operation"];
+                int startLine = writeArgs.value("start_line", 1);
+                int endLine = writeArgs.value("end_line", startLine);
+                std::string newContent = writeArgs.value("content", "");
+
+                std::vector<std::string> lines;
+                if (fs::exists(fullPath)) {
+                    std::ifstream in(fullPath);
+                    std::string line;
+                    while (std::getline(in, line)) lines.push_back(line);
+                }
+
+                if (op == "insert") {
+                    if (startLine > (int)lines.size() + 1) startLine = (int)lines.size() + 1;
+                    if (startLine < 1) startLine = 1;
+                    lines.insert(lines.begin() + startLine - 1, newContent);
+                } else if (op == "replace") {
+                    if (startLine < 1) startLine = 1;
+                    if (endLine > (int)lines.size()) endLine = (int)lines.size();
+                    if (startLine <= endLine) {
+                        lines.erase(lines.begin() + startLine - 1, lines.begin() + endLine);
+                        lines.insert(lines.begin() + startLine - 1, newContent);
+                    }
+                } else if (op == "delete") {
+                    if (startLine < 1) startLine = 1;
+                    if (endLine > (int)lines.size()) endLine = (int)lines.size();
+                    if (startLine <= endLine) {
+                        lines.erase(lines.begin() + startLine - 1, lines.begin() + endLine);
+                    }
+                }
+
+                for (size_t i = 0; i < lines.size(); ++i) {
+                    finalContent += lines[i] + (i == lines.size() - 1 ? "" : "\n");
+                }
+            } else if (writeArgs.contains("search") && writeArgs.contains("replace")) {
+                // Search and Replace (Diff-style)
+                std::string searchStr = writeArgs["search"];
+                std::string replaceStr = writeArgs["replace"];
+                
+                std::ifstream in(fullPath);
+                std::string fullContent((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                in.close();
+
+                size_t pos = fullContent.find(searchStr);
+                if (pos == std::string::npos) {
+                    return {{"error", "Search string not found in " + relPathStr}};
+                }
+                
+                // Check for uniqueness
+                if (fullContent.find(searchStr, pos + 1) != std::string::npos) {
+                    return {{"error", "Search string is not unique in " + relPathStr + ". Please provide more context."}};
+                }
+
+                fullContent.replace(pos, searchStr.length(), replaceStr);
+                finalContent = fullContent;
+            } else {
+                // Full write
+                finalContent = writeArgs["content"];
+            }
+
+            std::ofstream out(fullPath);
+            if (!out.is_open()) return {{"error", "Could not open file for writing: " + relPathStr}};
+            out << finalContent;
+            out.close();
+
+            // Update hash after write
+            fileReadHashes[relPathStr] = calculateHash(finalContent);
+
+            return {{"status", "success", {"path", relPathStr}}};
+        } catch (const std::exception& e) {
+            return {{"error", e.what()}};
+        }
+    };
+
+    if (args.contains("edits") && args["edits"].is_array()) {
+        nlohmann::json results = nlohmann::json::array();
+        for (const auto& edit : args["edits"]) {
+            results.push_back(processSingleWrite(edit));
+        }
+        return {{"content", {{{"type", "text"}, {"text", "Batch edit completed."}, {"results", results}}}}};
+    } else {
+        nlohmann::json res = processSingleWrite(args);
+        if (res.contains("error")) return res;
+        if (res.contains("status") && res["status"] == "requires_confirmation") return res;
+        return {{"content", {{{"type", "text"}, {"text", "Successfully modified " + args["path"].get<std::string>()}}}}};
     }
 }
 
@@ -1336,13 +1462,8 @@ bool InternalMCPClient::isHighRiskCommand(const std::string& cmd) {
 }
 
 bool InternalMCPClient::isHighRiskPath(const std::string& relPath) {
-    // 如果路径包含 src/ 或者是核心配置文件，则视为高风险
-    if (relPath.find("src/") != std::string::npos || 
-        relPath == "CMakeLists.txt" || 
-        relPath == "config.json") {
-        return true;
-    }
-    return false;
+    // 任何目录下的修改写入都需要确认
+    return true;
 }
 
 nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
@@ -1362,13 +1483,42 @@ nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
     }
     
     // Create a temporary python file in the root path
-    std::string tmpFileName = ".tmp_photon_sandbox.py";
+    std::string tmpFileName = ".tmp_photon_sandbox_" + std::to_string(std::time(nullptr)) + ".py";
     fs::path tmpFilePath = rootPath / tmpFileName;
     
     std::ofstream out(tmpFilePath);
     if (!out) {
         return {{"content", {{{"type", "text"}, {"text", "Error: Failed to create temporary script in " + rootPath.u8string()}}}}};
     }
+    // Inject header to handle pre-filled inputs or disable interactive input
+    out << "import sys, os\n";
+    out << "try:\n";
+    out << "    import builtins\n";
+    
+    if (args.contains("inputs") && args["inputs"].is_array() && !args["inputs"].empty()) {
+        out << "    _prefilled_inputs = [";
+        for (size_t i = 0; i < args["inputs"].size(); ++i) {
+            std::string val = args["inputs"][i].get<std::string>();
+            // Basic escaping for single quotes
+            size_t pos = 0;
+            while ((pos = val.find("'", pos)) != std::string::npos) {
+                val.replace(pos, 1, "\\'");
+                pos += 2;
+            }
+            out << "'" << val << "'" << (i == args["inputs"].size() - 1 ? "" : ", ");
+        }
+        out << "]\n";
+        out << "    def mocked_input(prompt=''):\n";
+        out << "        if _prefilled_inputs:\n";
+        out << "            return _prefilled_inputs.pop(0)\n";
+        out << "        raise EOFError('Photon Sandbox: No more pre-filled inputs available.')\n";
+    } else {
+        out << "    def mocked_input(prompt=''): raise EOFError('Photon Sandbox does not support interactive input. Use command-line arguments instead.')\n";
+    }
+    
+    out << "    builtins.input = mocked_input\n";
+    out << "except:\n";
+    out << "    pass\n\n";
     out << code;
     out.close();
 
@@ -1397,9 +1547,11 @@ nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
             pythonCmd = "python";
         }
     }
-    std::string fullCmd = "cd /d \"" + rootPath.u8string() + "\" && " + pythonCmd + " \"" + tmpFileName + "\" 2>&1";
+    // Use a timeout to prevent hanging (e.g., 30 seconds)
+    std::string fullCmd = "cd /d \"" + rootPath.u8string() + "\" && powershell -Command \"$p = Start-Process " + pythonCmd + " -ArgumentList '" + tmpFileName + "' -NoNewWindow -PassThru; if ($p.WaitForExit(30000)) { $p.ExitCode } else { Stop-Process -Id $p.Id; throw 'Timeout' }\" 2>&1";
 #else
-    std::string fullCmd = "cd \"" + rootPath.u8string() + "\" && " + pythonCmd + " \"" + tmpFileName + "\" 2>&1";
+    // Use 'timeout' command on POSIX to prevent hanging
+    std::string fullCmd = "cd \"" + rootPath.u8string() + "\" && timeout 30s " + pythonCmd + " \"" + tmpFileName + "\" 2>&1";
 #endif
 
     std::string output = executeCommand(fullCmd);
@@ -1411,6 +1563,14 @@ nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
 
     if (output.empty()) {
         output = "(Execution successful, but produced no output)";
+    } else if (output.find("Timeout") != std::string::npos || output.find("terminated") != std::string::npos) {
+        output = "⚠️ Execution Timed Out: The script was killed after 30 seconds to prevent hanging. For long-running tasks, use 'schedule' or 'bash_execute' with backgrounding.";
+    } else if (output.find("EOFError: Photon Sandbox does not support interactive input") != std::string::npos) {
+        output = "❌ Interactive Input Detected: The script tried to use 'input()', which is not allowed in this environment. \n\n💡 Healing Strategy: Rewrite the script to use command-line arguments (sys.argv) or hardcoded variables instead of interactive prompts.";
+    } else if (output.find("EOFError: Photon Sandbox: No more pre-filled inputs available.") != std::string::npos) {
+        output = "❌ Pre-filled Input Exhausted: The script called 'input()' more times than the provided 'inputs' array. \n\n💡 Healing Strategy: Provide more values in the 'inputs' array or modify the script to require fewer inputs.";
+    } else if (output.find("Error") != std::string::npos || output.find("Exception") != std::string::npos || output.find("Traceback") != std::string::npos) {
+        output = "❌ Execution Failed with errors:\n" + output + "\n\n💡 Healing Strategy: Analyze the Traceback above to identify the root cause (e.g., SyntaxError, ImportError, Logic Error). Fix the code and re-run. If it's a persistent environment issue, use 'pip_install' or 'bash_execute'.";
     }
 
     return {{"content", {{{"type", "text"}, {"text", output}}}}};
@@ -1444,7 +1604,12 @@ nlohmann::json InternalMCPClient::pipInstall(const nlohmann::json& args) {
 #endif
     }
 
-    std::string fullCmd = pipCmd + " install " + package + " 2>&1";
+    std::string fullCmd = pipCmd + " install " + package + " --no-input 2>&1";
+#ifndef _WIN32
+    fullCmd = "export PIP_NO_INPUT=1 && " + fullCmd + " </dev/null";
+#else
+    fullCmd = "set PIP_NO_INPUT=1 && " + fullCmd + " <nul";
+#endif
     std::string output = executeCommand(fullCmd);
 
     return {{"content", {{{"type", "text"}, {"text", output}}}}};
@@ -1531,20 +1696,29 @@ nlohmann::json InternalMCPClient::bashExecute(const nlohmann::json& args) {
         return {{"error", "Security Alert: Command blocked by Photon Guard. Restricted keywords or paths detected."}};
     }
 
-#ifdef _WIN32
-    // On Windows, bash might not be available. 
-    // Use commandExists helper for a more reliable check.
+    // Optimization: Only redirect stdin if the user hasn't provided their own input source (pipe or redirect)
+    bool hasInputSource = (command.find("<") != std::string::npos || command.find("|") != std::string::npos);
+
     std::string shellCmd;
+#ifdef _WIN32
     if (commandExists("sh")) {
-        shellCmd = "sh -c \"" + command + "\"";
+        shellCmd = "sh -c \"" + command + "\"" + (hasInputSource ? "" : " <nul") + " 2>&1";
     } else {
-        // Fallback to cmd /c if sh is not found
-        shellCmd = "cmd /c " + command;
+        shellCmd = "cmd /c " + command + (hasInputSource ? "" : " <nul") + " 2>&1";
     }
-    std::string output = executeCommand(shellCmd + " 2>&1");
 #else
-    std::string output = executeCommand(command + " 2>&1");
+    shellCmd = command + (hasInputSource ? "" : " </dev/null") + " 2>&1";
 #endif
+
+    std::string output = executeCommand(shellCmd);
+
+    // Check if the command failed because it expected input
+    if (output.find("EOF") != std::string::npos || output.find("broken pipe") != std::string::npos || 
+        output.find("not a tty") != std::string::npos || output.find("Input/output error") != std::string::npos) {
+        output = "❌ Interactive Command Detected: The command tried to read from stdin (e.g., a y/n prompt or password input), but stdin is disabled to prevent hanging.\n\n" + output + 
+                 "\n\n💡 Healing Strategy: Use non-interactive flags (e.g., '-y', '--force', '--batch') or pipe the input directly (e.g., 'echo \"password\" | command').";
+    }
+
     return {{"content", {{{"type", "text"}, {"text", output}}}}};
 }
 
@@ -2866,10 +3040,14 @@ nlohmann::json InternalMCPClient::osScheduler(const nlohmann::json& args) {
     }
 
     std::string cmd;
+    std::string logFileName = "task_" + taskId + ".log";
+    fs::path logPath = globalDataPath / "logs" / logFileName;
+    fs::create_directories(globalDataPath / "logs");
     
     // Construct the command content
     std::string coreCmd;
     if (type == "notify") {
+        // ... (existing notify logic)
 #ifdef _WIN32
         // Escape single quotes for PowerShell
         std::string safePayload;
@@ -2896,26 +3074,22 @@ nlohmann::json InternalMCPClient::osScheduler(const nlohmann::json& args) {
         coreCmd = payload;
     }
 
-    // Wrap in periodicity logic
+    // Wrap in periodicity logic and redirection (No auto-retry, focus on log capture for Agent analysis)
     if (isPeriodic) {
 #ifdef _WIN32
-        // Windows loop with time drift compensation and serialization using PowerShell
-        // We use -EncodedCommand or careful escaping to handle nested quotes in coreCmd
-        cmd = "powershell -Command \"(Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'while($true){ $start=[DateTime]::Now; " + coreCmd + "; $wait=" + std::to_string(delay) + "-([DateTime]::Now-$start).TotalSeconds; if($wait -gt 0){ Start-Sleep -Seconds $wait } }' -WindowStyle Hidden -PassThru).Id\"";
+        // Windows loop with redirection
+        cmd = "powershell -Command \"(Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'while($true){ $start=[DateTime]::Now; " + coreCmd + " >> ''" + logPath.u8string() + "'' 2>&1; $wait=" + std::to_string(delay) + "-([DateTime]::Now-$start).TotalSeconds; if($wait -gt 0){ Start-Sleep -Seconds $wait } }' -WindowStyle Hidden -PassThru).Id\"";
 #else
-        // Linux/macOS loop with time drift compensation
-        cmd = "nohup sh -c 'while true; do NEXT=$(( $(date +%s) + " + std::to_string(delay) + " )); " + coreCmd + "; NOW=$(date +%s); DIFF=$(( NEXT - NOW )); [ $DIFF -gt 0 ] && sleep $DIFF; done' >/dev/null 2>&1 & echo $!";
+        // Linux/macOS loop with redirection
+        cmd = "nohup sh -c 'while true; do NEXT=$(( $(date +%s) + " + std::to_string(delay) + " )); { " + coreCmd + "; } >> \"" + logPath.u8string() + "\" 2>&1; NOW=$(date +%s); DIFF=$(( NEXT - NOW )); [ $DIFF -gt 0 ] && sleep $DIFF; done' >/dev/null 2>&1 & echo $!";
 #endif
     } else {
 #ifdef _WIN32
         // One-time task for Windows
-        cmd = "powershell -Command \"(Start-Process cmd -ArgumentList '/c timeout /t " + std::to_string(delay) + " /nobreak >nul && " + coreCmd + "' -WindowStyle Hidden -PassThru).Id\"";
+        cmd = "powershell -Command \"(Start-Process cmd -ArgumentList '/c timeout /t " + std::to_string(delay) + " /nobreak >nul && " + coreCmd + " >> ''" + logPath.u8string() + "'' 2>&1' -WindowStyle Hidden -PassThru).Id\"";
 #else
-        // For one-time tasks, we add a self-cleanup marker or just rely on process exit.
-        // But to remove from our 'tasks' list automatically, we'd need a callback mechanism or polling.
-        // For now, let's keep the process simple. The task entry remains until manually cleared or next restart,
-        // but the process dies. We can improve listTasks to check for liveness.
-        cmd = "nohup sh -c 'sleep " + std::to_string(delay) + " && " + coreCmd + "' >/dev/null 2>&1 & echo $!";
+        // One-time task for POSIX
+        cmd = "nohup sh -c 'sleep " + std::to_string(delay) + " && { " + coreCmd + "; } >> \"" + logPath.u8string() + "\" 2>&1' >/dev/null 2>&1 & echo $!";
 #endif
     }
 
@@ -2926,14 +3100,14 @@ nlohmann::json InternalMCPClient::osScheduler(const nlohmann::json& args) {
         pid = std::stoi(output);
     } catch (...) {}
 
-    tasks.push_back({taskId, (isPeriodic ? "[Periodic] " : "[One-time] ") + type + ": " + payload, pid, isPeriodic, delay, std::time(nullptr)});
+    tasks.push_back({taskId, (isPeriodic ? "[Periodic] " : "[One-time] ") + type + ": " + payload, pid, isPeriodic, delay, std::time(nullptr), logPath.u8string()});
     
     saveTasksToDisk(); // Persist tasks to disk
 
     // Auto-save to long-term memory for persistence
-    memoryStore({{"key", "task_log_" + taskId}, {"value", "Scheduled: " + type + " - " + payload}});
+    memoryStore({{"key", "task_log_" + taskId}, {"value", "Scheduled: " + type + " - " + payload + " (Logs: " + logPath.u8string() + ")"}});
 
-    return {{"content", {{{"type", "text"}, {"text", "Task scheduled: " + taskId + " (PID: " + std::to_string(pid) + ")"}}}}};
+    return {{"content", {{{"type", "text"}, {"text", "Task scheduled: " + taskId + " (PID: " + std::to_string(pid) + "). Logs redirected to: " + logPath.u8string()}}}}};
 }
 
 nlohmann::json InternalMCPClient::listTasks(const nlohmann::json& args) {
@@ -2966,7 +3140,18 @@ nlohmann::json InternalMCPClient::listTasks(const nlohmann::json& args) {
     
     std::string report = "Active Tasks:\n";
     for (const auto& t : tasks) {
-        report += "- ID: " + t.id + " | PID: " + std::to_string(t.pid) + " | " + t.description + "\n";
+        report += "- ID: " + t.id + " | PID: " + std::to_string(t.pid) + " | " + t.description;
+        if (!t.logPath.empty()) {
+            report += " | Logs: " + t.logPath;
+            // Check if log file has content (indicating potential errors or output)
+            if (fs::exists(fs::u8path(t.logPath))) {
+                auto size = fs::file_size(fs::u8path(t.logPath));
+                if (size > 0) {
+                    report += " (" + std::to_string(size) + " bytes)";
+                }
+            }
+        }
+        report += "\n";
     }
     return {{"content", {{{"type", "text"}, {"text", report}}}}};
 }
@@ -2989,7 +3174,44 @@ nlohmann::json InternalMCPClient::cancelTask(const nlohmann::json& args) {
     return {{"error", "Task ID not found: " + targetId}};
 }
 
+nlohmann::json InternalMCPClient::readTaskLog(const nlohmann::json& args) {
+    std::string targetId = args["task_id"];
+    int lines = args.value("lines", 50); // Default to last 50 lines
+
+    for (const auto& t : tasks) {
+        if (t.id == targetId) {
+            if (t.logPath.empty() || !fs::exists(fs::u8path(t.logPath))) {
+                return {{"error", "Log file not found for task: " + targetId}};
+            }
+
+            std::ifstream file(fs::u8path(t.logPath));
+            std::vector<std::string> logLines;
+            std::string line;
+            while (std::getline(file, line)) {
+                logLines.push_back(line);
+            }
+
+            // Get the last N lines
+            std::string result;
+            int start = std::max(0, static_cast<int>(logLines.size()) - lines);
+            for (size_t i = start; i < logLines.size(); ++i) {
+                result += logLines[i] + "\n";
+            }
+
+            if (result.empty()) {
+                return {{"content", {{{"type", "text"}, {"text", "(Log file is empty)"}}}}};
+            }
+
+            return {{"content", {{{"type", "text"}, {"text", "Last " + std::to_string(logLines.size() - start) + " lines of log for " + targetId + ":\n\n" + result}}}}};
+        }
+    }
+    return {{"error", "Task ID not found: " + targetId}};
+}
+
 nlohmann::json InternalMCPClient::toolFileRead(const nlohmann::json& args) {
+    if (args.contains("query")) {
+        return contextRead(args);
+    }
     if (args.contains("requests")) {
         return readBatchLines(args);
     }
@@ -3095,7 +3317,8 @@ void InternalMCPClient::saveTasksToDisk() {
             {"pid", t.pid},
             {"isPeriodic", t.isPeriodic},
             {"interval", t.interval},
-            {"startTime", t.startTime}
+            {"startTime", t.startTime},
+            {"logPath", t.logPath}
         });
     }
     std::ofstream f(tasksPath);
@@ -3121,6 +3344,9 @@ void InternalMCPClient::loadTasksFromDisk() {
                 t.isPeriodic = item["isPeriodic"];
                 t.interval = item["interval"];
                 t.startTime = item["startTime"];
+                if (item.contains("logPath")) {
+                    t.logPath = item["logPath"];
+                }
                 
                 // Only re-add if the process is actually still alive
 #ifdef _WIN32

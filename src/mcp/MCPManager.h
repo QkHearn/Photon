@@ -83,6 +83,12 @@ public:
         return total;
     }
 
+    void setAllAuthorized(bool authorized) {
+        for (auto& [name, client] : clients) {
+            client->setAuthorized(authorized);
+        }
+    }
+
     IMCPClient* getClient(const std::string& name) {
         if (clients.count(name)) {
             return clients[name].get();

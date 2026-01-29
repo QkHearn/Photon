@@ -23,6 +23,7 @@ public:
     virtual nlohmann::json callTool(const std::string& name, const nlohmann::json& arguments) = 0;
     virtual std::string getLastFile() const { return ""; }
     virtual int getTaskCount() const { return 0; }
+    virtual void setAuthorized(bool authorized) {}
 };
 
 class MCPClient : public IMCPClient {

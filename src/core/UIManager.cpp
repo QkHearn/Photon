@@ -37,4 +37,8 @@ void UIManager::appendToLastChat(const std::string& delta) {}
 void UIManager::addAction(const std::string& action) {}
 void UIManager::addSystemLog(const std::string& log, LogLevel level) {}
 void UIManager::updateStatus(const std::string& model, int tokens, int tasks) {}
-void UIManager::setDiff(const std::string& diff) {}
+void UIManager::setDiff(const std::string& diff) {
+    if (!diff.empty()) {
+        std::cout << "\n" << diff << std::endl;
+    }
+}
