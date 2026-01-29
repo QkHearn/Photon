@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(Photon)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -38,8 +39,8 @@ endif()
 
 # On macOS with Homebrew, we often need to explicitly add the include path
 if(APPLE)
-    include_directories("/opt/homebrew/include")
-    link_directories("/opt/homebrew/lib")
+    set(PHOTON_BREW_INCLUDE "/opt/homebrew/include")
+    set(PHOTON_BREW_LIB "/opt/homebrew/lib")
 endif()
 
 # --- FTXUI Integration ---
@@ -55,6 +56,10 @@ add_executable(photon src/core/main.cpp)
 
 # Add src to include path
 target_include_directories(photon PRIVATE src third_party/httplib)
+if(APPLE)
+    target_include_directories(photon PRIVATE ${PHOTON_BREW_INCLUDE})
+    target_link_directories(photon PRIVATE ${PHOTON_BREW_LIB})
+endif()
 
 target_link_libraries(photon PRIVATE 
     agent_lib
@@ -87,6 +92,10 @@ add_library(agent_lib
     src/mcp/InternalMCPClient.cpp
 )
 target_include_directories(agent_lib PUBLIC src third_party/httplib)
+if(APPLE)
+    target_include_directories(agent_lib PRIVATE ${PHOTON_BREW_INCLUDE})
+    target_link_directories(agent_lib PRIVATE ${PHOTON_BREW_LIB})
+endif()
 target_link_libraries(agent_lib PRIVATE 
     nlohmann_json::nlohmann_json 
     OpenSSL::SSL 
@@ -105,16 +114,31 @@ if(SQLite3_FOUND)
     target_compile_definitions(agent_lib PRIVATE PHOTON_USE_SQLITE)
 endif()
 
-# Find GTest
+# Find or fetch GTest (use bundled on Apple to avoid arch mismatches)
+option(PHOTON_USE_BUNDLED_GTEST "Build googletest from source" ${APPLE})
 set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
-find_package(GTest REQUIRED)
+if(PHOTON_USE_BUNDLED_GTEST)
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        URL https://github.com/google/googletest/archive/refs/tags/release-1.11.0.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(googletest)
+else()
+    find_package(GTest REQUIRED)
+endif()
 
 add_executable(agent_tests 
     tests/test_FileManager.cpp 
     tests/test_ContextManager.cpp
     tests/test_InternalMCPClient.cpp
 )
-target_link_libraries(agent_tests PRIVATE GTest::gtest GTest::gtest_main agent_lib)
+if(PHOTON_USE_BUNDLED_GTEST)
+    target_link_libraries(agent_tests PRIVATE gtest gtest_main agent_lib)
+else()
+    target_link_libraries(agent_tests PRIVATE GTest::gtest GTest::gtest_main agent_lib)
+endif()
 
 add_test(NAME AgentTests COMMAND agent_tests)
 

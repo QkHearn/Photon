@@ -434,14 +434,6 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
         return "unresolved:" + name;
     };
 
-    auto pickLsp = [&](const std::string& extLower) -> LSPClient* {
-        if (!lspByExtSnapshot.empty()) {
-            auto it = lspByExtSnapshot.find(extLower);
-            if (it != lspByExtSnapshot.end()) return it->second;
-        }
-        return lspFallbackSnapshot;
-    };
-
     auto resolveByLsp = [&](const CallInfo& call) -> std::string {
         std::string extLower = toLowerStr(filePath.extension().string());
         LSPClient* lsp = pickLsp(extLower);
