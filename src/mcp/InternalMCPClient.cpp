@@ -638,15 +638,14 @@ nlohmann::json InternalMCPClient::listTools() {
 
     tools.push_back({
         {"name", "arch_visualize"},
-        {"description", "Generate system architecture diagrams using Graphviz. This tool accepts a DOT-format string and renders it into an image (PNG/SVG) in the workspace."},
+        {"description", "Generate system architecture diagrams as Mermaid markdown. Returns a Mermaid code block as plain text (no image generation)."},
         {"inputSchema", {
             {"type", "object"},
             {"properties", {
-                {"dot_content", {{"type", "string"}, {"description", "The Graphviz DOT language content describing the diagram"}}},
-                {"output_file", {{"type", "string"}, {"description", "The filename for the output image (e.g., arch.png)"}}},
-                {"format", {{"type", "string"}, {"description", "The output format: png, svg, or pdf"}}}
+                {"mermaid_content", {{"type", "string"}, {"description", "Mermaid diagram content (without code fences)."}}},
+                {"title", {{"type", "string"}, {"description", "Optional title for the diagram."}}}
             }},
-            {"required", {"dot_content", "output_file"}}
+            {"required", {"mermaid_content"}}
         }}
     });
 
@@ -1746,46 +1745,18 @@ nlohmann::json InternalMCPClient::sequentialThinking(const nlohmann::json& args)
 }
 
 nlohmann::json InternalMCPClient::archVisualize(const nlohmann::json& args) {
-    std::string dotContent = args["dot_content"];
-    std::string outputFile = args["output_file"];
-    std::string format = args.value("format", "png");
-    
-    // Create a temporary DOT file
-    std::string dotFileName = ".tmp_arch.dot";
-    fs::path dotFilePath = rootPath / dotFileName;
-    std::ofstream out(dotFilePath);
-    if (!out) {
-        return {{"content", {{{"type", "text"}, {"text", "Error: Failed to create temporary DOT file."}}}}};
-    }
-    out << dotContent;
-    out.close();
-
-    // Use Python to render the DOT file if graphviz command is not directly available
-    // This script tries to use the 'graphviz' python library to render
-    std::string pythonScript = 
-        "import sys\n"
-        "import os\n"
-        "try:\n"
-        "    import graphviz\n"
-        "    # Remove extension from outputFile for graphviz render\n"
-        "    base_name = '" + outputFile + "'.rsplit('.', 1)[0]\n"
-        "    source = graphviz.Source.from_file('" + dotFileName + "')\n"
-        "    output = source.render(filename=base_name, format='" + format + "', cleanup=True)\n"
-        "    print(f'Diagram successfully rendered to {output}')\n"
-        "except ImportError:\n"
-        "    print('Error: Python \"graphviz\" library not found. Please install it using: pip_install graphviz')\n"
-        "except Exception as e:\n"
-        "    print(f'Error during rendering: {str(e)}')\n";
-
-    nlohmann::json pythonArgs = {{"code", pythonScript}};
-    nlohmann::json result = pythonSandbox(pythonArgs);
-
-    // Clean up DOT file
-    if (fs::exists(dotFilePath)) {
-        fs::remove(dotFilePath);
+    std::string mermaid = args.value("mermaid_content", "");
+    if (mermaid.empty()) {
+        return {{"content", {{{"type", "text"}, {"text", "Error: mermaid_content is required."}}}}};
     }
 
-    return result;
+    std::string title = args.value("title", "");
+    std::string output = "```mermaid\n" + mermaid + "\n```\n";
+    if (!title.empty()) {
+        output = "# " + title + "\n\n" + output;
+    }
+
+    return {{"content", {{{"type", "text"}, {"text", output}}}}};
 }
 
 nlohmann::json InternalMCPClient::bashExecute(const nlohmann::json& args) {
