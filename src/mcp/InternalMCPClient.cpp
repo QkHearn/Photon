@@ -527,8 +527,8 @@ nlohmann::json InternalMCPClient::listTools() {
             {"type", "object"},
             {"properties", {
                 {"operation", {{"type", "string"}, {"enum", {"insert", "replace", "delete"}}, {"description", "Line edit type for surgical modification"}}},
-                {"start_line", {{"type", "integer"}, {"description", "Start line for surgical edit"}}},
-                {"end_line", {{"type", "integer"}, {"description", "End line for surgical edit"}}},
+                {"start_line", {{"type", {"integer", "null"}}, {"description", "Start line for surgical edit"}}},
+                {"end_line", {{"type", {"integer", "null"}}, {"description", "End line for surgical edit"}}},
                 {"search", {{"type", "string"}, {"description", "Text to find for diff-style surgical edit"}}},
                 {"replace", {{"type", "string"}, {"description", "Text to replace for diff-style surgical edit"}}},
                 {"path", {{"type", "string"}, {"description", "Relative path to the file"}}},
@@ -540,8 +540,8 @@ nlohmann::json InternalMCPClient::listTools() {
                         {"properties", {
                             {"path", {{"type", "string"}}},
                             {"operation", {{"type", "string"}, {"enum", {"insert", "replace", "delete"}}}},
-                            {"start_line", {{"type", "integer"}}},
-                            {"end_line", {{"type", "integer"}}},
+                            {"start_line", {{"type", {"integer", "null"}}}},
+                            {"end_line", {{"type", {"integer", "null"}}}},
                             {"content", {{"type", "string"}}}
                         }},
                         {"required", {"path", "operation", "start_line"}}
