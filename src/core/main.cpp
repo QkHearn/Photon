@@ -702,12 +702,12 @@ int main(int argc, char* argv[]) {
                                "CRITICAL GUIDELINES:\n" +
                                "1. CHAIN-OF-THOUGHT: Reason step-by-step. Justify every action before execution.\n" +
                                "2. CONTEXT-FIRST: Use 'lsp_definition', 'lsp_references', and 'generate_logic_map' to navigate the codebase. DO NOT read entire files just to find a symbol.\n" +
-        // 3. SURGICAL EDITS (MANDATORY): You MUST use targeted line-based edits ('operation': 'insert'/'replace'/'delete') or 'search'/'replace' blocks in the 'write' tool. Full-file overwrites (providing ONLY 'path' and 'content') are STRICTLY FORBIDDEN for existing files unless the change affects >80% of the content. This is to prevent accidental code loss and minimize token usage.
-        // 4. PRESERVE CONTEXT: When using 'replace' or 'delete', ensure the line numbers are accurate by reading the file immediately before editing.
-        // 5. TOKEN EFFICIENCY: Use line-range reads (start_line/end_line) in the 'read' tool to examine only relevant code. Full-file reads are a last resort.
-        // 6. ADAPTIVE STRATEGY: Detect repetitive loops or tool failures early. Pivot to alternative approaches immediately.
-        // 7. STRICT VERIFICATION: Always validate changes through 'diagnostics_check' and targeted 'read' calls to ensure zero regressions.
-        // 8. PROACTIVE CLARIFICATION: If a task is ambiguous or high-risk, pause and ask the user for guidance.";
+                               "3. SURGICAL EDITS (MANDATORY): You MUST use targeted line-based edits ('operation': 'insert'/'replace'/'delete') or 'search'/'replace' blocks in the 'write' tool. Full-file overwrites (providing ONLY 'path' and 'content') are STRICTLY FORBIDDEN for existing files unless the change affects >80% of the content. This is to prevent accidental code loss and minimize token usage.\n" +
+                               "4. PRESERVE CONTEXT: When using 'replace' or 'delete', ensure the line numbers are accurate by reading the file immediately before editing.\n" +
+                               "5. TOKEN EFFICIENCY: Use line-range reads (start_line/end_line) in the 'read' tool to examine only relevant code. Full-file reads are a last resort.\n" +
+                               "6. ADAPTIVE STRATEGY: Detect repetitive loops or tool failures early. Pivot to alternative approaches immediately.\n" +
+                               "7. STRICT VERIFICATION: Always validate changes through 'diagnostics_check' and targeted 'read' calls to ensure zero regressions.\n" +
+                               "8. PROACTIVE CLARIFICATION: If a task is ambiguous or high-risk, pause and ask the user for guidance.";
     
     nlohmann::json messages = nlohmann::json::array();
     messages.push_back({{"role", "system"}, {"content", systemPrompt}});
@@ -1006,7 +1006,7 @@ int main(int argc, char* argv[]) {
                     if (fullName == "builtin__write" || fullName == "write") {
                         if (args.contains("path") && args.contains("content") && 
                             !args.contains("operation") && !args.contains("search") && 
-                            fs::exists(rootPath / fs::u8path(args["path"].get<std::string>()))) {
+                            fs::exists(fs::u8path(path) / fs::u8path(args["path"].get<std::string>()))) {
                             
                             // Check if it's a very small file or a new file (not exists is already checked)
                             // We'll allow it but add a warning to the next message
