@@ -1,5 +1,6 @@
 #include "utils/SymbolManager.h"
 #include "utils/TreeSitterSymbolProvider.h"
+#include "mcp/LSPClient.h"
 #include <algorithm>
 #include <fstream>
 #include <iterator>
@@ -7,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <unordered_set>
+#include <limits>
 
 namespace {
 std::uint64_t fnv1a64(const std::string& data) {
@@ -21,6 +23,22 @@ std::uint64_t fnv1a64(const std::string& data) {
 }
 } // namespace
 
+static std::string makeSymbolKey(const Symbol& s) {
+    return s.path + ":" + std::to_string(s.line) + ":" + s.name;
+}
+
+static void decCount(std::unordered_map<std::string, int>& counts, const std::string& key, int delta) {
+    auto it = counts.find(key);
+    if (it == counts.end()) return;
+    it->second -= delta;
+    if (it->second <= 0) counts.erase(it);
+}
+
+static std::string toLowerStr(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    return s;
+}
+
 SymbolManager::SymbolManager(const std::string& root) : rootPath(root) {
     loadIndex();
 }
@@ -30,6 +48,12 @@ SymbolManager::~SymbolManager() {
     if (scanThread.joinable()) {
         scanThread.join();
     }
+}
+
+void SymbolManager::setLSPClients(const std::unordered_map<std::string, LSPClient*>& byExt, LSPClient* fallback) {
+    std::lock_guard<std::mutex> lock(mtx);
+    lspByExtension = byExt;
+    lspFallback = fallback;
 }
 
 void SymbolManager::registerProvider(std::unique_ptr<ISymbolProvider> provider) {
@@ -197,6 +221,8 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
     bool supported = false;
     std::vector<ISymbolProvider*> treeProviders;
     std::vector<ISymbolProvider*> fallbackProviders;
+    std::unordered_map<std::string, LSPClient*> lspByExtSnapshot;
+    LSPClient* lspFallbackSnapshot = nullptr;
     {
         std::lock_guard<std::mutex> lock(mtx);
         for (const auto& provider : providers) {
@@ -209,8 +235,13 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
                 }
             }
         }
+        lspByExtSnapshot = lspByExtension;
+        lspFallbackSnapshot = lspFallback;
     }
-    if (!supported) return;
+    std::string extLower = ext;
+    std::transform(extLower.begin(), extLower.end(), extLower.begin(), ::tolower);
+    bool lspSupported = (lspByExtSnapshot.find(extLower) != lspByExtSnapshot.end()) || (lspFallbackSnapshot != nullptr);
+    if (!supported && !lspSupported) return;
     const std::vector<ISymbolProvider*>& primaryProviders =
         !treeProviders.empty() ? treeProviders : fallbackProviders;
     const std::vector<ISymbolProvider*>& secondaryProviders =
@@ -244,11 +275,49 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
     }
 
     std::vector<Symbol> extractedAll;
-    for (const auto* provider : primaryProviders) {
-        auto extracted = provider->extractSymbols(content, relPath);
-        extractedAll.insert(extractedAll.end(), extracted.begin(), extracted.end());
+    auto pickLsp = [&](const std::string& extLower) -> LSPClient* {
+        if (!lspByExtSnapshot.empty()) {
+            auto it = lspByExtSnapshot.find(extLower);
+            if (it != lspByExtSnapshot.end()) return it->second;
+        }
+        return lspFallbackSnapshot;
+    };
+    auto mapKindToType = [](int kind) -> std::string {
+        switch (kind) {
+            case 5: return "class";
+            case 6: return "method";
+            case 10: return "enum";
+            case 11: return "interface";
+            case 12: return "function";
+            case 23: return "struct";
+            default: return "symbol";
+        }
+    };
+
+    LSPClient* lsp = pickLsp(extLower);
+    if (lsp) {
+        std::string fileUri = "file://" + fs::absolute(filePath).u8string();
+        auto docSymbols = lsp->documentSymbols(fileUri);
+        for (const auto& ds : docSymbols) {
+            Symbol s;
+            s.name = ds.name;
+            s.type = mapKindToType(ds.kind);
+            s.source = "lsp";
+            s.path = relPath;
+            s.line = ds.range.start.line + 1;
+            s.endLine = ds.range.end.line + 1;
+            s.signature = ds.detail;
+            extractedAll.push_back(std::move(s));
+        }
     }
-    if (fallbackOnEmpty && extractedAll.empty() && !secondaryProviders.empty() && secondaryProviders != primaryProviders) {
+
+    if (extractedAll.empty()) {
+        for (const auto* provider : primaryProviders) {
+            auto extracted = provider->extractSymbols(content, relPath);
+            extractedAll.insert(extractedAll.end(), extracted.begin(), extracted.end());
+        }
+    }
+    if (extractedAll.empty() && !secondaryProviders.empty() && secondaryProviders != primaryProviders) {
         for (const auto* provider : secondaryProviders) {
             auto extracted = provider->extractSymbols(content, relPath);
             extractedAll.insert(extractedAll.end(), extracted.begin(), extracted.end());
@@ -267,16 +336,199 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
         }
         extractedAll.swap(unique);
     }
+    std::vector<std::pair<std::string, std::vector<CallInfo>>> removedCalls;
     {
         std::lock_guard<std::mutex> lock(mtx);
         fileSymbols[relPath] = extractedAll;
         fileMeta[relPath] = meta;
+        for (auto it = symbolCalls.begin(); it != symbolCalls.end(); ) {
+            if (it->first.rfind(relPath + ":", 0) == 0) {
+                removedCalls.push_back(*it);
+                it = symbolCalls.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = callGraphAdj.begin(); it != callGraphAdj.end(); ) {
+            if (it->first.rfind(relPath + ":", 0) == 0) {
+                it = callGraphAdj.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const auto& item : removedCalls) {
+            const auto& key = item.first;
+            const auto& calls = item.second;
+            callerOutCounts.erase(key);
+            for (const auto& c : calls) {
+                decCount(calleeCounts, c.name, 1);
+            }
+        }
+    }
+
+    std::unordered_map<std::string, std::vector<Symbol>> globalNameIndex;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        for (const auto& s : symbols) {
+            globalNameIndex[s.name].push_back(s);
+        }
+    }
+    std::unordered_map<std::string, std::vector<Symbol>> localNameIndex;
+    for (const auto& s : extractedAll) {
+        localNameIndex[s.name].push_back(s);
+    }
+    auto resolveByName = [&](const std::string& name) -> std::string {
+        auto tryResolve = [&](const std::string& keyName) -> std::string {
+            auto localIt = localNameIndex.find(keyName);
+            if (localIt != localNameIndex.end() && localIt->second.size() == 1) {
+                return makeSymbolKey(localIt->second[0]);
+            }
+            auto globalIt = globalNameIndex.find(keyName);
+            if (globalIt != globalNameIndex.end() && globalIt->second.size() == 1) {
+                return makeSymbolKey(globalIt->second[0]);
+            }
+            return "";
+        };
+
+        std::string direct = tryResolve(name);
+        if (!direct.empty()) return direct;
+
+        auto stripQualifier = [](const std::string& n) -> std::string {
+            size_t pos = n.rfind("::");
+            if (pos != std::string::npos) return n.substr(pos + 2);
+            pos = n.rfind('.');
+            if (pos != std::string::npos) return n.substr(pos + 1);
+            return n;
+        };
+        std::string baseName = stripQualifier(name);
+        if (baseName != name) {
+            std::string base = tryResolve(baseName);
+            if (!base.empty()) return base;
+        }
+
+        auto localIt = localNameIndex.find(name);
+        if (localIt != localNameIndex.end() && localIt->second.size() == 1) {
+            return makeSymbolKey(localIt->second[0]);
+        }
+        auto globalIt = globalNameIndex.find(name);
+        if (globalIt != globalNameIndex.end() && globalIt->second.size() == 1) {
+            return makeSymbolKey(globalIt->second[0]);
+        }
+        std::string lowerName = toLowerStr(name);
+        std::vector<Symbol> caseMatches;
+        for (const auto& pair : globalNameIndex) {
+            if (toLowerStr(pair.first) == lowerName) {
+                for (const auto& s : pair.second) caseMatches.push_back(s);
+            }
+        }
+        if (caseMatches.empty() && baseName != name) {
+            std::string lowerBase = toLowerStr(baseName);
+            for (const auto& pair : globalNameIndex) {
+                if (toLowerStr(pair.first) == lowerBase) {
+                    for (const auto& s : pair.second) caseMatches.push_back(s);
+                }
+            }
+        }
+        if (caseMatches.size() == 1) return makeSymbolKey(caseMatches[0]);
+        if (!caseMatches.empty()) return "ambiguous:" + name;
+        return "unresolved:" + name;
+    };
+
+    auto pickLsp = [&](const std::string& extLower) -> LSPClient* {
+        if (!lspByExtSnapshot.empty()) {
+            auto it = lspByExtSnapshot.find(extLower);
+            if (it != lspByExtSnapshot.end()) return it->second;
+        }
+        return lspFallbackSnapshot;
+    };
+
+    auto resolveByLsp = [&](const CallInfo& call) -> std::string {
+        std::string extLower = toLowerStr(filePath.extension().string());
+        LSPClient* lsp = pickLsp(extLower);
+        if (!lsp) return "";
+        std::string fileUri = "file://" + fs::absolute(filePath).u8string();
+        LSPClient::Position pos{call.line - 1, call.character};
+        auto defs = lsp->goToDefinition(fileUri, pos);
+        if (defs.empty()) return "";
+        std::vector<LSPClient::Location> ranked;
+        ranked.reserve(defs.size());
+        for (const auto& loc : defs) ranked.push_back(loc);
+        std::string callerRel = relPath;
+        std::stable_sort(ranked.begin(), ranked.end(), [&](const LSPClient::Location& a, const LSPClient::Location& b) {
+            std::string ap = LSPClient::uriToPath(a.uri);
+            std::string bp = LSPClient::uriToPath(b.uri);
+            if (ap.empty() || bp.empty()) return ap < bp;
+            fs::path ar = fs::u8path(ap);
+            fs::path br = fs::u8path(bp);
+            if (ar.is_absolute()) {
+                try { ar = fs::relative(ar, fs::path(rootPath)); } catch (...) {}
+            }
+            if (br.is_absolute()) {
+                try { br = fs::relative(br, fs::path(rootPath)); } catch (...) {}
+            }
+            std::string arl = ar.generic_string();
+            std::string brl = br.generic_string();
+            bool aSameFile = (arl == callerRel);
+            bool bSameFile = (brl == callerRel);
+            if (aSameFile != bSameFile) return aSameFile;
+            return arl < brl;
+        });
+
+        for (const auto& loc : ranked) {
+            std::string targetPath = LSPClient::uriToPath(loc.uri);
+            if (targetPath.empty()) continue;
+            fs::path relPath = fs::u8path(targetPath);
+            if (relPath.is_absolute()) {
+                try { relPath = fs::relative(relPath, fs::path(rootPath)); } catch (...) {}
+            }
+            std::string rel = relPath.generic_string();
+            int line = loc.range.start.line + 1;
+            auto target = findEnclosingSymbol(rel, line);
+            if (target.has_value()) return makeSymbolKey(target.value());
+        }
+        return "";
+    };
+
+    auto resolveCalleeCall = [&](const CallInfo& call) -> std::string {
+        std::string nameKey = resolveByName(call.name);
+        if (nameKey.rfind("ambiguous:", 0) == 0 || nameKey.rfind("unresolved:", 0) == 0) {
+            std::string lspKey = resolveByLsp(call);
+            if (!lspKey.empty()) return lspKey;
+        }
+        return nameKey;
+    };
+
+    for (const auto& s : extractedAll) {
+        if (s.line <= 0 || s.endLine <= 0) continue;
+        auto calls = extractCalls(relPath, s.line, s.endLine);
+        if (!calls.empty()) {
+            std::unordered_set<std::string> uniq;
+            for (const auto& c : calls) {
+                uniq.insert(resolveCalleeCall(c));
+            }
+            std::lock_guard<std::mutex> lock(mtx);
+            std::string key = makeSymbolKey(s);
+            symbolCalls[key] = calls;
+            callerOutCounts[key] = static_cast<int>(calls.size());
+            for (const auto& c : calls) {
+                calleeCounts[c.name] += 1;
+            }
+            callGraphAdj[key] = std::vector<std::string>(uniq.begin(), uniq.end());
+        }
     }
     localSymbols.insert(localSymbols.end(), extractedAll.begin(), extractedAll.end());
 }
 
 fs::path SymbolManager::getIndexPath() const {
     return fs::path(rootPath) / ".photon" / "index" / "symbols.json";
+}
+
+fs::path SymbolManager::getCallIndexPath() const {
+    return fs::path(rootPath) / ".photon" / "index" / "symbol_calls.json";
+}
+
+fs::path SymbolManager::getCallGraphPath() const {
+    return fs::path(rootPath) / ".photon" / "index" / "call_graph.json";
 }
 
 void SymbolManager::loadIndex() {
@@ -349,6 +601,8 @@ void SymbolManager::loadIndex() {
         fileSymbols = std::move(loadedFileSymbols);
         fileMeta = std::move(loadedMeta);
     } catch (...) {}
+    loadCallIndex();
+    loadCallGraph();
 }
 
 void SymbolManager::saveIndex() {
@@ -396,6 +650,120 @@ void SymbolManager::saveIndex() {
         if (!file.is_open()) return;
         file << j.dump(2);
     } catch (...) {}
+    saveCallIndex();
+    saveCallGraph();
+}
+
+void SymbolManager::loadCallIndex() {
+    try {
+        fs::path indexPath = getCallIndexPath();
+        if (!fs::exists(indexPath)) return;
+        std::ifstream file(indexPath);
+        if (!file.is_open()) return;
+        nlohmann::json j;
+        file >> j;
+        if (!j.is_object() || !j.contains("calls")) return;
+        std::unordered_map<std::string, std::vector<CallInfo>> loadedCalls;
+        for (const auto& item : j["calls"]) {
+            std::string key = item.value("key", "");
+            if (key.empty() || !item.contains("entries")) continue;
+            std::vector<CallInfo> calls;
+            for (const auto& c : item["entries"]) {
+                CallInfo info;
+                info.name = c.value("name", "");
+                info.line = c.value("line", 0);
+                info.character = c.value("character", 0);
+                if (!info.name.empty()) calls.push_back(info);
+            }
+            if (!calls.empty()) loadedCalls[key] = std::move(calls);
+        }
+        std::lock_guard<std::mutex> lock(mtx);
+        symbolCalls = std::move(loadedCalls);
+        calleeCounts.clear();
+        callerOutCounts.clear();
+        for (const auto& pair : symbolCalls) {
+            callerOutCounts[pair.first] = static_cast<int>(pair.second.size());
+            for (const auto& c : pair.second) {
+                calleeCounts[c.name] += 1;
+            }
+        }
+    } catch (...) {}
+}
+
+void SymbolManager::saveCallIndex() {
+    try {
+        std::unordered_map<std::string, std::vector<CallInfo>> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            snapshot = symbolCalls;
+        }
+        nlohmann::json calls = nlohmann::json::array();
+        for (const auto& pair : snapshot) {
+            nlohmann::json entries = nlohmann::json::array();
+            for (const auto& c : pair.second) {
+                entries.push_back({
+                    {"name", c.name},
+                    {"line", c.line},
+                    {"character", c.character}
+                });
+            }
+            calls.push_back({{"key", pair.first}, {"entries", entries}});
+        }
+        nlohmann::json root = {
+            {"version", 1},
+            {"calls", calls}
+        };
+        fs::path indexPath = getCallIndexPath();
+        fs::create_directories(indexPath.parent_path());
+        std::ofstream out(indexPath);
+        out << root.dump(2);
+    } catch (...) {}
+}
+
+void SymbolManager::loadCallGraph() {
+    try {
+        fs::path indexPath = getCallGraphPath();
+        if (!fs::exists(indexPath)) return;
+        std::ifstream file(indexPath);
+        if (!file.is_open()) return;
+        nlohmann::json j;
+        file >> j;
+        if (!j.is_object() || !j.contains("edges")) return;
+        std::unordered_map<std::string, std::vector<std::string>> loadedAdj;
+        for (const auto& item : j["edges"]) {
+            std::string from = item.value("from", "");
+            if (from.empty() || !item.contains("to")) continue;
+            std::vector<std::string> tos;
+            for (const auto& t : item["to"]) {
+                if (t.is_string()) tos.push_back(t.get<std::string>());
+            }
+            if (!tos.empty()) loadedAdj[from] = std::move(tos);
+        }
+        std::lock_guard<std::mutex> lock(mtx);
+        callGraphAdj = std::move(loadedAdj);
+    } catch (...) {}
+}
+
+void SymbolManager::saveCallGraph() {
+    try {
+        std::unordered_map<std::string, std::vector<std::string>> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            snapshot = callGraphAdj;
+        }
+        nlohmann::json edges = nlohmann::json::array();
+        for (const auto& pair : snapshot) {
+            edges.push_back({{"from", pair.first}, {"to", pair.second}});
+        }
+        nlohmann::json root = {
+            {"version", 1},
+            {"edges", edges}
+        };
+        fs::path indexPath = getCallGraphPath();
+        fs::create_directories(indexPath.parent_path());
+        std::ofstream out(indexPath);
+        out << root.dump(2);
+    } catch (...) {}
 }
 
 std::vector<SymbolManager::Symbol> SymbolManager::search(const std::string& query) {
@@ -436,6 +804,62 @@ std::vector<SymbolManager::Symbol> SymbolManager::getFileSymbols(const std::stri
     std::lock_guard<std::mutex> lock(mtx);
     auto it = fileSymbols.find(relPath);
     if (it == fileSymbols.end()) return {};
+    return it->second;
+}
+
+std::optional<SymbolManager::Symbol> SymbolManager::findEnclosingSymbol(const std::string& relPath, int line) {
+    if (line <= 0) return std::nullopt;
+    std::lock_guard<std::mutex> lock(mtx);
+    auto it = fileSymbols.find(relPath);
+    if (it == fileSymbols.end()) return std::nullopt;
+
+    const auto& symbols = it->second;
+    const Symbol* best = nullptr;
+    int bestSpan = std::numeric_limits<int>::max();
+    int bestStart = -1;
+
+    for (const auto& s : symbols) {
+        if (s.line <= 0) continue;
+        bool inRange = (s.endLine > 0) ? (s.line <= line && line <= s.endLine) : (s.line <= line);
+        if (!inRange) continue;
+
+        int span = (s.endLine > 0) ? (s.endLine - s.line) : std::numeric_limits<int>::max();
+        if (span < bestSpan || (span == bestSpan && s.line > bestStart)) {
+            best = &s;
+            bestSpan = span;
+            bestStart = s.line;
+        }
+    }
+
+    if (!best) return std::nullopt;
+    return *best;
+}
+
+std::vector<SymbolManager::CallInfo> SymbolManager::getCallsForSymbol(const Symbol& symbol) {
+    std::lock_guard<std::mutex> lock(mtx);
+    auto it = symbolCalls.find(makeSymbolKey(symbol));
+    if (it == symbolCalls.end()) return {};
+    return it->second;
+}
+
+int SymbolManager::getGlobalCalleeCount(const std::string& calleeName) const {
+    std::lock_guard<std::mutex> lock(mtx);
+    auto it = calleeCounts.find(calleeName);
+    if (it == calleeCounts.end()) return 0;
+    return it->second;
+}
+
+int SymbolManager::getCallerOutDegree(const Symbol& symbol) const {
+    std::lock_guard<std::mutex> lock(mtx);
+    auto it = callerOutCounts.find(makeSymbolKey(symbol));
+    if (it == callerOutCounts.end()) return 0;
+    return it->second;
+}
+
+std::vector<std::string> SymbolManager::getCalleesForSymbol(const Symbol& symbol) const {
+    std::lock_guard<std::mutex> lock(mtx);
+    auto it = callGraphAdj.find(makeSymbolKey(symbol));
+    if (it == callGraphAdj.end()) return {};
     return it->second;
 }
 

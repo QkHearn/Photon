@@ -76,6 +76,17 @@ private:
     bool readSummaryRequired = false;
     std::string lastReadTarget;
     bool allowNextRead = false;
+
+    struct PlannedRead {
+        std::string path;
+        int startLine = 0;
+        int endLine = 0;
+        std::string label;
+    };
+    std::vector<PlannedRead> plannedReads;
+    std::string lastPlanQuery;
+    bool enforceContextPlan = true;
+    bool autoPlanEnabled = true;
     std::string calculateHash(const std::string& content);
 
     using ToolHandler = std::function<nlohmann::json(const nlohmann::json&)>;
@@ -121,6 +132,7 @@ private:
     nlohmann::json toolFileExplore(const nlohmann::json& args);
     nlohmann::json symbolSearch(const nlohmann::json& args);
     nlohmann::json semanticSearch(const nlohmann::json& args);
+    nlohmann::json contextPlan(const nlohmann::json& args);
     nlohmann::json lspDefinition(const nlohmann::json& args);
     nlohmann::json lspReferences(const nlohmann::json& args);
     nlohmann::json generateLogicMap(const nlohmann::json& args);

@@ -10,6 +10,10 @@
 
 namespace fs = std::filesystem;
 
+#ifdef PHOTON_USE_SQLITE
+struct sqlite3;
+#endif
+
 struct SemanticChunk {
     std::string id;
     std::string content;
@@ -50,11 +54,22 @@ private:
     std::thread indexingThread;
     std::atomic<bool> indexing{false};
     mutable std::mutex mtx;
+    bool useSqlite = false;
+#ifdef PHOTON_USE_SQLITE
+    sqlite3* db = nullptr;
+    bool initDb();
+    void closeDb();
+    void upsertChunkDb(const SemanticChunk& chunk);
+    void removeChunksForFileDb(const std::string& relPath, const std::string& type);
+    std::vector<SemanticChunk> searchDb(const std::vector<float>& queryEmbedding, int topK);
+#endif
     
     fs::path getIndexPath() const;
+    fs::path getDbPath() const;
     float cosineSimilarity(const std::vector<float>& v1, const std::vector<float>& v2);
     
     // Chunking helpers
     void chunkMarkdown(const std::string& content, const std::string& relPath);
     void chunkCode(const std::string& content, const std::string& relPath);
+    void removeChunksForFile(const std::string& relPath, const std::string& type);
 };

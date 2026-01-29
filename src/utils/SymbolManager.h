@@ -10,8 +10,11 @@
 #include <memory>
 #include <atomic>
 #include <unordered_map>
+#include <optional>
 
 namespace fs = std::filesystem;
+
+class LSPClient;
 
 struct Symbol {
     std::string name;
@@ -44,6 +47,7 @@ public:
 
     void registerProvider(std::unique_ptr<ISymbolProvider> provider);
     void setFallbackOnEmpty(bool enabled) { fallbackOnEmpty = enabled; }
+    void setLSPClients(const std::unordered_map<std::string, LSPClient*>& byExt, LSPClient* fallback);
 
     // Start asynchronous full scan
     void startAsyncScan();
@@ -62,6 +66,15 @@ public:
 
     // Get all symbols in a specific file
     std::vector<Symbol> getFileSymbols(const std::string& relPath);
+
+    // Find the most specific symbol that encloses a line
+    std::optional<Symbol> findEnclosingSymbol(const std::string& relPath, int line);
+
+    // Get cached call hints for a symbol (may be empty)
+    std::vector<CallInfo> getCallsForSymbol(const Symbol& symbol);
+    int getGlobalCalleeCount(const std::string& calleeName) const;
+    int getCallerOutDegree(const Symbol& symbol) const;
+    std::vector<std::string> getCalleesForSymbol(const Symbol& symbol) const;
 
     struct CallInfo {
         std::string name;
@@ -82,6 +95,12 @@ private:
     std::vector<std::unique_ptr<ISymbolProvider>> providers;
     std::unordered_map<std::string, std::vector<Symbol>> fileSymbols;
     std::unordered_map<std::string, FileMeta> fileMeta;
+    std::unordered_map<std::string, std::vector<CallInfo>> symbolCalls;
+    std::unordered_map<std::string, int> calleeCounts;
+    std::unordered_map<std::string, int> callerOutCounts;
+    std::unordered_map<std::string, std::vector<std::string>> callGraphAdj;
+    std::unordered_map<std::string, LSPClient*> lspByExtension;
+    LSPClient* lspFallback = nullptr;
     mutable std::mutex mtx;
     std::atomic<bool> scanning{false};
     std::thread scanThread;
@@ -99,7 +118,13 @@ private:
     void scanFile(const fs::path& filePath, std::vector<Symbol>& localSymbols);
     void updateSingleFile(const fs::path& filePath);
     fs::path getIndexPath() const;
+    fs::path getCallIndexPath() const;
+    fs::path getCallGraphPath() const;
     void loadIndex();
     void saveIndex();
+    void loadCallIndex();
+    void saveCallIndex();
+    void loadCallGraph();
+    void saveCallGraph();
     bool shouldIgnore(const fs::path& path);
 };

@@ -46,6 +46,8 @@ endif()
 add_subdirectory(third_party/ftxui)
 
 find_package(nlohmann_json REQUIRED)
+# Optional SQLite3 for semantic index storage
+find_package(SQLite3)
 # cpp-httplib is often header-only, if not found via find_package, 
 # we expect it to be in the include path.
 
@@ -93,6 +95,15 @@ target_link_libraries(agent_lib PRIVATE
     ftxui::dom
     ftxui::component
 )
+
+if(SQLite3_FOUND)
+    target_include_directories(photon PRIVATE ${SQLite3_INCLUDE_DIRS})
+    target_include_directories(agent_lib PRIVATE ${SQLite3_INCLUDE_DIRS})
+    target_link_libraries(photon PRIVATE ${SQLite3_LIBRARIES})
+    target_link_libraries(agent_lib PRIVATE ${SQLite3_LIBRARIES})
+    target_compile_definitions(photon PRIVATE PHOTON_USE_SQLITE)
+    target_compile_definitions(agent_lib PRIVATE PHOTON_USE_SQLITE)
+endif()
 
 # Find GTest
 set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)

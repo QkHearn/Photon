@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <cctype>
+#include <optional>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -61,7 +62,11 @@ bool LSPClient::initialize() {
 #endif
         },
         {"rootUri", rootUri},
-        {"capabilities", nlohmann::json::object()}
+        {"capabilities", {
+            {"textDocument", {
+                {"documentSymbol", {{"hierarchicalDocumentSymbolSupport", true}}}
+            }}
+        }}
     };
     
     auto result = sendRequest("initialize", params);
@@ -107,6 +112,23 @@ std::vector<LSPClient::Location> LSPClient::findReferences(const std::string& fi
         }
     }
     return parseLocations(result);
+}
+
+std::vector<LSPClient::DocumentSymbol> LSPClient::documentSymbols(const std::string& fileUri) {
+    if (!initialized && !initialize()) return {};
+    if (!ensureDocumentOpen(fileUri)) return {};
+    nlohmann::json params = {
+        {"textDocument", {{"uri", fileUri}}}
+    };
+    auto result = sendRequest("textDocument/documentSymbol", params);
+    if (lastRequestTimedOut) {
+        stopProcess();
+        initialized = false;
+        if (initialize()) {
+            result = sendRequest("textDocument/documentSymbol", params);
+        }
+    }
+    return parseDocumentSymbols(result);
 }
 
 bool LSPClient::startProcess() {
@@ -410,6 +432,86 @@ std::vector<LSPClient::Location> LSPClient::parseLocations(const nlohmann::json&
         addLocation(result);
     }
     return locations;
+}
+
+std::vector<LSPClient::DocumentSymbol> LSPClient::parseDocumentSymbols(const nlohmann::json& result) {
+    std::vector<DocumentSymbol> symbols;
+    if (result.is_null()) return symbols;
+
+    auto parseRange = [](const nlohmann::json& j, Range& r) -> bool {
+        if (!j.is_object()) return false;
+        if (!j.contains("start") || !j.contains("end")) return false;
+        const auto& s = j["start"];
+        const auto& e = j["end"];
+        if (!s.is_object() || !e.is_object()) return false;
+        r.start.line = s.value("line", 0);
+        r.start.character = s.value("character", 0);
+        r.end.line = e.value("line", 0);
+        r.end.character = e.value("character", 0);
+        return true;
+    };
+
+    auto flatten = [&](const DocumentSymbol& sym, auto& self, std::vector<DocumentSymbol>& out) -> void {
+        DocumentSymbol copy = sym;
+        copy.children.clear();
+        out.push_back(std::move(copy));
+        for (const auto& child : sym.children) {
+            self(child, self, out);
+        }
+    };
+
+    auto parseDocumentSymbol = [&](const nlohmann::json& item, auto& self) -> DocumentSymbol {
+        DocumentSymbol sym;
+        sym.name = item.value("name", "");
+        sym.kind = item.value("kind", 0);
+        sym.detail = item.value("detail", "");
+        if (item.contains("range")) parseRange(item["range"], sym.range);
+        if (item.contains("selectionRange")) parseRange(item["selectionRange"], sym.selectionRange);
+        if (item.contains("children") && item["children"].is_array()) {
+            for (const auto& child : item["children"]) {
+                sym.children.push_back(self(child, self));
+            }
+        }
+        return sym;
+    };
+
+    auto parseSymbolInformation = [&](const nlohmann::json& item) -> std::optional<DocumentSymbol> {
+        if (!item.contains("name") || !item.contains("kind") || !item.contains("location")) return std::nullopt;
+        const auto& loc = item["location"];
+        if (!loc.contains("range")) return std::nullopt;
+        DocumentSymbol sym;
+        sym.name = item.value("name", "");
+        sym.kind = item.value("kind", 0);
+        if (item.contains("containerName")) {
+            sym.detail = item.value("containerName", "");
+        }
+        parseRange(loc["range"], sym.range);
+        sym.selectionRange = sym.range;
+        return sym;
+    };
+
+    if (result.is_array()) {
+        for (const auto& item : result) {
+            if (item.contains("location")) {
+                auto sym = parseSymbolInformation(item);
+                if (sym.has_value()) symbols.push_back(sym.value());
+                continue;
+            }
+            if (item.contains("name")) {
+                auto sym = parseDocumentSymbol(item, parseDocumentSymbol);
+                flatten(sym, flatten, symbols);
+            }
+        }
+    } else if (result.is_object()) {
+        if (result.contains("location")) {
+            auto sym = parseSymbolInformation(result);
+            if (sym.has_value()) symbols.push_back(sym.value());
+        } else if (result.contains("name")) {
+            auto sym = parseDocumentSymbol(result, parseDocumentSymbol);
+            flatten(sym, flatten, symbols);
+        }
+    }
+    return symbols;
 }
 
 std::string LSPClient::uriToPath(const std::string& uri) {

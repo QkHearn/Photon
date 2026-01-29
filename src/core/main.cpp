@@ -601,8 +601,6 @@ int main(int argc, char* argv[]) {
     }
 #endif
     symbolManager.registerProvider(std::make_unique<RegexSymbolProvider>());
-    symbolManager.startAsyncScan();
-    symbolManager.startWatching(5);
     semanticManager->startAsyncIndexing();
 
     // Initialize LSP clients (Parallel initialization)
@@ -722,7 +720,7 @@ int main(int argc, char* argv[]) {
                                "PhotonRule v1.0:\n" +
                                "1. MIN_IO: No full-file reads >500 lines.\n" +
                                "2. PATCH_ONLY: No full-file overwrites. Use surgical edits.\n" +
-                               "3. SEARCH_FIRST: Map symbols before reading.\n" +
+                               "3. SEARCH_FIRST: Use 'context_plan' to select entry points before reading.\n" +
                                "4. DECOUPLE: Split files >1000 lines.\n" +
                                "5. JSON_STRICT: Validate schemas.\n" +
                                "6. ASYNC_SAFE: Respect async flows.\n\n" +
@@ -731,7 +729,7 @@ int main(int argc, char* argv[]) {
                                "Current system time: " + date_ss.str() + "\n" +
                                "CRITICAL GUIDELINES:\n" +
                                "1. CHAIN-OF-THOUGHT: Reason step-by-step. Justify every action before execution.\n" +
-                               "2. CONTEXT-FIRST: Use 'lsp_definition', 'lsp_references', and 'generate_logic_map' to navigate the codebase. DO NOT read entire files just to find a symbol.\n" +
+                               "2. CONTEXT-FIRST: Use 'context_plan' to generate a retrieval plan (entry -> calls -> dependencies), then read only within the plan. Use 'lsp_definition', 'lsp_references', and 'generate_logic_map' to navigate. DO NOT read entire files just to find a symbol.\n" +
                                "3. SURGICAL EDITS (MANDATORY): You MUST use targeted line-based edits ('operation': 'insert'/'replace'/'delete') or 'search'/'replace' blocks in the 'write' tool. Full-file overwrites (providing ONLY 'path' and 'content') are STRICTLY FORBIDDEN for existing files unless the change affects >80% of the content. This is to prevent accidental code loss and minimize token usage.\n" +
                                "4. PRESERVE CONTEXT: When using 'replace' or 'delete', ensure the line numbers are accurate by reading the file immediately before editing.\n" +
                                "5. TOKEN EFFICIENCY: Use line-range reads (start_line/end_line) in the 'read' tool to examine only relevant code. Full-file reads are a last resort.\n" +
@@ -807,6 +805,10 @@ int main(int argc, char* argv[]) {
                 builtin->setSemanticManager(semanticManager.get());
                 if (!lspClients.empty()) builtin->setLSPClients(lspByExt, lspFallback);
             }
+
+            symbolManager.setLSPClients(lspByExt, lspFallback);
+            symbolManager.startAsyncScan();
+            symbolManager.startWatching(5);
             
             std::cout << "                                        \r" << std::flush;
             engineInitialized = true;

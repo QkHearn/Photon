@@ -29,12 +29,22 @@ public:
         Range range;
     };
 
+    struct DocumentSymbol {
+        std::string name;
+        int kind = 0;
+        Range range;
+        Range selectionRange;
+        std::string detail;
+        std::vector<DocumentSymbol> children;
+    };
+
     LSPClient(const std::string& serverPath, const std::string& rootUri);
     ~LSPClient();
 
     bool initialize();
     std::vector<Location> goToDefinition(const std::string& fileUri, const Position& position);
     std::vector<Location> findReferences(const std::string& fileUri, const Position& position);
+    std::vector<DocumentSymbol> documentSymbols(const std::string& fileUri);
 
     static std::string uriToPath(const std::string& uri);
 
@@ -72,5 +82,6 @@ private:
     void sendNotification(const std::string& method, const nlohmann::json& params);
     bool ensureDocumentOpen(const std::string& fileUri);
     std::vector<Location> parseLocations(const nlohmann::json& result);
+    std::vector<DocumentSymbol> parseDocumentSymbols(const nlohmann::json& result);
     static std::vector<std::string> splitArgs(const std::string& cmd);
 };
