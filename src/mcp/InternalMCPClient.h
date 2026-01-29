@@ -20,6 +20,8 @@
 #include "utils/SemanticManager.h"
 #include "mcp/LSPClient.h"
 
+#include "utils/Logger.h"
+
 namespace fs = std::filesystem;
 
 class InternalMCPClient : public IMCPClient {
@@ -140,8 +142,13 @@ private:
     void backupFile(const std::string& relPath);
     void ensurePhotonDirs();
     bool isCommandSafe(const std::string& cmd);
+    bool isHighRiskCommand(const std::string& cmd);
+    bool isHighRiskPath(const std::string& relPath);
     bool commandExists(const std::string& cmd);
     void saveTasksToDisk();
     void loadTasksFromDisk();
     std::string autoDetectBuildCommand();
+
+    bool sessionAuthorized = false;
+    nlohmann::json authorizeSession(const nlohmann::json& args);
 };

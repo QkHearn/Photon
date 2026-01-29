@@ -149,7 +149,7 @@ void InternalMCPClient::registerTools() {
     toolHandlers["skill_read"] = [this](const nlohmann::json& a) { return skillRead(a); };
     toolHandlers["schedule"] = [this](const nlohmann::json& a) { return osScheduler(a); };
     toolHandlers["tasks"] = [this](const nlohmann::json& a) { return listTasks(a); };
-    toolHandlers["cancel"] = [this](const nlohmann::json& a) { return cancelTask(a); };
+    toolHandlers["authorize"] = [this](const nlohmann::json& a) { return authorizeSession(a); };
 }
 
 InternalMCPClient::~InternalMCPClient() {
@@ -537,6 +537,17 @@ nlohmann::json InternalMCPClient::listTools() {
                     }}
                 }}
             }}
+        }}
+    });
+
+    // Authorize Tool
+    tools.push_back({
+        {"name", "authorize"},
+        {"description", "Authorize the current session to perform high-risk operations like file writing and bash execution. "
+                        "This only needs to be called once per session."},
+        {"inputSchema", {
+            {"type", "object"},
+            {"properties", {}}
         }}
     });
 
@@ -958,6 +969,11 @@ nlohmann::json InternalMCPClient::callTool(const std::string& name, const nlohma
     return result;
 }
 
+nlohmann::json InternalMCPClient::authorizeSession(const nlohmann::json& args) {
+    sessionAuthorized = true;
+    return {{"content", {{{"type", "text"}, {"text", "✅ 授权成功。在本次对话中，您现在可以执行写文件和 Bash 命令等高风险操作。"}}}}};
+}
+
 nlohmann::json InternalMCPClient::fileSearch(const nlohmann::json& args) {
     std::string query = args["query"];
     std::vector<std::string> matches;
@@ -1302,6 +1318,33 @@ bool InternalMCPClient::isCommandSafe(const std::string& cmd) {
     return true;
 }
 
+bool InternalMCPClient::isHighRiskCommand(const std::string& cmd) {
+    std::string lowerCmd = cmd;
+    std::transform(lowerCmd.begin(), lowerCmd.end(), lowerCmd.begin(), ::tolower);
+
+    // 1. 修改/删除类操作
+    static const std::vector<std::string> highRisk = {
+        "pip ", "npm ", "git commit", "git push", "rm ", "mv ", "cp ", 
+        "mkdir ", "touch ", "sed ", "awk ", "tee ", ">", ">>"
+    };
+
+    for (const auto& h : highRisk) {
+        if (lowerCmd.find(h) != std::string::npos) return true;
+    }
+
+    return false;
+}
+
+bool InternalMCPClient::isHighRiskPath(const std::string& relPath) {
+    // 如果路径包含 src/ 或者是核心配置文件，则视为高风险
+    if (relPath.find("src/") != std::string::npos || 
+        relPath == "CMakeLists.txt" || 
+        relPath == "config.json") {
+        return true;
+    }
+    return false;
+}
+
 nlohmann::json InternalMCPClient::pythonSandbox(const nlohmann::json& args) {
     std::string code = args["code"];
     
@@ -1473,7 +1516,17 @@ nlohmann::json InternalMCPClient::archVisualize(const nlohmann::json& args) {
 
 nlohmann::json InternalMCPClient::bashExecute(const nlohmann::json& args) {
     std::string command = args["command"];
-
+    if (isHighRiskCommand(command) && !sessionAuthorized) {
+        return {
+            {"status", "requires_confirmation"},
+            {"is_high_risk", true},
+            {"content", {{{"type", "text"}, {"text", "⚠️ 安全拦截：该命令（" + command + "）属于高风险操作，需要您的显式授权。请告知用户需要点击授权按钮或调用 'authorize' 工具来开启本次对话的执行权限。"}}}}
+        };
+    }
+    
+    // Level 2 Logging: Log normal commands
+    Logger::getInstance().action("Executing Bash command: " + command);
+    
     if (!isCommandSafe(command)) {
         return {{"error", "Security Alert: Command blocked by Photon Guard. Restricted keywords or paths detected."}};
     }
@@ -2947,6 +3000,34 @@ nlohmann::json InternalMCPClient::toolFileRead(const nlohmann::json& args) {
 }
 
 nlohmann::json InternalMCPClient::toolFileWrite(const nlohmann::json& args) {
+    bool highRisk = false;
+    std::string targetPath;
+    if (args.contains("path")) {
+        targetPath = args["path"];
+        highRisk = isHighRiskPath(targetPath);
+    } else if (args.contains("edits")) {
+        for (const auto& edit : args["edits"]) {
+            if (edit.contains("path") && isHighRiskPath(edit["path"])) {
+                highRisk = true;
+                targetPath = edit["path"];
+                break;
+            }
+        }
+    }
+
+    if (highRisk && !sessionAuthorized) {
+        return {
+            {"status", "requires_confirmation"},
+            {"is_high_risk", true},
+            {"content", {{{"type", "text"}, {"text", "⚠️ 安全拦截：修改核心源码（src/）需要您的显式授权。请告知用户需要点击授权按钮或调用 'authorize' 工具来开启本次对话的执行权限。"}}}}
+        };
+    }
+
+    // Level 2 Logging: Log normal file writes
+    if (!targetPath.empty()) {
+        Logger::getInstance().action("Writing to file: " + targetPath);
+    }
+
     if (args.contains("edits")) {
         return editBatchLines(args);
     }
