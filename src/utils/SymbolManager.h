@@ -70,17 +70,18 @@ public:
     // Find the most specific symbol that encloses a line
     std::optional<Symbol> findEnclosingSymbol(const std::string& relPath, int line);
 
+    struct CallInfo {
+        std::string name;
+        int line;
+        int character;
+    };
+
     // Get cached call hints for a symbol (may be empty)
     std::vector<CallInfo> getCallsForSymbol(const Symbol& symbol);
     int getGlobalCalleeCount(const std::string& calleeName) const;
     int getCallerOutDegree(const Symbol& symbol) const;
     std::vector<std::string> getCalleesForSymbol(const Symbol& symbol) const;
 
-    struct CallInfo {
-        std::string name;
-        int line;
-        int character;
-    };
     std::vector<CallInfo> extractCalls(const std::string& relPath, int startLine, int endLine);
 
     bool isScanning() const { return scanning; }
