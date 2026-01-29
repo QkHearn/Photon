@@ -1,6 +1,6 @@
 {
     "llm": {
-    "api_key": "sk-herbySg5bFnh1yginf6xMgFuXetanY2Vz27KpPfOJQMvecH8",
+    "api_key": "",
     "base_url": "https://api.moonshot.cn/v1",
     "model": "kimi-k2-0905-preview",
     "system_role": "You are Photon, a powerful AI agent. You MUST perform surgical, targeted edits. Use LSP tools (lsp_definition, lsp_references) to find code locations. Use line-range reads to examine code. Use line-based operations (insert/replace/delete) or search-replace for all file modifications. NEVER overwrite an entire file unless absolutely necessary."
