@@ -743,6 +743,96 @@ int main(int argc, char* argv[]) {
     // Lazy initialization flag
     bool engineInitialized = false;
     std::unordered_set<std::string> recentQueries; // 记录最近的搜索，防止死循环
+    std::unordered_map<std::string, std::string> readSummaries;
+    std::vector<std::string> readSummaryOrder;
+    const size_t maxReadSummaries = 20;
+    const std::string readSummaryTag = "[READ_SUMMARY]";
+
+    auto startsWith = [](const std::string& s, const std::string& prefix) {
+        return s.rfind(prefix, 0) == 0;
+    };
+    auto isReadRejection = [&](const std::string& text) {
+        return text.find("⚠️  请先使用 context_plan") != std::string::npos ||
+               text.find("⚠️  读取范围不在检索计划内") != std::string::npos ||
+               text.find("⚠️  批量读取包含计划外范围") != std::string::npos ||
+               text.find("⚠️  读取范围过大") != std::string::npos ||
+               text.find("⚠️  单文件读取预算已达上限") != std::string::npos ||
+               text.find("⚠️ 读取目标是目录") != std::string::npos ||
+               text.find("⚠️ 读取目标不是普通文件") != std::string::npos ||
+               text.find("⚠️ 已阻止仅凭 path 的读取") != std::string::npos;
+    };
+    auto extractReadText = [](const nlohmann::json& result) -> std::string {
+        if (!result.contains("content") || !result["content"].is_array()) return "";
+        std::string text;
+        for (const auto& item : result["content"]) {
+            if (item.contains("type") && item["type"] == "text" && item.contains("text")) {
+                if (!text.empty()) text += "\n";
+                text += item["text"].get<std::string>();
+            }
+        }
+        return text;
+    };
+    auto buildReadKey = [](const nlohmann::json& args) -> std::string {
+        if (args.contains("requests") && args["requests"].is_array()) {
+            std::string key = "batch:";
+            int count = 0;
+            for (const auto& req : args["requests"]) {
+                if (count++ > 0) key += ";";
+                std::string path = req.value("path", "");
+                int start = req.value("start_line", 0);
+                int end = req.value("end_line", 0);
+                key += path + ":" + std::to_string(start) + "-" + std::to_string(end);
+            }
+            return key;
+        }
+        if (args.contains("query")) {
+            return "query:" + args.value("query", "");
+        }
+        std::string path = args.value("path", "");
+        int start = args.value("start_line", 0);
+        int end = args.value("end_line", 0);
+        if (!path.empty() && (start > 0 || end > 0)) {
+            return path + ":" + std::to_string(start) + "-" + std::to_string(end);
+        }
+        if (!path.empty()) return path;
+        return "read";
+    };
+    auto storeReadSummary = [&](const std::string& key, const std::string& summary) {
+        if (key.empty() || summary.empty()) return;
+        if (!readSummaries.count(key)) {
+            readSummaryOrder.push_back(key);
+            if (readSummaryOrder.size() > maxReadSummaries) {
+                readSummaries.erase(readSummaryOrder.front());
+                readSummaryOrder.erase(readSummaryOrder.begin());
+            }
+        }
+        readSummaries[key] = summary;
+    };
+    auto injectReadSummaries = [&]() {
+        for (size_t i = 0; i < messages.size(); ) {
+            if (messages[i].contains("role") && messages[i]["role"] == "system" &&
+                messages[i].contains("content") && messages[i]["content"].is_string()) {
+                std::string content = messages[i]["content"].get<std::string>();
+                if (startsWith(content, readSummaryTag)) {
+                    messages.erase(messages.begin() + i);
+                    continue;
+                }
+            }
+            ++i;
+        }
+        if (readSummaryOrder.empty()) return;
+        std::string content = readSummaryTag + "\n已读摘要：\n";
+        for (const auto& key : readSummaryOrder) {
+            auto it = readSummaries.find(key);
+            if (it == readSummaries.end()) continue;
+            content += "- " + key + ": " + it->second + "\n";
+        }
+        if (messages.size() >= 1) {
+            messages.insert(messages.begin() + 1, {{"role", "system"}, {"content", content}});
+        } else {
+            messages.push_back({{"role", "system"}, {"content", content}});
+        }
+    };
 
     while (true) {
         std::string userInput;
@@ -817,6 +907,8 @@ int main(int argc, char* argv[]) {
         if (userInput == "clear") {
             messages = nlohmann::json::array();
             messages.push_back({{"role", "system"}, {"content", systemPrompt}});
+            readSummaries.clear();
+            readSummaryOrder.clear();
             std::cout << GREEN << "✔ Context cleared (Forgotten)." << RESET << std::endl;
             continue;
         }
@@ -1013,8 +1105,10 @@ int main(int argc, char* argv[]) {
 
         while (continues && iteration < max_iterations) {
             iteration++;
-        // Apply context management
-        messages = contextManager.manage(messages);
+            // Inject read summaries before context management
+            injectReadSummaries();
+            // Apply context management
+            messages = contextManager.manage(messages);
 
         // Update status bar during thinking
         // UIManager::getInstance().updateStatus(cfg.llm.model, (int)contextManager.getSize(messages), mcpManager.getTotalTaskCount());
@@ -1247,6 +1341,21 @@ int main(int argc, char* argv[]) {
                             } else if (result.is_null() || (result.is_object() && result.empty())) {
                                 Logger::getInstance().warn("Tool " + toolName + " returned empty result.");
                                 Logger::getInstance().warn("Tool " + toolName + " args: " + args.dump());
+                            }
+                            
+                            if (toolName == "read" && !result.contains("error")) {
+                                std::string readText = extractReadText(result);
+                                if (!readText.empty() && !isReadRejection(readText)) {
+                                    const size_t kMaxSummaryInput = 6000;
+                                    if (readText.size() > kMaxSummaryInput) {
+                                        readText = readText.substr(0, kMaxSummaryInput);
+                                    }
+                                    std::string key = buildReadKey(args);
+                                    std::string summaryPrompt =
+                                        "请对以下 read 结果做 1-3 条要点摘要，保留文件路径/范围或标签：\n" + readText;
+                                    std::string summary = llmClient->summarize(summaryPrompt);
+                                    storeReadSummary(key, summary);
+                                }
                             }
 
                             // Add tool result to messages
