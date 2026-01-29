@@ -27,9 +27,9 @@ protected:
         testDir = fs::temp_directory_path() / fs::path(folderName);
         fs::create_directories(testDir);
 
-        auto samplePath = (testDir / fs::path("sample.txt")).string();
+        auto samplePath = (testDir / fs::path("sample.cpp")).string();
         std::ofstream f(samplePath);
-        f << "line1\nline2\n";
+        f << "int sample() { return 1; }\n";
         f.close();
     }
 
@@ -72,11 +72,11 @@ TEST_F(InternalMCPClientTest, WriteRequiresAuthorizationAndPriorRead) {
 
     SymbolManager symbolMgr(testDir.u8string());
     symbolMgr.registerProvider(std::make_unique<RegexSymbolProvider>());
-    symbolMgr.updateFile("sample.txt");
+    symbolMgr.updateFile("sample.cpp");
     client.setSymbolManager(&symbolMgr);
 
     nlohmann::json writeArgs = {
-        {"path", "sample.txt"},
+        {"path", "sample.cpp"},
         {"operation", "replace"},
         {"start_line", 1},
         {"end_line", 1},
@@ -91,12 +91,12 @@ TEST_F(InternalMCPClientTest, WriteRequiresAuthorizationAndPriorRead) {
     EXPECT_NE(ExtractText(needRead).find("写入前请先 read"), std::string::npos);
 
     client.callTool("context_plan", {{"query", "sample"}});
-    client.callTool("read", {{"path", "sample.txt"}, {"start_line", 1}, {"end_line", 1}});
+    client.callTool("read", {{"path", "sample.cpp"}, {"start_line", 1}, {"end_line", 1}});
 
     auto writeOk = client.callTool("write", writeArgs);
     EXPECT_NE(ExtractText(writeOk).find("Replaced"), std::string::npos);
 
-    auto samplePath = (testDir / fs::path("sample.txt")).string();
+    auto samplePath = (testDir / fs::path("sample.cpp")).string();
     std::ifstream f(samplePath);
     std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     f.close();
@@ -109,14 +109,14 @@ TEST_F(InternalMCPClientTest, FullOverwriteBlockedForExistingFile) {
 
     SymbolManager symbolMgr(testDir.u8string());
     symbolMgr.registerProvider(std::make_unique<RegexSymbolProvider>());
-    symbolMgr.updateFile("sample.txt");
+    symbolMgr.updateFile("sample.cpp");
     client.setSymbolManager(&symbolMgr);
 
     client.callTool("context_plan", {{"query", "sample"}});
-    client.callTool("read", {{"path", "sample.txt"}, {"start_line", 1}, {"end_line", 1}});
+    client.callTool("read", {{"path", "sample.cpp"}, {"start_line", 1}, {"end_line", 1}});
 
     nlohmann::json overwriteArgs = {
-        {"path", "sample.txt"},
+        {"path", "sample.cpp"},
         {"content", "all new"}
     };
     auto blocked = client.callTool("write", overwriteArgs);

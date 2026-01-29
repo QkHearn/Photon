@@ -46,7 +46,19 @@ endif()
 # --- FTXUI Integration ---
 add_subdirectory(third_party/ftxui)
 
-find_package(nlohmann_json REQUIRED)
+# nlohmann_json (use bundled on Apple to avoid mixed include paths)
+option(PHOTON_USE_BUNDLED_JSON "Build nlohmann_json from source" ${APPLE})
+if(PHOTON_USE_BUNDLED_JSON)
+    include(FetchContent)
+    FetchContent_Declare(
+        nlohmann_json
+        URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+else()
+    find_package(nlohmann_json REQUIRED)
+endif()
 # Optional SQLite3 for semantic index storage
 find_package(SQLite3)
 # cpp-httplib is often header-only, if not found via find_package, 
@@ -135,9 +147,9 @@ add_executable(agent_tests
     tests/test_InternalMCPClient.cpp
 )
 if(PHOTON_USE_BUNDLED_GTEST)
-    target_link_libraries(agent_tests PRIVATE gtest gtest_main agent_lib)
+    target_link_libraries(agent_tests PRIVATE gtest gtest_main agent_lib nlohmann_json::nlohmann_json)
 else()
-    target_link_libraries(agent_tests PRIVATE GTest::gtest GTest::gtest_main agent_lib)
+    target_link_libraries(agent_tests PRIVATE GTest::gtest GTest::gtest_main agent_lib nlohmann_json::nlohmann_json)
 endif()
 
 add_test(NAME AgentTests COMMAND agent_tests)
