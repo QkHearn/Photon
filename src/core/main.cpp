@@ -12,6 +12,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <cctype>
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 #ifdef _WIN32
@@ -198,10 +199,28 @@ std::vector<Config::Agent::LSPServer> autoDetectLspServers() {
 
 bool isRiskyTool(const std::string& toolName) {
     static const std::unordered_set<std::string> risky = {
-        "write", "file_write", "file_create", "file_edit_lines", "edit_batch_lines", "diff_apply", 
+        "write", "file_write", "file_create", "file_edit_lines", "edit_batch_lines", 
         "bash_execute", "git_operations", "python_sandbox", "pip_install", "schedule"
     };
     return risky.count(toolName) > 0;
+}
+
+static std::string toLowerCopy(const std::string& s) {
+    std::string out = s;
+    std::transform(out.begin(), out.end(), out.begin(), ::tolower);
+    return out;
+}
+
+bool isBashReadCommand(const std::string& cmd) {
+    std::string lower = toLowerCopy(cmd);
+    // Block common file-reading commands to prevent tool fallback loops.
+    const std::vector<std::string> readTokens = {
+        "cat ", "head ", "tail ", "sed -n", "awk ", "grep ", "rg ", "less ", "more ", "nl ", "bat "
+    };
+    for (const auto& token : readTokens) {
+        if (lower.find(token) != std::string::npos) return true;
+    }
+    return false;
 }
 
 void showGitDiff(const std::string& path, const std::string& newContent, bool forceFull = false) {
@@ -720,7 +739,7 @@ int main(int argc, char* argv[]) {
                                "PhotonRule v1.0:\n" +
                                "1. MIN_IO: No full-file reads >500 lines.\n" +
                                "2. PATCH_ONLY: No full-file overwrites. Use surgical edits.\n" +
-                               "3. SEARCH_FIRST: Use 'context_plan' to select entry points before reading.\n" +
+                               "3. SEARCH_FIRST: Use 'plan' to select entry points before reading.\n" +
                                "4. DECOUPLE: Split files >1000 lines.\n" +
                                "5. JSON_STRICT: Validate schemas.\n" +
                                "6. ASYNC_SAFE: Respect async flows.\n\n" +
@@ -729,7 +748,15 @@ int main(int argc, char* argv[]) {
                                "Current system time: " + date_ss.str() + "\n" +
                                "CRITICAL GUIDELINES:\n" +
                                "1. CHAIN-OF-THOUGHT: Reason step-by-step. Justify every action before execution.\n" +
-                               "2. CONTEXT-FIRST: Use 'context_plan' to generate a retrieval plan (entry -> calls -> dependencies), then read only within the plan. Use 'lsp_definition', 'lsp_references', and 'generate_logic_map' to navigate. DO NOT read entire files just to find a symbol.\n" +
+                               "2. CONTEXT-FIRST: Use 'plan' to generate a retrieval plan (entry -> calls -> dependencies), then read only within the plan. Use 'lsp_definition', 'lsp_references', and 'reason' to navigate. DO NOT read entire files just to find a symbol.\n" +
+                               "2.1 READ_PRIORITY: Use read with mode order: symbol > range > context window > declaration window > file header > full (last resort). Do NOT default to mode full. Use symbol(name) or range(start,end) first; use full only when the file is small (<200 lines) or you have already narrowed scope.\n" +
+                               "2.2 READ_UNIFIED: Use the single read tool with {path, mode, reason}. Do not call alternate read APIs.\n" +
+                               "2.3 WRITE_UNIFIED: Use the single write tool with {path, mode, reason}. Do not call alternate write APIs.\n" +
+                               "2.4 SEARCH_UNIFIED: Use the single search tool with {type, query}. Do not call alternate search APIs.\n" +
+                               "2.5 PLAN_UNIFIED: Use plan(query) to generate steps; avoid direct read/search/write without a plan.\n" +
+                               "2.6 REASON_UNIFIED: Use reason(type, targets) for analysis. Do not call alternate reasoning tools.\n" +
+                               "2.7 HISTORY_UNIFIED: Use history(action, filter/operation) to query or append history.\n" +
+                               "2.8 MEMORY_UNIFIED: Use memory(action, key/value) for long-term storage.\n" +
                                "3. SURGICAL EDITS (MANDATORY): You MUST use targeted line-based edits ('operation': 'insert'/'replace'/'delete') or 'search'/'replace' blocks in the 'write' tool. Full-file overwrites (providing ONLY 'path' and 'content') are STRICTLY FORBIDDEN for existing files unless the change affects >80% of the content. This is to prevent accidental code loss and minimize token usage.\n" +
                                "4. PRESERVE CONTEXT: When using 'replace' or 'delete', ensure the line numbers are accurate by reading the file immediately before editing.\n" +
                                "5. TOKEN EFFICIENCY: Use line-range reads (start_line/end_line) in the 'read' tool to examine only relevant code. Full-file reads are a last resort.\n" +
@@ -752,7 +779,9 @@ int main(int argc, char* argv[]) {
         return s.rfind(prefix, 0) == 0;
     };
     auto isReadRejection = [&](const std::string& text) {
-        return text.find("⚠️  请先使用 context_plan") != std::string::npos ||
+        return text.find("❌ READ_FAIL") != std::string::npos ||
+               text.find("⚠️ READ_EMPTY") != std::string::npos ||
+               text.find("⚠️  请先使用 plan") != std::string::npos ||
                text.find("⚠️  读取范围不在检索计划内") != std::string::npos ||
                text.find("⚠️  批量读取包含计划外范围") != std::string::npos ||
                text.find("⚠️  读取范围过大") != std::string::npos ||
@@ -784,6 +813,23 @@ int main(int argc, char* argv[]) {
                 key += path + ":" + std::to_string(start) + "-" + std::to_string(end);
             }
             return key;
+        }
+        if (args.contains("mode") && args["mode"].is_object()) {
+            std::string type = args["mode"].value("type", "");
+            std::string path = args.value("path", "");
+            if (type == "symbol") {
+                std::string name = args["mode"].value("name", "");
+                if (name.empty()) name = args.value("query", "");
+                return "symbol:" + name;
+            }
+            if (type == "range") {
+                int start = args["mode"].value("start", args.value("start_line", 0));
+                int end = args["mode"].value("end", args.value("end_line", 0));
+                return path + ":" + std::to_string(start) + "-" + std::to_string(end);
+            }
+            if (type == "full") {
+                return "full:" + path;
+            }
         }
         if (args.contains("query")) {
             return "query:" + args.value("query", "");
@@ -1002,7 +1048,7 @@ int main(int argc, char* argv[]) {
 
         if (userInput == "memory") {
             std::cout << CYAN << "\n--- Long-term Memory ---" << RESET << std::endl;
-            nlohmann::json res = mcpManager.callTool("builtin", "memory_list", {});
+            nlohmann::json res = mcpManager.callTool("builtin", "memory", {{"action", "query"}});
             if (res.contains("content") && res["content"][0].contains("text")) {
                 std::cout << renderMarkdown(res["content"][0]["text"].get<std::string>()) << std::endl;
             } else {
@@ -1122,12 +1168,29 @@ int main(int argc, char* argv[]) {
             auto& choice = response["choices"][0];
             auto& message = choice["message"];
             
-            // Add assistant's message to the conversation history
-            messages.push_back(message);
+            // Normalize assistant message before appending: Kimi may reject if content is array in request
+            nlohmann::json msgToAppend = message;
+            if (msgToAppend.contains("content") && msgToAppend["content"].is_array()) {
+                std::string flat;
+                for (auto& part : msgToAppend["content"]) {
+                    if (part.is_object() && part.contains("text") && part["text"].is_string())
+                        flat += part["text"].get<std::string>();
+                }
+                msgToAppend["content"] = flat.empty() ? "" : flat;
+            }
+            messages.push_back(msgToAppend);
 
             // 1. Handle content (Thought or final response)
             if (message.contains("content") && !message["content"].is_null()) {
-                std::string content = message["content"].get<std::string>();
+                std::string content;
+                if (message["content"].is_string())
+                    content = message["content"].get<std::string>();
+                else if (message["content"].is_array()) {
+                    for (auto& part : message["content"]) {
+                        if (part.is_object() && part.contains("text") && part["text"].is_string())
+                            content += part["text"].get<std::string>();
+                    }
+                }
                 if (!content.empty()) {
                     if (message.contains("tool_calls") && !message["tool_calls"].is_null()) {
                         Logger::getInstance().thought(renderMarkdown(content));
@@ -1170,6 +1233,22 @@ int main(int argc, char* argv[]) {
                     if (pos != std::string::npos) {
                         std::string serverName = fullName.substr(0, pos);
                         std::string toolName = fullName.substr(pos + 2);
+
+                        if (toolName == "bash_execute" && args.contains("command")) {
+                            std::string cmd = args["command"];
+                            if (isBashReadCommand(cmd)) {
+                                nlohmann::json loopError = {
+                                    {"error", "Bash read commands are disabled. Use read/search/plan instead."}
+                                };
+                                messages.push_back({
+                                    {"role", "tool"},
+                                    {"tool_call_id", toolCall["id"]},
+                                    {"name", fullName},
+                                    {"content", loopError.dump()}
+                                });
+                                continue;
+                            }
+                        }
 
                         // 优化：检测重复搜索死循环
                         if (toolName.find("search") != std::string::npos) {
@@ -1292,6 +1371,7 @@ int main(int argc, char* argv[]) {
                                                 fullContent.replace(pos, searchStr.length(), replaceStr);
                                                 showGitDiff(path, fullContent, true);
                                             }
+
                                         }
                                     } else {
                                         std::cout << GRAY << "   (No preview available for this tool)" << RESET << std::endl;
@@ -1343,7 +1423,7 @@ int main(int argc, char* argv[]) {
                                 Logger::getInstance().warn("Tool " + toolName + " args: " + args.dump());
                             }
                             
-                            if (toolName == "read" && !result.contains("error")) {
+                            if ((toolName == "read" || toolName.rfind("read_", 0) == 0) && !result.contains("error")) {
                                 std::string readText = extractReadText(result);
                                 if (!readText.empty() && !isReadRejection(readText)) {
                                     const size_t kMaxSummaryInput = 6000;

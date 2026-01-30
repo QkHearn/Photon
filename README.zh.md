@@ -142,6 +142,12 @@ chmod +x photon
 ./photon /path/to/your/project
 ```
 
+### 4. LLM 请求适配（Kimi 等）
+
+部分厂商（如 Kimi）的响应格式与下一轮请求的 schema 不一致。Photon 在每次发送前对 messages 做规范化，保证请求合法，这是**设计层**而非临时补丁。
+
+- **`normalizeForKimi(messages)`**：将 assistant 的 `content` 从数组压成字符串；去掉 tool 消息的 `name`。详见 [docs/llm-adapters.md](docs/llm-adapters.md)。
+
 ---
 
 <p align="center">

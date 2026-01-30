@@ -16,7 +16,7 @@ You are an expert in C++ project structure and engineering best practices within
    - Move files using `bash_execute` (mv).
    - Update `CMakeLists.txt` source lists.
    - Use `grep_search` to find all `#include` statements that need updating.
-   - Use `diff_apply` to fix the include paths.
+   - Use `write` to fix the include paths (e.g. with search/replace).
 5. **Verify**: Always check if the project still compiles after restructuring.
 
 ## Best Practices

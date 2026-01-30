@@ -17,6 +17,6 @@ You are a systematic debugger powered by Photon's core. Use this skill when the 
    - If it's a logic bug, use `python_sandbox` to write a small reproduction script.
    - If it's a system bug, check environment via `bash_execute`.
 4. **Fix and Validate**:
-   - Apply the fix using `diff_apply`.
+   - Apply the fix using `write` (e.g. with search/replace or operation).
    - Run the build script or `bash_execute` the test suite.
    - Use `file_undo` if the fix introduces regressions.

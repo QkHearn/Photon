@@ -143,6 +143,12 @@ chmod +x photon
 ./photon /path/to/your/project
 ```
 
+### 4. LLM request adapters (Kimi, etc.)
+
+Some providers (e.g. Kimi) return message formats they do not accept in the next request. Photon normalizes messages before every send so requests are valid. This is **design**, not a workaround.
+
+- **`normalizeForKimi(messages)`:** Flatten assistant `content` from array to string; remove `name` from tool messages. See [docs/llm-adapters.md](docs/llm-adapters.md) for rationale and behavior.
+
 ---
 
 <p align="center">
