@@ -76,6 +76,8 @@ private:
     bool readSummaryRequired = false;
     std::string lastReadTarget;
     bool allowNextRead = false;
+    std::vector<nlohmann::json> historyEntries;
+    size_t maxHistoryEntries = 200;
 
     struct PlannedRead {
         std::string path;
@@ -85,7 +87,7 @@ private:
     };
     std::vector<PlannedRead> plannedReads;
     std::string lastPlanQuery;
-    bool enforceContextPlan = true;
+    bool enforceContextPlan = false;  // true: require plan before read/search; false: allow direct read
     bool autoPlanEnabled = true;
     std::string calculateHash(const std::string& content);
 
@@ -97,15 +99,15 @@ private:
     nlohmann::json getProjectSummary(); // New: Get high-level overview
     bool checkGitRepo();
     bool isBinary(const fs::path& path);
+    bool isDeclarativeFile(const std::string& relPath) const;
+    int countFileLines(const fs::path& fullPath) const;
 
     nlohmann::json fileSearch(const nlohmann::json& args);
     nlohmann::json fileRead(const nlohmann::json& args);
-    nlohmann::json contextRead(const nlohmann::json& args);
     nlohmann::json diagnosticsCheck(const nlohmann::json& args);
     nlohmann::json fileWrite(const nlohmann::json& args);
     nlohmann::json pythonSandbox(const nlohmann::json& args);
     nlohmann::json pipInstall(const nlohmann::json& args);
-    nlohmann::json sequentialThinking(const nlohmann::json& args);
     nlohmann::json archVisualize(const nlohmann::json& args);
     nlohmann::json bashExecute(const nlohmann::json& args);
     nlohmann::json codeAstAnalyze(const nlohmann::json& args);
@@ -113,25 +115,30 @@ private:
     nlohmann::json webFetch(const nlohmann::json& args);
     nlohmann::json webSearch(const nlohmann::json& args);
     nlohmann::json harmonySearch(const nlohmann::json& args);
-    nlohmann::json grepSearch(const nlohmann::json& args);
     nlohmann::json readFileLines(const nlohmann::json& args);
     nlohmann::json readBatchLines(const nlohmann::json& args);
+    nlohmann::json readSymbol(const nlohmann::json& args);
+    nlohmann::json readFileRange(const nlohmann::json& args);
+    nlohmann::json readContextWindow(const nlohmann::json& args);
+    nlohmann::json readDeclaration(const nlohmann::json& args);
+    nlohmann::json readFileHeader(const nlohmann::json& args);
+    nlohmann::json readFullFile(const nlohmann::json& args);
+    nlohmann::json toolSearch(const nlohmann::json& args);
+    nlohmann::json toolPlan(const nlohmann::json& args);
+    nlohmann::json toolReason(const nlohmann::json& args);
+    nlohmann::json toolHistory(const nlohmann::json& args);
     nlohmann::json listDirTree(const nlohmann::json& args);
     nlohmann::json diffApply(const nlohmann::json& args);
     nlohmann::json fileEditLines(const nlohmann::json& args);
     nlohmann::json editBatchLines(const nlohmann::json& args);
     nlohmann::json fileUndo(const nlohmann::json& args);
-    nlohmann::json memoryStore(const nlohmann::json& args);
-    nlohmann::json memoryList(const nlohmann::json& args);
-    nlohmann::json memoryRetrieve(const nlohmann::json& args);
+    nlohmann::json toolMemory(const nlohmann::json& args);
     nlohmann::json projectOverview(const nlohmann::json& args);
 
     // Consolidated File Operations
     nlohmann::json toolFileRead(const nlohmann::json& args);
     nlohmann::json toolFileWrite(const nlohmann::json& args);
     nlohmann::json toolFileExplore(const nlohmann::json& args);
-    nlohmann::json symbolSearch(const nlohmann::json& args);
-    nlohmann::json semanticSearch(const nlohmann::json& args);
     nlohmann::json contextPlan(const nlohmann::json& args);
     nlohmann::json lspDefinition(const nlohmann::json& args);
     nlohmann::json lspReferences(const nlohmann::json& args);
@@ -174,6 +181,6 @@ private:
     void loadTasksFromDisk();
     std::string autoDetectBuildCommand();
 
-    bool sessionAuthorized = false;
+    bool sessionAuthorized = true;
     nlohmann::json authorizeSession(const nlohmann::json& args);
 };

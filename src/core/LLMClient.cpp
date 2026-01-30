@@ -57,6 +57,42 @@ std::string LLMClient::chat(const std::string& prompt, const std::string& system
     return "";
 }
 
+// ---------------------------------------------------------------------------
+// LLM Request Adapter: normalizeForKimi
+// ---------------------------------------------------------------------------
+// Design (not workaround): Kimi Chat API has response/request schema inconsistency:
+// - Response: assistant message "content" may be array, e.g. [{"type":"text","text":"..."}]
+// - Request:  "content" must be string; array is rejected (invalid_request_error).
+// Photon normalizes messages before every send so the request is valid.
+// See docs/llm-adapters.md for full rationale and behavior.
+// ---------------------------------------------------------------------------
+static nlohmann::json normalizeForKimi(const nlohmann::json& messages) {
+    if (!messages.is_array()) return messages;
+    nlohmann::json out = nlohmann::json::array();
+    for (const auto& msg : messages) {
+        if (!msg.is_object()) continue;
+        nlohmann::json m = msg;
+        // assistant (and any role): content must be string for request
+        if (m.contains("content")) {
+            if (m["content"].is_null())
+                m["content"] = "";
+            else if (m["content"].is_array()) {
+                std::string flat;
+                for (const auto& part : m["content"]) {
+                    if (part.is_object() && part.contains("text") && part["text"].is_string())
+                        flat += part["text"].get<std::string>();
+                }
+                m["content"] = flat.empty() ? "" : flat;
+            }
+        }
+        // tool: Kimi may reject "name" in request; keep only role, tool_call_id, content
+        if (m.contains("role") && m["role"] == "tool" && m.contains("name"))
+            m.erase("name");
+        out.push_back(m);
+    }
+    return out;
+}
+
 nlohmann::json LLMClient::chatWithTools(const nlohmann::json& messages, const nlohmann::json& tools) {
     httplib::Headers headers = {
         {"Authorization", "Bearer " + apiKey},
@@ -65,7 +101,7 @@ nlohmann::json LLMClient::chatWithTools(const nlohmann::json& messages, const nl
 
     nlohmann::json body = {
         {"model", modelName},
-        {"messages", messages}
+        {"messages", normalizeForKimi(messages)}
     };
 
     if (!tools.empty()) {
