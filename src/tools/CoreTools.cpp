@@ -13,6 +13,102 @@
 #endif
 
 // ============================================================================
+// UTF-8 Utilities
+// ============================================================================
+
+namespace UTF8Utils {
+    std::string sanitize(const std::string& input) {
+        std::string output;
+        output.reserve(input.size());
+        
+        size_t i = 0;
+        while (i < input.size()) {
+            unsigned char c = static_cast<unsigned char>(input[i]);
+            
+            // 单字节 ASCII (0x00-0x7F)
+            if (c <= 0x7F) {
+                output.push_back(static_cast<char>(c));
+                i++;
+            }
+            // 2 字节序列 (0xC2-0xDF) - 注意: 0xC0-0xC1 是无效的
+            else if (c >= 0xC2 && c <= 0xDF) {
+                if (i + 1 < input.size()) {
+                    unsigned char c1 = static_cast<unsigned char>(input[i + 1]);
+                    if ((c1 & 0xC0) == 0x80) {
+                        output.push_back(input[i]);
+                        output.push_back(input[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                }
+                // 不完整或无效的序列
+                output.push_back('?');
+                i++;
+            }
+            // 3 字节序列 (0xE0-0xEF)
+            else if (c >= 0xE0 && c <= 0xEF) {
+                if (i + 2 < input.size()) {
+                    unsigned char c1 = static_cast<unsigned char>(input[i + 1]);
+                    unsigned char c2 = static_cast<unsigned char>(input[i + 2]);
+                    
+                    // 验证续字节
+                    if ((c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80) {
+                        // 额外验证：避免过长编码
+                        if (c == 0xE0 && c1 < 0xA0) {
+                            output.push_back('?');
+                            i++;
+                            continue;
+                        }
+                        output.push_back(input[i]);
+                        output.push_back(input[i + 1]);
+                        output.push_back(input[i + 2]);
+                        i += 3;
+                        continue;
+                    }
+                }
+                // 不完整或无效的序列
+                output.push_back('?');
+                i++;
+            }
+            // 4 字节序列 (0xF0-0xF4)
+            else if (c >= 0xF0 && c <= 0xF4) {
+                if (i + 3 < input.size()) {
+                    unsigned char c1 = static_cast<unsigned char>(input[i + 1]);
+                    unsigned char c2 = static_cast<unsigned char>(input[i + 2]);
+                    unsigned char c3 = static_cast<unsigned char>(input[i + 3]);
+                    
+                    // 验证续字节
+                    if ((c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80) {
+                        // 额外验证：避免过长编码和超出 Unicode 范围
+                        if ((c == 0xF0 && c1 < 0x90) || (c == 0xF4 && c1 > 0x8F)) {
+                            output.push_back('?');
+                            i++;
+                            continue;
+                        }
+                        output.push_back(input[i]);
+                        output.push_back(input[i + 1]);
+                        output.push_back(input[i + 2]);
+                        output.push_back(input[i + 3]);
+                        i += 4;
+                        continue;
+                    }
+                }
+                // 不完整或无效的序列
+                output.push_back('?');
+                i++;
+            }
+            // 无效字节 (包括孤立的续字节 0x80-0xBF)
+            else {
+                output.push_back('?');
+                i++;
+            }
+        }
+        
+        return output;
+    }
+}
+
+// ============================================================================
 // ReadCodeBlockTool Implementation
 // ============================================================================
 
@@ -68,8 +164,8 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
         return result;
     }
     
-    // 读取文件
-    std::ifstream file(fullPath);
+    // 读取文件（二进制模式以处理编码问题）
+    std::ifstream file(fullPath, std::ios::binary);
     if (!file.is_open()) {
         result["error"] = "Failed to open file: " + filePath;
         return result;
@@ -78,7 +174,13 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
     std::vector<std::string> lines;
     std::string line;
     while (std::getline(file, line)) {
-        lines.push_back(line);
+        // 移除行尾的 \r 字符（处理 Windows 风格的换行）
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        
+        // 验证并清理 UTF-8 字符串
+        lines.push_back(UTF8Utils::sanitize(line));
     }
     file.close();
     
@@ -101,15 +203,27 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
         if (i < endLine - 1) content << "\n";
     }
     
-    // 返回结果
-    nlohmann::json contentItem;
-    contentItem["type"] = "text";
-    contentItem["text"] = "File: " + filePath + "\n" +
-                          "Lines: " + std::to_string(startLine) + "-" + std::to_string(endLine) + 
-                          " (Total: " + std::to_string(totalLines) + ")\n\n" +
-                          content.str();
+    // 最终清理：再次验证整个内容字符串
+    std::string finalContent = "File: " + filePath + "\n" +
+                               "Lines: " + std::to_string(startLine) + "-" + std::to_string(endLine) + 
+                               " (Total: " + std::to_string(totalLines) + ")\n\n" +
+                               content.str();
+    finalContent = UTF8Utils::sanitize(finalContent);
     
-    result["content"] = nlohmann::json::array({contentItem});
+    // 返回结果
+    // 使用 try-catch 包装 JSON 构建，捕获任何 UTF-8 错误
+    try {
+        nlohmann::json contentItem;
+        contentItem["type"] = "text";
+        contentItem["text"] = finalContent;
+        
+        result["content"] = nlohmann::json::array({contentItem});
+    } catch (const nlohmann::json::exception& e) {
+        // 如果仍然有 UTF-8 错误，返回错误信息
+        result["error"] = std::string("UTF-8 encoding error: ") + e.what();
+        result["hint"] = "File contains invalid UTF-8 sequences that could not be cleaned";
+    }
+    
     return result;
 }
 

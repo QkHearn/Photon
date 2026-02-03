@@ -2,17 +2,28 @@
 #include <iostream>
 #include <memory>
 #include <array>
+#include <cstdio>
+
+// Windows compatibility
+#ifdef _WIN32
+    #define popen _popen
+    #define pclose _pclose
+#endif
 
 std::string EnvironmentDetector::executeCommand(const std::string& command) {
     std::array<char, 128> buffer;
     std::string result;
     
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
-    if (!pipe) {
+    // 使用原始指针和自定义删除器，兼容 Windows MSVC
+    FILE* pipe_raw = popen(command.c_str(), "r");
+    if (pipe_raw == nullptr) {
         return "";
     }
     
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+    // 使用 unique_ptr 管理资源
+    std::unique_ptr<FILE, int(*)(FILE*)> pipe(pipe_raw, pclose);
+    
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
         result += buffer.data();
     }
     

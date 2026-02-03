@@ -9,6 +9,14 @@ namespace fs = std::filesystem;
 // 前向声明
 class SkillManager;
 
+// UTF-8 验证和清理辅助函数
+namespace UTF8Utils {
+    /**
+     * @brief 验证并清理 UTF-8 字符串，替换无效字节为 '?'
+     */
+    std::string sanitize(const std::string& input);
+}
+
 /**
  * @brief 读取代码块工具
  * 
