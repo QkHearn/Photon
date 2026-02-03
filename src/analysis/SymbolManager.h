@@ -89,6 +89,8 @@ public:
         std::lock_guard<std::mutex> lock(mtx);
         return symbols.size(); 
     }
+    
+    std::string getRootPath() const { return rootPath; }
 
 private:
     std::string rootPath;

@@ -34,6 +34,7 @@
 // 新架构: Tools 层
 #include "tools/ToolRegistry.h"
 #include "tools/CoreTools.h"
+#include "tools/ViewSymbolTool.h"
 // Agent 层: Constitution 校验
 #include "agent/ConstitutionValidator.h"
 #ifdef PHOTON_ENABLE_TREESITTER
@@ -704,12 +705,13 @@ int main(int argc, char* argv[]) {
     // ============================================================
     ToolRegistry toolRegistry;
     
-    // 注册 4 个核心工具
+    // 注册核心工具
     std::cout << CYAN << "  → Registering core tools..." << RESET << std::endl;
     toolRegistry.registerTool(std::make_unique<ReadCodeBlockTool>(path));
     toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path));
     toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
+    toolRegistry.registerTool(std::make_unique<ViewSymbolTool>(&symbolManager));
     
     std::cout << GREEN << "  ✔ Registered " << toolRegistry.getToolCount() << " core tools" << RESET << std::endl;
 

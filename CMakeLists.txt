@@ -103,6 +103,7 @@ add_library(agent_lib
     # Tools layer (NEW)
     src/tools/ToolRegistry.cpp
     src/tools/CoreTools.cpp
+    src/tools/ViewSymbolTool.cpp
     # Memory layer (NEW)
     src/memory/MemoryManager.cpp
     src/memory/ProjectMemory.cpp

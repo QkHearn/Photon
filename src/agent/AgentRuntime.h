@@ -11,6 +11,7 @@
 class SymbolManager;
 class MemoryManager;
 class SkillManager;
+class SemanticManager;
 
 /**
  * @brief Agent 运行时 - 核心智能体主循环
@@ -34,13 +35,15 @@ public:
      * @param symbolManager 符号管理器 (可选)
      * @param memoryManager 记忆管理器 (可选)
      * @param skillManager Skill 管理器 (可选)
+     * @param semanticManager 语义管理器 (可选)
      */
     AgentRuntime(
         std::shared_ptr<LLMClient> llmClient,
         ToolRegistry& toolRegistry,
         SymbolManager* symbolManager = nullptr,
         MemoryManager* memoryManager = nullptr,
-        SkillManager* skillManager = nullptr
+        SkillManager* skillManager = nullptr,
+        SemanticManager* semanticManager = nullptr
     );
 
     /**
@@ -129,6 +132,52 @@ private:
      * Agent 内部能力,LLM 看不到
      */
     std::string getFailureSolution(const std::string& error);
+    
+    // ========== AST 分析能力 (智能体主动分析) ==========
+    
+    /**
+     * @brief 拦截并分析 read_file 请求
+     * 在 LLM 读文件前,先提取符号信息并注入提示
+     */
+    void interceptAndAnalyzeFileRead(nlohmann::json& toolCall);
+    
+    /**
+     * @brief 生成文件的符号摘要
+     * 返回格式化的符号列表 (函数、类等)
+     */
+    std::string generateSymbolSummary(const std::string& filePath);
+    
+    /**
+     * @brief 处理 LLM 选择的符号,返回对应代码块
+     * @param filePath 文件路径
+     * @param symbolName 符号名称
+     * @return 包含行号范围的代码块信息
+     */
+    nlohmann::json getSymbolCodeBlock(const std::string& filePath, const std::string& symbolName);
+    
+    // ========== 语义搜索能力 (智能体主动搜索) ==========
+    
+    /**
+     * @brief 拦截并增强模糊查询
+     * 当检测到 LLM 的查询意图但不确定具体位置时,
+     * Agent 主动使用语义搜索提供候选代码片段
+     */
+    void interceptAndEnhanceQuery(nlohmann::json& toolCall);
+    
+    /**
+     * @brief 执行语义搜索 (内部能力)
+     * @param query 自然语言查询
+     * @param topK 返回前 K 个结果
+     * @return 相关代码片段的格式化摘要
+     */
+    std::string performSemanticSearch(const std::string& query, int topK = 5);
+    
+    /**
+     * @brief 检测用户消息是否包含语义查询意图
+     * @param content 消息内容
+     * @return 如果包含查询意图则返回提取的查询文本,否则返回空字符串
+     */
+    std::string detectSemanticQueryIntent(const std::string& content);
 
     // ========== Prompt 组装 ==========
     
@@ -162,6 +211,7 @@ private:
     SymbolManager* symbolMgr;
     MemoryManager* memory;
     SkillManager* skillMgr;
+    SemanticManager* semanticMgr;
     
     AgentState state;
     nlohmann::json messageHistory;
