@@ -1,4 +1,4 @@
-#include "mcp/LSPClient.h"
+#include "analysis/LSPClient.h"
 #include <fstream>
 #include <sstream>
 #include <chrono>

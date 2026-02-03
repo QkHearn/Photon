@@ -4,8 +4,8 @@
 #include <unordered_map>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include "utils/SymbolManager.h"
-#include "mcp/LSPClient.h"
+#include "analysis/SymbolManager.h"
+#include "analysis/LSPClient.h"
 
 struct CallPoint {
     std::string name;

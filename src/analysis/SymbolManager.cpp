@@ -1,6 +1,6 @@
-#include "utils/SymbolManager.h"
-#include "utils/TreeSitterSymbolProvider.h"
-#include "mcp/LSPClient.h"
+#include "analysis/SymbolManager.h"
+#include "analysis/providers/TreeSitterSymbolProvider.h"
+#include "analysis/LSPClient.h"
 #include <algorithm>
 #include <fstream>
 #include <iterator>

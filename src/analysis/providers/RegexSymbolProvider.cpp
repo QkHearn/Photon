@@ -1,4 +1,4 @@
-#include "utils/RegexSymbolProvider.h"
+#include "analysis/providers/RegexSymbolProvider.h"
 #include <sstream>
 
 std::vector<Symbol> RegexSymbolProvider::extractSymbols(const std::string& content, const std::string& relPath) const {

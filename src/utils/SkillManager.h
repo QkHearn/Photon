@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -18,11 +19,73 @@ public:
         std::string description;
         std::string content;
         std::string path;
-        bool isBuiltin = false; // 新增：标记是否为内置 Skill
+        bool isBuiltin = false;
+        
+        // Skill 元数据 (从 SKILL.md 解析)
+        std::vector<std::string> requiredTools;    // 需要的工具列表
+        std::vector<std::string> constraints;       // 约束条件
+        std::string minimalInterface;              // 最小接口描述
     };
 
     SkillManager() {
         loadInternalStaticSkills();
+    }
+    
+    // ========== 动态激活 API ==========
+    
+    /**
+     * @brief 激活指定 Skill
+     * @param name Skill 名称
+     * @return 是否成功激活
+     * 
+     * 激活时:
+     * 1. 检查 Skill 是否在 allowlist 中
+     * 2. 检查 Skill 所需工具是否可用
+     * 3. 标记为激活状态
+     * 4. 返回成功/失败
+     */
+    bool activate(const std::string& name) {
+        if (skills.find(name) == skills.end()) {
+            std::cerr << "[SkillManager] Skill not found: " << name << std::endl;
+            return false;
+        }
+        
+        // TODO: 检查工具可用性
+        
+        activeSkills.insert(name);
+        std::cout << "[SkillManager] Activated skill: " << name << std::endl;
+        return true;
+    }
+    
+    /**
+     * @brief 停用指定 Skill
+     * @param name Skill 名称
+     */
+    void deactivate(const std::string& name) {
+        activeSkills.erase(name);
+        std::cout << "[SkillManager] Deactivated skill: " << name << std::endl;
+    }
+    
+    /**
+     * @brief 停用所有 Skill
+     */
+    void deactivateAll() {
+        activeSkills.clear();
+        std::cout << "[SkillManager] Deactivated all skills" << std::endl;
+    }
+    
+    /**
+     * @brief 检查 Skill 是否已激活
+     */
+    bool isActive(const std::string& name) const {
+        return activeSkills.find(name) != activeSkills.end();
+    }
+    
+    /**
+     * @brief 获取当前激活的 Skill 列表
+     */
+    std::vector<std::string> getActiveSkills() const {
+        return std::vector<std::string>(activeSkills.begin(), activeSkills.end());
     }
 
     void loadInternalStaticSkills() {
@@ -183,25 +246,90 @@ public:
         }
     }
 
-    std::string getSystemPromptAddition() const {
+    /**
+     * @brief 获取 Skill 发现 Prompt (仅列出可用 Skill,不注入内容)
+     * 
+     * 这个 Prompt 在初始化时注入,告诉 LLM 有哪些 Skill 可用
+     * 但不会注入 Skill 的具体内容
+     */
+    std::string getSkillDiscoveryPrompt() const {
         if (skills.empty()) return "";
         
-        std::string prompt = "\n\n# Specialized Skills (Lazy Loading)\n";
-        prompt += "You have access to the following specialized skills. "
-                  "To use a skill, you MUST first read its full guide using the `skill_read` tool.\n"
-                  "DO NOT guess the skill usage. Always read it first when relevant.\n\n";
+        std::string prompt = "\n\n# Available Skills (Lazy Loading Required)\n";
+        prompt += "You have access to specialized skills. Each skill must be explicitly activated before use.\n";
+        prompt += "To activate a skill: call `skill_activate(name)` first, then use its capabilities.\n\n";
+        prompt += "Available skills:\n";
         
         for (const auto& [name, skill] : skills) {
             prompt += "- **" + name + "**: " + skill.description + "\n";
         }
+        
+        prompt += "\n⚠️  IMPORTANT: Skills are NOT active by default. You MUST activate them when needed.\n";
         return prompt;
     }
-
+    
+    /**
+     * @brief 获取激活 Skill 的 Prompt 片段 (动态注入)
+     * 
+     * 这个 Prompt 只在 Skill 被激活时才注入到 LLM 上下文
+     * 包含 Skill 的工具、约束和接口
+     */
+    std::string getActiveSkillsPrompt() const {
+        if (activeSkills.empty()) return "";
+        
+        std::string prompt = "\n\n# ACTIVATED SKILLS\n\n";
+        
+        for (const auto& name : activeSkills) {
+            auto it = skills.find(name);
+            if (it == skills.end()) continue;
+            
+            const Skill& skill = it->second;
+            
+            prompt += "## Skill: " + skill.name + "\n";
+            prompt += "**Description**: " + skill.description + "\n\n";
+            
+            if (!skill.requiredTools.empty()) {
+                prompt += "**Allowed Tools**:\n";
+                for (const auto& tool : skill.requiredTools) {
+                    prompt += "  - " + tool + "\n";
+                }
+                prompt += "\n";
+            }
+            
+            if (!skill.constraints.empty()) {
+                prompt += "**Constraints**:\n";
+                for (const auto& constraint : skill.constraints) {
+                    prompt += "  - " + constraint + "\n";
+                }
+                prompt += "\n";
+            }
+            
+            if (!skill.minimalInterface.empty()) {
+                prompt += "**Interface**:\n" + skill.minimalInterface + "\n\n";
+            }
+            
+            prompt += "---\n\n";
+        }
+        
+        return prompt;
+    }
+    
+    /**
+     * @brief 获取完整 Skill 内容 (用于 skill_read 工具)
+     */
     std::string getSkillContent(const std::string& name) {
         if (skills.count(name)) {
             return skills[name].content;
         }
         return "Skill not found: " + name;
+    }
+    
+    /**
+     * @brief 旧接口 - 保持兼容性
+     * @deprecated 使用 getSkillDiscoveryPrompt() 代替
+     */
+    std::string getSystemPromptAddition() const {
+        return getSkillDiscoveryPrompt();
     }
 
     size_t getCount() const { return skills.size(); }
@@ -209,5 +337,6 @@ public:
     const std::map<std::string, Skill>& getSkills() const { return skills; }
 
 private:
-    std::map<std::string, Skill> skills;
+    std::map<std::string, Skill> skills;      // 所有已加载的 Skill (Allowlist)
+    std::set<std::string> activeSkills;       // 当前激活的 Skill
 };

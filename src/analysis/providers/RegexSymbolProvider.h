@@ -1,5 +1,5 @@
 #pragma once
-#include "utils/SymbolManager.h"
+#include "analysis/SymbolManager.h"
 #include <regex>
 
 class RegexSymbolProvider : public ISymbolProvider {

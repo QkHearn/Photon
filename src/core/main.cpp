@@ -18,18 +18,24 @@
 #ifdef _WIN32
     #include <winsock2.h>
 #endif
-#include "utils/FileManager.h"
+// FileManager.h 已删除,功能由 CoreTools 提供
 #include "core/LLMClient.h"
 #include "core/ContextManager.h"
 #include "core/ConfigManager.h"
 #include "mcp/MCPClient.h"
 #include "mcp/MCPManager.h"
-#include "mcp/LSPClient.h"
+#include "analysis/LSPClient.h"
 #include "utils/SkillManager.h"
-#include "utils/SymbolManager.h"
+#include "analysis/SymbolManager.h"
+#include "analysis/SemanticManager.h"
 #include "utils/Logger.h"
-#include "utils/RegexSymbolProvider.h"
-#include "utils/TreeSitterSymbolProvider.h"
+#include "analysis/providers/RegexSymbolProvider.h"
+#include "analysis/providers/TreeSitterSymbolProvider.h"
+// 新架构: Tools 层
+#include "tools/ToolRegistry.h"
+#include "tools/CoreTools.h"
+// Agent 层: Constitution 校验
+#include "agent/ConstitutionValidator.h"
 #ifdef PHOTON_ENABLE_TREESITTER
 #include "tree-sitter-cpp.h"
 #include "tree_sitter/tree-sitter-python.h"
@@ -693,18 +699,48 @@ int main(int argc, char* argv[]) {
         return result;
     });
 
-    // Inject into Builtin Tools
-    if (auto* builtin = dynamic_cast<InternalMCPClient*>(mcpManager.getClient("builtin"))) {
-        builtin->setSkillManager(&skillManager);
-        builtin->setSymbolManager(&symbolManager);
-        builtin->setSemanticManager(semanticManager.get());
+    // ============================================================
+    // 新架构: ToolRegistry 初始化
+    // ============================================================
+    ToolRegistry toolRegistry;
+    
+    // 注册 4 个核心工具
+    std::cout << CYAN << "  → Registering core tools..." << RESET << std::endl;
+    toolRegistry.registerTool(std::make_unique<ReadCodeBlockTool>(path));
+    toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path));
+    toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
+    toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
+    
+    std::cout << GREEN << "  ✔ Registered " << toolRegistry.getToolCount() << " core tools" << RESET << std::endl;
+
+    // 获取工具的 Schema (给 LLM 使用)
+    auto toolSchemas = toolRegistry.listToolSchemas();
+    nlohmann::json llmTools = nlohmann::json::array();
+    for (const auto& schema : toolSchemas) {
+        llmTools.push_back(schema);
     }
 
-    std::cout << GREEN << "  ✔ Engine active. " << RESET << std::endl;
-
-    // Get tools and format
+    // 保留外部 MCP 工具 (如果有)
     auto mcpTools = mcpManager.getAllTools();
-    nlohmann::json llmTools = formatToolsForLLM(mcpTools);
+    for (const auto& mcpTool : mcpTools) {
+        // 排除已被新工具替代的旧工具
+        std::string toolName = mcpTool.value("name", "");
+        if (toolName != "read" && toolName != "write" && 
+            toolName != "file_read" && toolName != "file_write" &&
+            toolName != "bash_execute" && toolName != "list_dir_tree") {
+            // 转换 MCP 工具格式
+            nlohmann::json tool;
+            tool["type"] = "function";
+            nlohmann::json function;
+            function["name"] = mcpTool["server_name"].get<std::string>() + "__" + mcpTool["name"].get<std::string>();
+            function["description"] = mcpTool["description"];
+            function["parameters"] = mcpTool["inputSchema"];
+            tool["function"] = function;
+            llmTools.push_back(tool);
+        }
+    }
+
+    std::cout << GREEN << "  ✔ Engine active. Total tools: " << llmTools.size() << RESET << std::endl;
 
     std::cout << "  " << CYAN << "Model  " << RESET << " : " << PURPLE << cfg.llm.model << RESET << std::endl;
     
@@ -734,35 +770,23 @@ int main(int argc, char* argv[]) {
 #endif
     date_ss << std::put_time(&time_info, "%Y-%m-%d %H:%M:%S");
 
-    std::string systemPrompt = "You are Photon, an autonomous AI agentic intelligence. Your mission is to assist with complex engineering tasks through sensing (tools), reasoning, and acting.\n" +
-                               cfg.llm.systemRole + "\n" +
-                               "PhotonRule v1.0:\n" +
-                               "1. MIN_IO: No full-file reads >500 lines.\n" +
-                               "2. PATCH_ONLY: No full-file overwrites. Use surgical edits.\n" +
-                               "3. SEARCH_FIRST: Use 'plan' to select entry points before reading.\n" +
-                               "4. DECOUPLE: Split files >1000 lines.\n" +
-                               "5. JSON_STRICT: Validate schemas.\n" +
-                               "6. ASYNC_SAFE: Respect async flows.\n\n" +
-                               skillManager.getSystemPromptAddition() + "\n" +
-                               "Current working directory for your tools: " + path + "\n" +
-                               "Current system time: " + date_ss.str() + "\n" +
-                               "CRITICAL GUIDELINES:\n" +
-                               "1. CHAIN-OF-THOUGHT: Reason step-by-step. Justify every action before execution.\n" +
-                               "2. CONTEXT-FIRST: Use 'plan' to generate a retrieval plan (entry -> calls -> dependencies), then read only within the plan. Use 'lsp_definition', 'lsp_references', and 'reason' to navigate. DO NOT read entire files just to find a symbol.\n" +
-                               "2.1 READ_PRIORITY: Use read with mode order: symbol > range > context window > declaration window > file header > full (last resort). Do NOT default to mode full. Use symbol(name) or range(start,end) first; use full only when the file is small (<200 lines) or you have already narrowed scope.\n" +
-                               "2.2 READ_UNIFIED: Use the single read tool with {path, mode, reason}. Do not call alternate read APIs.\n" +
-                               "2.3 WRITE_UNIFIED: Use the single write tool with {path, mode, reason}. Do not call alternate write APIs.\n" +
-                               "2.4 SEARCH_UNIFIED: Use the single search tool with {type, query}. Do not call alternate search APIs.\n" +
-                               "2.5 PLAN_UNIFIED: Use plan(query) to generate steps; avoid direct read/search/write without a plan.\n" +
-                               "2.6 REASON_UNIFIED: Use reason(type, targets) for analysis. Do not call alternate reasoning tools.\n" +
-                               "2.7 HISTORY_UNIFIED: Use history(action, filter/operation) to query or append history.\n" +
-                               "2.8 MEMORY_UNIFIED: Use memory(action, key/value) for long-term storage.\n" +
-                               "3. SURGICAL EDITS (MANDATORY): You MUST use targeted line-based edits ('operation': 'insert'/'replace'/'delete') or 'search'/'replace' blocks in the 'write' tool. Full-file overwrites (providing ONLY 'path' and 'content') are STRICTLY FORBIDDEN for existing files unless the change affects >80% of the content. This is to prevent accidental code loss and minimize token usage.\n" +
-                               "4. PRESERVE CONTEXT: When using 'replace' or 'delete', ensure the line numbers are accurate by reading the file immediately before editing.\n" +
-                               "5. TOKEN EFFICIENCY: Use line-range reads (start_line/end_line) in the 'read' tool to examine only relevant code. Full-file reads are a last resort.\n" +
-                               "6. ADAPTIVE STRATEGY: Detect repetitive loops or tool failures early. Pivot to alternative approaches immediately.\n" +
-                               "7. STRICT VERIFICATION: Always validate changes through 'diagnostics_check' and targeted 'read' calls to ensure zero regressions.\n" +
-                               "8. PROACTIVE CLARIFICATION: If a task is ambiguous or high-risk, pause and ask the user for guidance.";
+    // ============================================================
+    // Photon Agent Constitution v2.0
+    // ============================================================
+    std::string systemPrompt = 
+        "You are Photon.\n"
+        "You must operate under Photon Agent Constitution v2.0.\n"
+        "All behavior is governed by the constitution and validated configuration.\n\n" +
+        
+        // Project-specific configuration (from config.json)
+        cfg.llm.systemRole + "\n\n" +
+        
+        // Skills interface (lazy-loaded capabilities)
+        skillManager.getSystemPromptAddition() + "\n" +
+        
+        // Runtime context (minimal, factual)
+        "Working directory: " + path + "\n" +
+        "Current time: " + date_ss.str() + "\n";
     
     nlohmann::json messages = nlohmann::json::array();
     messages.push_back({{"role", "system"}, {"content", systemPrompt}});
@@ -934,13 +958,14 @@ int main(int argc, char* argv[]) {
             }
             if (!lspClients.empty()) lspFallback = lspClients[0].get();
 
-            // Inject into Builtin Tools
-            if (auto* builtin = dynamic_cast<InternalMCPClient*>(mcpManager.getClient("builtin"))) {
-                builtin->setSkillManager(&skillManager);
-                builtin->setSymbolManager(&symbolManager);
-                builtin->setSemanticManager(semanticManager.get());
-                if (!lspClients.empty()) builtin->setLSPClients(lspByExt, lspFallback);
-            }
+            // NOTE: InternalMCPClient 已删除,改用新的 ToolRegistry 架构
+            // 旧代码已注释:
+            // if (auto* builtin = dynamic_cast<InternalMCPClient*>(mcpManager.getClient("builtin"))) {
+            //     builtin->setSkillManager(&skillManager);
+            //     builtin->setSymbolManager(&symbolManager);
+            //     builtin->setSemanticManager(semanticManager.get());
+            //     if (!lspClients.empty()) builtin->setLSPClients(lspByExt, lspFallback);
+            // }
 
             symbolManager.setLSPClients(lspByExt, lspFallback);
             symbolManager.startAsyncScan();
@@ -966,16 +991,35 @@ int main(int argc, char* argv[]) {
 
         if (userInput == "tools") {
             std::cout << CYAN << "\n--- Available Tools ---" << RESET << std::endl;
-            for (const auto& t : mcpTools) {
-                std::string server = t.value("server_name", "unknown");
-                std::string name = t.value("name", "unknown");
-                std::string desc = t.value("description", "No description");
-                
-                std::cout << (server == "builtin" ? GREEN + "[Built-in] " : BLUE + "[External] ") 
-                          << BOLD << server << "::" << name << RESET << std::endl;
-                std::cout << "  " << desc << std::endl;
+            
+            // 显示核心工具 (ToolRegistry)
+            std::cout << GREEN << BOLD << "\n[Core Tools]" << RESET << GRAY << " (极简原子工具)" << RESET << std::endl;
+            auto coreSchemas = toolRegistry.listToolSchemas();
+            for (const auto& schema : coreSchemas) {
+                if (schema.contains("function")) {
+                    auto func = schema["function"];
+                    std::string name = func.value("name", "unknown");
+                    std::string desc = func.value("description", "No description");
+                    std::cout << PURPLE << BOLD << "  • " << name << RESET << std::endl;
+                    std::cout << GRAY << "    " << desc << RESET << std::endl;
+                }
             }
-            std::cout << CYAN << "-----------------------\n" << RESET << std::endl;
+            
+            // 显示 MCP 工具
+            if (!mcpTools.empty()) {
+                std::cout << BLUE << BOLD << "\n[MCP Tools]" << RESET << GRAY << " (外部工具)" << RESET << std::endl;
+                for (const auto& t : mcpTools) {
+                    std::string server = t.value("server_name", "unknown");
+                    std::string name = t.value("name", "unknown");
+                    std::string desc = t.value("description", "No description");
+                    
+                    std::cout << PURPLE << BOLD << "  • " << name << RESET 
+                              << GRAY << " (" << server << ")" << RESET << std::endl;
+                    std::cout << GRAY << "    " << desc << RESET << std::endl;
+                }
+            }
+            
+            std::cout << CYAN << "\n-----------------------\n" << RESET << std::endl;
             continue;
         }
 
@@ -1205,8 +1249,21 @@ int main(int argc, char* argv[]) {
             if (message.contains("tool_calls") && !message["tool_calls"].is_null()) {
                 continues = true;
                 for (auto& toolCall : message["tool_calls"]) {
-                    std::string fullName = toolCall["function"]["name"];
-                    std::string argsStr = toolCall["function"]["arguments"];
+                    // 安全检查: 确保 toolCall 是对象且包含 function
+                    if (!toolCall.is_object() || !toolCall.contains("function")) {
+                        Logger::getInstance().error("Invalid tool_call format: " + toolCall.dump());
+                        continue;
+                    }
+                    
+                    auto& func = toolCall["function"];
+                    if (!func.is_object() || !func.contains("name") || !func.contains("arguments")) {
+                        Logger::getInstance().error("Invalid function format in tool_call: " + func.dump());
+                        continue;
+                    }
+                    
+                    std::string fullName = func["name"].get<std::string>();
+                    std::string argsStr = func["arguments"].is_string() ? 
+                        func["arguments"].get<std::string>() : func["arguments"].dump();
                     nlohmann::json args;
                     try {
                         args = nlohmann::json::parse(argsStr);
@@ -1230,9 +1287,17 @@ int main(int argc, char* argv[]) {
 
                     // Split server_name__tool_name
                     size_t pos = fullName.find("__");
+                    std::string serverName;
+                    std::string toolName;
+                    
                     if (pos != std::string::npos) {
-                        std::string serverName = fullName.substr(0, pos);
-                        std::string toolName = fullName.substr(pos + 2);
+                        serverName = fullName.substr(0, pos);
+                        toolName = fullName.substr(pos + 2);
+                    } else {
+                        // 新的 CoreTools 没有 server__ 前缀
+                        serverName = "core";
+                        toolName = fullName;
+                    }
 
                         if (toolName == "bash_execute" && args.contains("command")) {
                             std::string cmd = args["command"];
@@ -1405,14 +1470,46 @@ int main(int argc, char* argv[]) {
                         }
 
                         if (confirm == "y" || confirm == "yes") {
-                            // If user confirmed this specific call, temporarily authorize it in the MCP client
-                            bool tempAuth = (isRiskyTool(toolName) && !authorizeAll);
-                            if (tempAuth) mcpManager.setAllAuthorized(true);
+                            nlohmann::json result;
                             
-                            nlohmann::json result = mcpManager.callTool(serverName, toolName, args);
+                            // ============================================================
+                            // Constitution v2.0: Hard Constraint Validation
+                            // ============================================================
+                            auto validation = ConstitutionValidator::validateToolCall(toolName, args);
+                            if (!validation.valid) {
+                                std::cout << RED << "✖ Constitution Violation" << RESET << std::endl;
+                                std::cout << GRAY << "  Constraint: " << validation.constraint << RESET << std::endl;
+                                std::cout << GRAY << "  Error: " << validation.error << RESET << std::endl;
+                                
+                                result["error"] = "Constitution violation: " + validation.error;
+                                Logger::getInstance().error("Constitution violation in " + toolName + ": " + validation.error);
+                                
+                                // Add error response to messages
+                                std::string errorMsg = "Constitution violation (" + validation.constraint + "): " + validation.error;
+                                messages.push_back({
+                                    {"role", "tool"},
+                                    {"tool_call_id", toolCall["id"]},
+                                    {"content", errorMsg}
+                                });
+                                continue; // Skip execution, move to next tool call
+                            }
                             
-                            // Revert authorization if it was temporary
-                            if (tempAuth) mcpManager.setAllAuthorized(false);
+                            // ============================================================
+                            // 新架构: 优先使用 ToolRegistry 中的核心工具
+                            // ============================================================
+                            if (toolRegistry.hasTool(toolName)) {
+                                // 使用新的 ToolRegistry
+                                std::cout << GRAY << "  [Using CoreTools::" << toolName << "]" << RESET << std::endl;
+                                result = toolRegistry.executeTool(toolName, args);
+                            } else {
+                                // 回退到旧的 MCP 系统 (外部工具 / 遗留工具)
+                                bool tempAuth = (isRiskyTool(toolName) && !authorizeAll);
+                                if (tempAuth) mcpManager.setAllAuthorized(true);
+                                
+                                result = mcpManager.callTool(serverName, toolName, args);
+                                
+                                if (tempAuth) mcpManager.setAllAuthorized(false);
+                            }
 
                             if (result.contains("error")) {
                                 Logger::getInstance().error("Tool " + toolName + " failed: " + result["error"].get<std::string>());
@@ -1439,14 +1536,25 @@ int main(int argc, char* argv[]) {
                             }
 
                             // Add tool result to messages
+                            // 处理不同的结果格式
+                            std::string contentStr;
+                            if (result.contains("content") && result["content"].is_array() && !result["content"].empty()) {
+                                // MCP 格式: {"content": [{"type": "text", "text": "..."}]}
+                                contentStr = result["content"][0]["text"].get<std::string>();
+                            } else if (result.contains("error")) {
+                                // 错误格式
+                                contentStr = result.dump();
+                            } else {
+                                // 其他格式,直接序列化
+                                contentStr = result.dump();
+                            }
+                            
                             messages.push_back({
                                 {"role", "tool"},
                                 {"tool_call_id", toolCall["id"]},
-                                {"name", fullName},
-                                {"content", result.dump()}
+                                {"content", contentStr}
                             });
                         }
-                    }
                 }
                 continues = true;
             } else {

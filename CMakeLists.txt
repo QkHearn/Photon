@@ -55,6 +55,8 @@ if(PHOTON_USE_BUNDLED_JSON)
         URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
+    # 设置为使用多头文件版本
+    set(JSON_MultipleHeaders ON CACHE INTERNAL "")
     FetchContent_MakeAvailable(nlohmann_json)
 else()
     find_package(nlohmann_json REQUIRED)
@@ -89,19 +91,29 @@ enable_testing()
 
 # Create a library for shared logic to be tested
 add_library(agent_lib 
-    src/utils/FileManager.cpp 
-    src/utils/SymbolManager.cpp
-    src/utils/LogicMapper.cpp
+    # Core infrastructure
     src/utils/Logger.cpp
-    src/utils/SemanticManager.cpp
-    src/utils/RegexSymbolProvider.cpp
-    src/utils/TreeSitterSymbolProvider.cpp
     src/core/UIManager.cpp
     src/core/LLMClient.cpp 
     src/core/ContextManager.cpp
     src/mcp/MCPClient.cpp
-    src/mcp/LSPClient.cpp
-    src/mcp/InternalMCPClient.cpp
+    # Agent layer (NEW)
+    src/agent/AgentRuntime.cpp
+    src/agent/EnvironmentDetector.cpp
+    # Tools layer (NEW)
+    src/tools/ToolRegistry.cpp
+    src/tools/CoreTools.cpp
+    # Memory layer (NEW)
+    src/memory/MemoryManager.cpp
+    src/memory/ProjectMemory.cpp
+    src/memory/FailureMemory.cpp
+    # Analysis layer (REFACTORED)
+    src/analysis/SymbolManager.cpp
+    src/analysis/LogicMapper.cpp
+    src/analysis/SemanticManager.cpp
+    src/analysis/LSPClient.cpp
+    src/analysis/providers/RegexSymbolProvider.cpp
+    src/analysis/providers/TreeSitterSymbolProvider.cpp
 )
 target_include_directories(agent_lib PUBLIC src third_party/httplib)
 if(APPLE)
@@ -131,20 +143,25 @@ option(PHOTON_USE_BUNDLED_GTEST "Build googletest from source" ${APPLE})
 set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
 if(PHOTON_USE_BUNDLED_GTEST)
     include(FetchContent)
+    # 使用更新的 googletest 版本以避免 CMake 兼容性警告
     FetchContent_Declare(
         googletest
-        URL https://github.com/google/googletest/archive/refs/tags/release-1.11.0.zip
+        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
+    # 设置 googletest 的 CMake 最低版本要求
+    set(CMAKE_POLICY_DEFAULT_CMP0048 NEW)
     FetchContent_MakeAvailable(googletest)
 else()
     find_package(GTest REQUIRED)
 endif()
 
 add_executable(agent_tests 
-    tests/test_FileManager.cpp 
     tests/test_ContextManager.cpp
-    tests/test_InternalMCPClient.cpp
+    # TODO: 添加新的测试文件
+    # tests/test_ToolRegistry.cpp
+    # tests/test_CoreTools.cpp
+    # tests/test_MemoryManager.cpp
 )
 if(PHOTON_USE_BUNDLED_GTEST)
     target_link_libraries(agent_tests PRIVATE gtest gtest_main agent_lib nlohmann_json::nlohmann_json)

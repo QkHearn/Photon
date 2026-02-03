@@ -1,4 +1,4 @@
-#include "utils/TreeSitterSymbolProvider.h"
+#include "analysis/providers/TreeSitterSymbolProvider.h"
 #include <cstring>
 #ifdef PHOTON_ENABLE_TREESITTER
 #ifdef _WIN32

@@ -3,20 +3,17 @@
 #include <memory>
 #include <map>
 #include "mcp/MCPClient.h"
-#include "mcp/InternalMCPClient.h"
 #include "core/ConfigManager.h"
 
 #include <future>
 
 class MCPManager {
 public:
-    // 初始化内置工具
+    // 初始化内置工具 (已废弃 - 使用 ToolRegistry 代替)
     void initBuiltin(const std::string& rootPath, const std::string& searchApiKey = "") {
-        auto client = std::make_unique<InternalMCPClient>(rootPath);
-        if (!searchApiKey.empty()) {
-            client->setSearchApiKey(searchApiKey);
-        }
-        clients["builtin"] = std::move(client);
+        // NOTE: InternalMCPClient 已被删除
+        // 新架构使用 ToolRegistry + CoreTools
+        // 这个方法保留只是为了向后兼容,实际不再创建 builtin 客户端
     }
 
     // 根据配置初始化所有服务器 (并行异步)

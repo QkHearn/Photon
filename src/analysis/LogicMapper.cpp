@@ -1,5 +1,5 @@
-#include "utils/LogicMapper.h"
-#include "utils/TreeSitterSymbolProvider.h"
+#include "analysis/LogicMapper.h"
+#include "analysis/providers/TreeSitterSymbolProvider.h"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
