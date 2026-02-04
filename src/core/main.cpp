@@ -260,13 +260,15 @@ void showGitDiff(const std::string& path, const std::string& newContent, bool fo
     
     if (isNewFile) {
         // Create an empty file to compare against for new files
-        emptyFile = path + ".photon.empty";
+        fs::path absolutePath = fs::absolute(fs::u8path(path));
+        emptyFile = (absolutePath / ".photon.empty").u8string();
         std::ofstream out(emptyFile);
         out.close();
         originalPath = emptyFile;
     }
 
-    std::string tmpPath = path + ".photon.tmp";
+    fs::path absolutePath = fs::absolute(fs::u8path(path));
+    std::string tmpPath = (absolutePath / ".photon.tmp").u8string();
     std::ofstream tmpFile(tmpPath);
     if (!tmpFile.is_open()) {
         if (!emptyFile.empty()) fs::remove(emptyFile);
@@ -538,8 +540,8 @@ int main(int argc, char* argv[]) {
                 configPath = "config.json";
             } else if (fs::exists(fs::u8path("../config.json"))) {
                 configPath = "../config.json";
-            } else if (argc >= 2 && fs::exists(fs::u8path(path) / "config.json")) {
-                configPath = (fs::path(path) / "config.json").u8string();
+            } else if (argc >= 2 && fs::exists(fs::absolute(fs::u8path(path)) / "config.json")) {
+                configPath = (fs::absolute(fs::u8path(path)) / "config.json").u8string();
             } else if (!exeDir.empty() && fs::exists(exeDir / "config.json")) {
                 configPath = (exeDir / "config.json").u8string();
             }
@@ -618,13 +620,17 @@ int main(int argc, char* argv[]) {
 #endif
             globalDataPath = exeDir / ".photon";
         } catch (...) {
-            globalDataPath = fs::u8path(path) / ".photon";
+            // Ensure we use absolute path for the project .photon directory
+            fs::path absolutePath = fs::absolute(fs::u8path(path));
+            globalDataPath = absolutePath / ".photon";
         }
         skillManager.syncAndLoad(cfg.agent.skillRoots, globalDataPath.u8string());
     });
     
     // Initialize Symbol Manager and start async scan
-    SymbolManager symbolManager(path);
+    // Ensure path is absolute so symbols are generated in the correct directory
+    fs::path absolutePath = fs::absolute(fs::u8path(path));
+    SymbolManager symbolManager(absolutePath.u8string());
     symbolManager.setFallbackOnEmpty(cfg.agent.symbolFallbackOnEmpty);
     
     // 设置符号扫描忽略模式
@@ -815,7 +821,7 @@ int main(int argc, char* argv[]) {
     // Inject the actual Constitution text (truncated) so the model is explicitly informed.
     std::string constitutionText;
     {
-        fs::path docPath = fs::u8path(path) / "docs" / "tutorials" / "photon_agent_constitution_v_2.md";
+        fs::path docPath = fs::absolute(fs::u8path(path)) / "docs" / "tutorials" / "photon_agent_constitution_v_2.md";
         if (fs::exists(docPath) && fs::is_regular_file(docPath)) {
             constitutionText = readTextFileTruncated(docPath, 20000);
         }
@@ -1164,7 +1170,8 @@ int main(int argc, char* argv[]) {
                 }
 
                 // Backup path mapping must handle absolute paths (which would otherwise escape backupDir)
-                fs::path backupDir = fs::u8path(path) / ".photon" / "backups";
+                fs::path absolutePath = fs::absolute(fs::u8path(path));
+                fs::path backupDir = absolutePath / ".photon" / "backups";
                 fs::path lf = fs::u8path(lastFile);
                 fs::path backupRel;
                 if (!lf.is_absolute()) {
@@ -1342,7 +1349,7 @@ int main(int argc, char* argv[]) {
                     if (fullName == "builtin__write" || fullName == "write") {
                         if (args.contains("path") && args.contains("content") && 
                             !args.contains("operation") && !args.contains("search") && 
-                            fs::exists(fs::u8path(path) / fs::u8path(args["path"].get<std::string>()))) {
+                            fs::exists(fs::absolute(fs::u8path(path)) / fs::u8path(args["path"].get<std::string>()))) {
                             
                             // Check if it's a very small file or a new file (not exists is already checked)
                             // We'll allow it but add a warning to the next message
