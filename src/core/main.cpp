@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <regex>
 #include <sstream>
+#include <fstream>
 #include <cstdlib>
 #include <cctype>
 #include <algorithm>
@@ -27,14 +28,12 @@
 #include "analysis/LSPClient.h"
 #include "utils/SkillManager.h"
 #include "analysis/SymbolManager.h"
-#include "analysis/SemanticManager.h"
 #include "utils/Logger.h"
 #include "analysis/providers/RegexSymbolProvider.h"
 #include "analysis/providers/TreeSitterSymbolProvider.h"
 // 新架构: Tools 层
 #include "tools/ToolRegistry.h"
 #include "tools/CoreTools.h"
-#include "tools/SemanticSearchTool.h"
 // Agent 层: Constitution 校验
 #include "agent/ConstitutionValidator.h"
 #ifdef PHOTON_ENABLE_TREESITTER
@@ -118,6 +117,21 @@ std::vector<std::string> guessExtensionsForCommand(const std::string& command) {
         return {".ets"};
     }
     return {};
+}
+
+static std::string readTextFileTruncated(const fs::path& filePath, size_t maxBytes) {
+    try {
+        std::ifstream f(filePath);
+        if (!f.is_open()) return "";
+        std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (content.size() > maxBytes) {
+            content.resize(maxBytes);
+            content += "\n\n…(truncated)…\n";
+        }
+        return content;
+    } catch (...) {
+        return "";
+    }
 }
 
 std::string guessNameForCommand(const std::string& command) {
@@ -617,9 +631,6 @@ int main(int argc, char* argv[]) {
         symbolManager.setIgnorePatterns(cfg.agent.symbolIgnorePatterns);
     }
     
-    // Initialize Semantic Manager
-    auto semanticManager = std::make_shared<SemanticManager>(path, llmClient);
-    
 #ifdef PHOTON_ENABLE_TREESITTER
     if (cfg.agent.enableTreeSitter) {
         auto treeProvider = std::make_unique<TreeSitterSymbolProvider>();
@@ -635,18 +646,18 @@ int main(int argc, char* argv[]) {
 #endif
     symbolManager.registerProvider(std::make_unique<RegexSymbolProvider>());
     
-    // 启动时阻塞构建索引
-    std::cout << "[Init] Building symbol index..." << std::endl;
-    symbolManager.startAsyncScan();
-    while (symbolManager.isScanning()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // 启动时阻塞确保符号索引可用：优先复用磁盘缓存，仅当文件有变化才重建
+    bool upToDate = symbolManager.isIndexUpToDate();
+    if (!upToDate) {
+        std::cout << "[Init] Building symbol index..." << std::endl;
+        symbolManager.scanBlocking();
+    } else if (cfg.agent.enableDebug) {
+        std::cout << "[Init] Symbol index cache is up-to-date, skipping rebuild" << std::endl;
     }
     std::cout << "[Init] Symbol index ready: " << symbolManager.getSymbolCount() << " symbols" << std::endl;
     
     // 启动文件监听
     symbolManager.startWatching(5);
-    
-    semanticManager->startAsyncIndexing();
 
     // Initialize LSP clients (Parallel initialization)
     std::vector<std::unique_ptr<LSPClient>> lspClients;
@@ -736,7 +747,6 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path));
     toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
-    toolRegistry.registerTool(std::make_unique<SemanticSearchTool>(semanticManager.get()));
     
     std::cout << GREEN << "  ✔ Registered " << toolRegistry.getToolCount() << " core tools" << RESET << std::endl;
 
@@ -754,7 +764,8 @@ int main(int argc, char* argv[]) {
         std::string toolName = mcpTool.value("name", "");
         if (toolName != "read" && toolName != "write" && 
             toolName != "file_read" && toolName != "file_write" &&
-            toolName != "bash_execute" && toolName != "list_dir_tree") {
+            toolName != "bash_execute" && toolName != "list_dir_tree" &&
+            toolName != "semantic_search") {
             // 转换 MCP 工具格式
             nlohmann::json tool;
             tool["type"] = "function";
@@ -800,10 +811,20 @@ int main(int argc, char* argv[]) {
     // ============================================================
     // Photon Agent Constitution v2.0
     // ============================================================
+    // Inject the actual Constitution text (truncated) so the model is explicitly informed.
+    std::string constitutionText;
+    {
+        fs::path docPath = fs::u8path(path) / "docs" / "tutorials" / "photon_agent_constitution_v_2.md";
+        if (fs::exists(docPath) && fs::is_regular_file(docPath)) {
+            constitutionText = readTextFileTruncated(docPath, 20000);
+        }
+    }
+
     std::string systemPrompt = 
         "You are Photon.\n"
         "You must operate under Photon Agent Constitution v2.0.\n"
         "All behavior is governed by the constitution and validated configuration.\n\n" +
+        (constitutionText.empty() ? std::string("") : (std::string("# Constitution v2.0\n\n") + constitutionText + "\n\n")) +
         
         // Project-specific configuration (from config.json)
         cfg.llm.systemRole + "\n\n" +
@@ -1141,7 +1162,24 @@ int main(int argc, char* argv[]) {
                     useGit = (system(gitCheckCmd.c_str()) == 0);
                 }
 
-                fs::path backupPath = fs::u8path(path) / ".photon" / "backups" / fs::u8path(lastFile);
+                // Backup path mapping must handle absolute paths (which would otherwise escape backupDir)
+                fs::path backupDir = fs::u8path(path) / ".photon" / "backups";
+                fs::path lf = fs::u8path(lastFile);
+                fs::path backupRel;
+                if (!lf.is_absolute()) {
+                    backupRel = lf;
+                } else {
+                    fs::path rn = lf.root_name();
+                    fs::path rp = lf.relative_path();
+                    if (!rn.empty()) {
+                        std::string s = rn.u8string();
+                        for (auto& ch : s) if (ch == ':' || ch == '\\') ch = '_';
+                        backupRel = fs::path("abs") / fs::u8path(s) / rp;
+                    } else {
+                        backupRel = fs::path("abs") / rp;
+                    }
+                }
+                fs::path backupPath = backupDir / backupRel;
                 bool hasBackup = fs::exists(backupPath);
 
                 if (!useGit && !hasBackup) {

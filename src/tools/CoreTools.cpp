@@ -714,7 +714,7 @@ nlohmann::json ApplyPatchTool::getSchema() const {
         {"properties", {
             {"file_path", {
                 {"type", "string"},
-                {"description", "Relative path to the file"}
+                {"description", "Path to the file (relative to project root, or absolute path)"}
             }},
             {"operation", {
                 {"type", "string"},
@@ -738,12 +738,49 @@ nlohmann::json ApplyPatchTool::getSchema() const {
     };
 }
 
+static fs::path sanitizePathComponent(fs::path p) {
+    // Keep it simple and filesystem-friendly.
+    std::string s = p.u8string();
+    for (auto& ch : s) {
+        if (ch == ':' || ch == '\\') ch = '_';
+    }
+    return fs::u8path(s);
+}
+
+static fs::path backupRelativePathFor(const fs::path& srcPath, const fs::path& rootPath) {
+    if (!srcPath.is_absolute()) {
+        return srcPath;
+    }
+
+    // If the file lives under project root, back it up by its project-relative path.
+    std::error_code ec;
+    fs::path rel = fs::relative(srcPath, rootPath, ec);
+    if (!ec && !rel.empty()) {
+        // Avoid paths that escape the root (../..)
+        std::string relStr = rel.u8string();
+        if (relStr.rfind("..", 0) != 0) {
+            return rel;
+        }
+    }
+
+    // External absolute path: map into backups/abs/...
+    fs::path rn = srcPath.root_name();         // e.g. "C:" on Windows
+    fs::path rp = srcPath.relative_path();     // drops root dir, e.g. "/a/b" -> "a/b"
+    if (!rn.empty()) {
+        return fs::path("abs") / sanitizePathComponent(rn) / rp;
+    }
+    return fs::path("abs") / rp;
+}
+
 void ApplyPatchTool::createBackup(const std::string& path) {
     fs::path backupDir = rootPath / ".photon" / "backups";
     fs::create_directories(backupDir);
     
-    fs::path srcPath = rootPath / fs::u8path(path);
-    fs::path dstPath = backupDir / fs::u8path(path);
+    fs::path rawPath = fs::u8path(path);
+    fs::path srcPath = rawPath.is_absolute() ? rawPath : (rootPath / rawPath);
+
+    fs::path rel = backupRelativePathFor(srcPath, rootPath);
+    fs::path dstPath = backupDir / rel;
     
     fs::create_directories(dstPath.parent_path());
     fs::copy_file(srcPath, dstPath, fs::copy_options::overwrite_existing);

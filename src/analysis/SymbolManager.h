@@ -54,6 +54,12 @@ public:
     // Start asynchronous full scan
     void startAsyncScan();
 
+    // Run a full scan synchronously (blocking)
+    void scanBlocking();
+
+    // Fast freshness check: true if on-disk index exists and tracked files unchanged
+    bool isIndexUpToDate();
+
     // Start real-time file watching (incremental updates)
     void startWatching(int intervalSeconds = 5);
 

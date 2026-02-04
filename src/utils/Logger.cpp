@@ -70,7 +70,7 @@ void Logger::printToConsole(LogLevel level, const std::string& message) {
 
     // Style Internal Monologue tags if present
     if (level == LogLevel::THOUGHT) {
-        // Remove redundant [Think] prefixes if they exist in the message content
+        // Remove redundant legacy prefixes if they exist in the message content
         trimmedMsg = std::regex_replace(trimmedMsg, std::regex(R"(^🤔 \[Think\] )"), "");
         trimmedMsg = std::regex_replace(trimmedMsg, std::regex(R"(\n🤔 \[Think\] )"), "\n");
         

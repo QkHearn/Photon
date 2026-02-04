@@ -79,6 +79,88 @@ void SymbolManager::startAsyncScan() {
     scanThread = std::thread(&SymbolManager::performScan, this);
 }
 
+void SymbolManager::scanBlocking() {
+    static bool enableDebugLog = std::getenv("PHOTON_DEBUG_SCAN") != nullptr;
+    if (scanning) {
+        if (enableDebugLog) {
+            std::cout << "[SymbolManager] Scan already in progress, skipping blocking scan" << std::endl;
+        }
+        return;
+    }
+    scanning = true;
+    performScan();
+}
+
+bool SymbolManager::isIndexUpToDate() {
+    try {
+        // If no on-disk index, we must scan at least once.
+        fs::path indexPath = getIndexPath();
+        if (!fs::exists(indexPath)) return false;
+
+        // Snapshot current providers and file meta to avoid holding locks during IO.
+        std::vector<ISymbolProvider*> providerSnapshot;
+        std::unordered_map<std::string, FileMeta> metaSnapshot;
+        {
+            std::unique_lock<std::shared_mutex> lock(mtx);
+            providerSnapshot.reserve(providers.size());
+            for (const auto& p : providers) providerSnapshot.push_back(p.get());
+            metaSnapshot = fileMeta;
+        }
+        if (providerSnapshot.empty()) {
+            // Without providers, we can't reliably decide which files matter → force scan.
+            return false;
+        }
+
+        auto supportsExt = [&](const std::string& ext) -> bool {
+            for (const auto* p : providerSnapshot) {
+                if (p && p->supportsExtension(ext)) return true;
+            }
+            return false;
+        };
+
+        fs::path root(rootPath);
+        std::unordered_set<std::string> seen;
+
+        for (const auto& entry : fs::recursive_directory_iterator(root)) {
+            if (!entry.is_regular_file()) continue;
+            if (shouldIgnore(entry.path())) continue;
+            std::string ext = entry.path().extension().string();
+            if (!supportsExt(ext)) continue;
+
+            std::string relPath = fs::relative(entry.path(), root).generic_string();
+            seen.insert(relPath);
+
+            FileMeta current;
+            try {
+                current.size = fs::file_size(entry.path());
+                auto ftime = fs::last_write_time(entry.path());
+                auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                    ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                current.mtime = std::chrono::system_clock::to_time_t(sctp);
+            } catch (...) {
+                // If we can't stat it, be conservative and rescan.
+                return false;
+            }
+
+            auto it = metaSnapshot.find(relPath);
+            if (it == metaSnapshot.end()) return false;
+            if (it->second.size != current.size) return false;
+            if (it->second.mtime != current.mtime) return false;
+        }
+
+        // If we have tracked files that no longer exist (or became ignored), index is stale.
+        for (const auto& pair : metaSnapshot) {
+            if (seen.find(pair.first) == seen.end()) {
+                return false;
+            }
+        }
+
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 void SymbolManager::performScan() {
     static bool enableDebugLog = std::getenv("PHOTON_DEBUG_SCAN") != nullptr;
     
@@ -733,10 +815,10 @@ void SymbolManager::loadIndex() {
                         }
                     }
                 }
-                if (!fileSyms.empty()) {
-                    loadedFileSymbols[relPath] = std::move(fileSyms);
-                    loadedMeta[relPath] = meta;
-                }
+                // IMPORTANT: even if a file has 0 symbols, keep its meta so we can reuse
+                // and avoid reparsing it on next startup if unchanged.
+                loadedFileSymbols[relPath] = std::move(fileSyms);
+                loadedMeta[relPath] = meta;
             }
             for (const auto& pair : loadedFileSymbols) {
                 loaded.insert(loaded.end(), pair.second.begin(), pair.second.end());
