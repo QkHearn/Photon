@@ -1,5 +1,8 @@
 #include "analysis/providers/TreeSitterSymbolProvider.h"
 #include <cstring>
+#include <iostream>
+#include <unordered_set>
+#include <functional>
 #ifdef PHOTON_ENABLE_TREESITTER
 #ifdef _WIN32
 #include <windows.h>
@@ -44,7 +47,9 @@ std::vector<Symbol> TreeSitterSymbolProvider::extractSymbols(const std::string& 
         }
         if (lang) break;
     }
-    if (!lang || !lang->language) return results;
+    if (!lang || !lang->language) {
+        return results;
+    }
 
     TSParser* parser = ts_parser_new();
     ts_parser_set_language(parser, lang->language);
@@ -125,30 +130,48 @@ void TreeSitterSymbolProvider::collectSymbols(TSNode node,
                                               std::vector<Symbol>& out) const {
     const char* type = ts_node_type(node);
 
-    auto makeSymbol = [&](const char* symbolType) {
-        uint32_t childCount = ts_node_child_count(node);
-        for (uint32_t i = 0; i < childCount; ++i) {
-            TSNode child = ts_node_child(node, i);
-            const char* childType = ts_node_type(child);
-            // C++ uses 'identifier', Python uses 'identifier' for function names
-            if (std::strcmp(childType, "identifier") == 0 || std::strcmp(childType, "name") == 0 || 
-                std::strcmp(childType, "field_identifier") == 0) {
-                auto start = ts_node_start_point(node);
-                auto end = ts_node_end_point(node);
-                auto startByte = ts_node_start_byte(child);
-                auto endByte = ts_node_end_byte(child);
-                std::string name;
-                if (endByte > startByte && endByte <= content.size()) {
-                    name = content.substr(startByte, endByte - startByte);
-                } else {
-                    name = childType;
-                }
-                out.push_back({name, symbolType, "tree_sitter", relPath, 
-                              static_cast<int>(start.row + 1), 
-                              static_cast<int>(end.row + 1), ""});
-                break;
+    auto findIdentifier = [&](TSNode parent) -> TSNode {
+        // 递归查找第一个 identifier 节点
+        std::function<TSNode(TSNode)> search = [&](TSNode n) -> TSNode {
+            const char* nodeType = ts_node_type(n);
+            if (std::strcmp(nodeType, "identifier") == 0 || 
+                std::strcmp(nodeType, "name") == 0 || 
+                std::strcmp(nodeType, "field_identifier") == 0 ||
+                std::strcmp(nodeType, "type_identifier") == 0) {
+                return n;
             }
+            uint32_t count = ts_node_child_count(n);
+            for (uint32_t i = 0; i < count; ++i) {
+                TSNode result = search(ts_node_child(n, i));
+                if (!ts_node_is_null(result)) {
+                    return result;
+                }
+            }
+            TSNode nullNode = {};
+            return nullNode;
+        };
+        return search(parent);
+    };
+    
+    auto makeSymbol = [&](const char* symbolType) {
+        TSNode identNode = findIdentifier(node);
+        if (ts_node_is_null(identNode)) {
+            return;
         }
+        
+        auto start = ts_node_start_point(node);
+        auto end = ts_node_end_point(node);
+        auto startByte = ts_node_start_byte(identNode);
+        auto endByte = ts_node_end_byte(identNode);
+        std::string name;
+        if (endByte > startByte && endByte <= content.size()) {
+            name = content.substr(startByte, endByte - startByte);
+        } else {
+            name = ts_node_type(identNode);
+        }
+        out.push_back({name, symbolType, "tree_sitter", relPath, 
+                      static_cast<int>(start.row + 1), 
+                      static_cast<int>(end.row + 1), ""});
     };
 
     if (std::strcmp(type, "class_specifier") == 0) {

@@ -21,6 +21,8 @@ struct Config {
         std::vector<std::string> skillRoots; // Directories to search for skills
         bool enableTreeSitter = false;
         bool symbolFallbackOnEmpty = false;
+        bool enableLSP = true;  // 是否启用 LSP 功能
+        bool enableDebug = false;  // 是否启用调试日志
         std::string lspServerPath;
         std::string lspRootUri;
         struct LSPServer {
@@ -36,6 +38,7 @@ struct Config {
             std::string symbol;
         };
         std::vector<TreeSitterLanguage> treeSitterLanguages;
+        std::vector<std::string> symbolIgnorePatterns;
     } agent;
 
     struct MCPServerConfig {
@@ -74,6 +77,8 @@ struct Config {
         cfg.agent.searchApiKey = j.at("agent").value("search_api_key", "");
         cfg.agent.enableTreeSitter = j.at("agent").value("enable_tree_sitter", false);
         cfg.agent.symbolFallbackOnEmpty = j.at("agent").value("symbol_fallback_on_empty", false);
+        cfg.agent.enableLSP = j.at("agent").value("enable_lsp", true);
+        cfg.agent.enableDebug = j.at("agent").value("enable_debug", false);
         cfg.agent.lspServerPath = j.at("agent").value("lsp_server_path", "");
         cfg.agent.lspRootUri = j.at("agent").value("lsp_root_uri", "");
         if (j.at("agent").contains("lsp_servers")) {
@@ -101,6 +106,11 @@ struct Config {
                     cfg.agent.treeSitterLanguages.push_back(std::move(lang));
                 }
             }
+        }
+        
+        // 读取符号扫描忽略模式
+        if (j.at("agent").contains("symbol_ignore_patterns")) {
+            cfg.agent.symbolIgnorePatterns = j.at("agent")["symbol_ignore_patterns"].get<std::vector<std::string>>();
         }
         
         if (j.contains("mcp_servers")) {

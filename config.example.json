@@ -1,6 +1,6 @@
 {
   "llm": {
-    "api_key": "",
+    "api_key": "sk-SXprMLe0hZFGovhuMnM4jrSm5AGTUpDNkm1wh0lVeS4yETFE",
     "base_url": "https://api.moonshot.cn/v1",
     "model": "kimi-k2-0905-preview",
     "system_role": "Project context: C++ codebase with CMake build system. Primary languages: C++17, Python. LSP servers available for navigation."
@@ -16,7 +16,7 @@
     "enable_tree_sitter": true,
     "symbol_fallback_on_empty": false,
     "enable_lsp": true,
-    "enable_debug": true,
+    "enable_debug": false,
     "lsp_server_path": "",
     "lsp_root_uri": "",
     "lsp_servers": [
@@ -27,9 +27,7 @@
       "./builtin_skills"
     ],
     "tree_sitter_languages": [],
-    "symbol_ignore_patterns": [
-      ".github",".photon", "cmake-build-debug", "third_party","tests"
-    ]
+    "symbol_ignore_patterns": []
   },
   "mcp_servers": [
     { "name": "puppeteer", "command": "npx -y @modelcontextprotocol/server-puppeteer" }

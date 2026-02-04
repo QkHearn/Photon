@@ -76,9 +76,9 @@ docs/tutorials/
 
 适合想快速了解全部能力的读者：
 
-1. **Skill 系统** → [SKILL_ACTIVATION_QUICK_REF.md](docs/tutorials/SKILL_ACTIVATION_QUICK_REF.md)
-2. **符号搜索** → [QUICK_START_AST.md](docs/tutorials/QUICK_START_AST.md)
-3. **语义搜索** → [QUICK_START_SEMANTIC_SEARCH.md](docs/tutorials/QUICK_START_SEMANTIC_SEARCH.md)
+1. **Skill 系统** → [SKILL_ACTIVATION_QUICK_REF.md](SKILL_ACTIVATION_QUICK_REF.md)
+2. **符号搜索** → [QUICK_START_AST.md](QUICK_START_AST.md)
+3. **语义搜索** → [QUICK_START_SEMANTIC_SEARCH.md](QUICK_START_SEMANTIC_SEARCH.md)
 
 ### 深度学习路径 A: Skill 系统 (1-2 小时)
 
@@ -205,18 +205,18 @@ LLM 基于真实路径精确读取
 ## 🔗 文档链接
 
 ### 入口文档
-- 📖 [开始阅读](docs/tutorials/00-开始阅读.md)
-- 📚 [教程总览](docs/tutorials/README.md)
+- 📖 [开始阅读](00-开始阅读.md)
+- 📚 [教程总览](README.md)
 
 ### 快速入门
-- ⚡ [Skill 快速参考](docs/tutorials/SKILL_ACTIVATION_QUICK_REF.md)
-- 🔍 [符号搜索快速入门](docs/tutorials/QUICK_START_AST.md)
-- 🔎 [语义搜索快速入门](docs/tutorials/QUICK_START_SEMANTIC_SEARCH.md)
+- ⚡ [Skill 快速参考](SKILL_ACTIVATION_QUICK_REF.md)
+- 🔍 [符号搜索快速入门](QUICK_START_AST.md)
+- 🔎 [语义搜索快速入门](QUICK_START_SEMANTIC_SEARCH.md)
 
 ### 深入学习
-- 📘 [Skill 完整总结](docs/tutorials/SKILL_ACTIVATION_SUMMARY.md)
-- 📗 [符号搜索详解](docs/tutorials/AGENT_AST_ANALYSIS.md)
-- 📙 [语义搜索详解](docs/tutorials/SEMANTIC_SEARCH_INTEGRATION.md)
+- 📘 [Skill 完整总结](SKILL_ACTIVATION_SUMMARY.md)
+- 📗 [符号搜索详解](AGENT_AST_ANALYSIS.md)
+- 📙 [语义搜索详解](SEMANTIC_SEARCH_INTEGRATION.md)
 
 ## ✨ 亮点
 
@@ -263,7 +263,7 @@ LLM 基于真实路径精确读取
 ## 🎯 使用建议
 
 ### 新用户
-1. 从 [开始阅读](docs/tutorials/00-开始阅读.md) 开始
+1. 从 [开始阅读](00-开始阅读.md) 开始
 2. 完成快速通道（15分钟）
 3. 根据兴趣深入学习
 
@@ -325,4 +325,4 @@ LLM 基于真实路径精确读取
 
 ---
 
-**开始学习**: [docs/tutorials/00-开始阅读.md](docs/tutorials/00-开始阅读.md)
+**开始学习**: [docs/tutorials/00-开始阅读.md](00-开始阅读.md)

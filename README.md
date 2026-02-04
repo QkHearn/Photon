@@ -188,9 +188,9 @@ chmod +x photon
 
 ### 核心文档
 
-- [Constitution v2.0](./photon_agent_constitution_v_2.md) - Agent 行为规范
+- [Constitution v2.0](docs/tutorials/photon_agent_constitution_v_2.md) - Agent 行为规范
 - [重构总结](./REFACTOR_SUMMARY.md) - 架构重构记录
-- [设计文档](./design.md) - 系统设计详解
+- [设计文档](docs/tutorials/design.md) - 系统设计详解
 
 ### 教程
 

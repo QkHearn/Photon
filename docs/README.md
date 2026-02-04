@@ -17,15 +17,15 @@
 
 #### 架构设计
 
-- [Constitution v2.0](../photon_agent_constitution_v_2.md) - Agent 行为规范和执行合约
-- [设计文档](../design.md) - 系统架构和设计原则
+- [Constitution v2.0](tutorials/photon_agent_constitution_v_2.md) - Agent 行为规范和执行合约
+- [设计文档](tutorials/design.md) - 系统架构和设计原则
 - [重构总结](../REFACTOR_SUMMARY.md) - 架构重构历程
 
 #### 实现细节
 
-- [重构状态](../REFACTOR_STATUS.md) - 重构进度跟踪
-- [重构完成报告](../REFACTOR_COMPLETE.md) - 完整重构记录
-- [特性列表](../FEATURES.md) - 功能特性清单
+- [重构状态](tutorials/REFACTOR_STATUS.md) - 重构进度跟踪
+- [重构完成报告](tutorials/REFACTOR_COMPLETE.md) - 完整重构记录
+- [特性列表](tutorials/FEATURES.md) - 功能特性清单
 
 ---
 
@@ -76,7 +76,7 @@
 → [快速开始](../README.md#快速开始) + [配置说明](../config.json)
 
 ### 我要理解架构设计
-→ [Constitution v2.0](../photon_agent_constitution_v_2.md) + [设计文档](../design.md)
+→ [Constitution v2.0](tutorials/photon_agent_constitution_v_2.md) + [设计文档](tutorials/design.md)
 
 ---
 
@@ -150,7 +150,7 @@
 ### 开发者路径 (2 小时)
 
 1. 新手路径 (30 分钟)
-2. 阅读 [Constitution v2.0](../photon_agent_constitution_v_2.md) (30 分钟)
+2. 阅读 [Constitution v2.0](tutorials/photon_agent_constitution_v_2.md) (30 分钟)
 3. 阅读 [Skill 设计文档](./tutorials/SKILL_ACTIVATION_DESIGN.md) (30 分钟)
 4. 阅读 [Skill 使用示例](./tutorials/SKILL_ACTIVATION_EXAMPLE.md) (20 分钟)
 5. 实践: 创建测试 Skill (10 分钟)
@@ -158,8 +158,8 @@
 ### 架构师路径 (4 小时)
 
 1. 开发者路径 (2 小时)
-2. 阅读 [设计文档](../design.md) (1 小时)
-3. 阅读 [重构完成报告](../REFACTOR_COMPLETE.md) (1 小时)
+2. 阅读 [设计文档](tutorials/design.md) (1 小时)
+3. 阅读 [重构完成报告](tutorials/REFACTOR_COMPLETE.md) (1 小时)
 
 ---
 

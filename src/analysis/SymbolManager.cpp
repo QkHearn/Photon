@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <utility>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <unordered_set>
@@ -51,52 +52,158 @@ SymbolManager::~SymbolManager() {
 }
 
 void SymbolManager::setLSPClients(const std::unordered_map<std::string, LSPClient*>& byExt, LSPClient* fallback) {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::shared_mutex> lock(mtx);
     lspByExtension = byExt;
     lspFallback = fallback;
 }
 
 void SymbolManager::registerProvider(std::unique_ptr<ISymbolProvider> provider) {
     if (!provider) return;
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::shared_mutex> lock(mtx);
     providers.push_back(std::move(provider));
 }
 
 void SymbolManager::startAsyncScan() {
-    if (scanning) return;
+    static bool enableDebugLog = std::getenv("PHOTON_DEBUG_SCAN") != nullptr;
+    
+    if (scanning) {
+        if (enableDebugLog) {
+            std::cout << "[SymbolManager] Scan already in progress, skipping" << std::endl;
+        }
+        return;
+    }
+    if (enableDebugLog) {
+        std::cout << "[SymbolManager] Starting async scan thread" << std::endl;
+    }
     scanning = true;
     scanThread = std::thread(&SymbolManager::performScan, this);
 }
 
 void SymbolManager::performScan() {
+    static bool enableDebugLog = std::getenv("PHOTON_DEBUG_SCAN") != nullptr;
+    
+    if (enableDebugLog) {
+        std::cout << "[SymbolManager] Starting full scan of: " << rootPath << std::endl;
+    }
+    
+    int fileCount = 0;
+    int scannedCount = 0;
+    int reusedCount = 0;
+    int ignoredCount = 0;
+    
     try {
         std::vector<Symbol> localSymbols;
+        std::unordered_map<std::string, std::vector<Symbol>> localFileSymbols;
         fs::path root(rootPath);
         std::unordered_set<std::string> seenFiles;
         
+        if (enableDebugLog) {
+            std::cout << "[SymbolManager] Providers registered: " << providers.size() << std::endl;
+        }
+        
         for (const auto& entry : fs::recursive_directory_iterator(root)) {
             if (entry.is_regular_file()) {
-                if (shouldIgnore(entry.path())) continue;
-                scanFile(entry.path(), localSymbols);
-
+                fileCount++;
+                if (shouldIgnore(entry.path())) {
+                    ignoredCount++;
+                    continue;
+                }
+                
                 std::string relPath = fs::relative(entry.path(), root).generic_string();
+                
+                // 增量：未修改的文件直接复用索引，不读文件、不解析
+                std::uintmax_t fsize = 0;
+                std::time_t fmtime = 0;
+                try {
+                    fsize = fs::file_size(entry.path());
+                    auto ftime = fs::last_write_time(entry.path());
+                    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                        ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                    fmtime = std::chrono::system_clock::to_time_t(sctp);
+                } catch (...) {}
+                
+                bool reused = false;
+                {
+                    std::shared_lock<std::shared_mutex> lock(mtx);
+                    auto itMeta = fileMeta.find(relPath);
+                    auto itSyms = fileSymbols.find(relPath);
+                    if (itMeta != fileMeta.end() && itSyms != fileSymbols.end()
+                        && itMeta->second.size == fsize && itMeta->second.mtime == fmtime) {
+                        const auto& syms = itSyms->second;
+                        if (!syms.empty()) {
+                            localFileSymbols[relPath] = syms;
+                            localSymbols.insert(localSymbols.end(), syms.begin(), syms.end());
+                        }
+                        seenFiles.insert(relPath);
+                        reusedCount++;
+                        reused = true;
+                    }
+                }
+                if (reused) continue;
+                
+                if (enableDebugLog && scannedCount < 10) {
+                    std::string ext = entry.path().extension().string();
+                    std::cout << "[SymbolManager] Scanning: " << entry.path().string() << " (ext: " << ext << ")" << std::endl;
+                }
+                
+                std::vector<Symbol> fileSyms;
+                scanFile(entry.path(), fileSyms);
+                
+                if (!fileSyms.empty()) {
+                    localFileSymbols[relPath] = std::move(fileSyms);
+                    localSymbols.insert(localSymbols.end(), localFileSymbols[relPath].begin(), localFileSymbols[relPath].end());
+                }
+                
+                scannedCount++;
                 seenFiles.insert(relPath);
             }
         }
 
-        std::lock_guard<std::mutex> lock(mtx);
-        // Remove deleted files from index
-        for (auto it = fileSymbols.begin(); it != fileSymbols.end(); ) {
-            if (seenFiles.find(it->first) == seenFiles.end()) {
-                fileMeta.erase(it->first);
-                it = fileSymbols.erase(it);
-            } else {
-                ++it;
+        // 计算需要删除的文件（不持有锁）
+        std::vector<std::string> filesToRemove;
+        {
+            std::unique_lock<std::shared_mutex> lock(mtx);
+            for (const auto& [path, _] : fileSymbols) {
+                if (seenFiles.find(path) == seenFiles.end()) {
+                    filesToRemove.push_back(path);
+                }
             }
         }
-        symbols = std::move(localSymbols);
-    } catch (...) {}
+        
+        // 一次性更新所有数据（持有锁时间最短）
+        {
+            std::unique_lock<std::shared_mutex> lock(mtx);
+            
+            // 删除旧文件
+            for (const auto& path : filesToRemove) {
+                fileMeta.erase(path);
+                fileSymbols.erase(path);
+            }
+            
+            // 更新新文件
+            for (auto& [path, syms] : localFileSymbols) {
+                fileSymbols[path] = std::move(syms);
+            }
+            
+            // 更新全局符号列表
+            symbols = std::move(localSymbols);
+        }
+        
+        // 只在调试模式下显示扫描摘要
+        if (enableDebugLog) {
+            std::cout << "[SymbolManager] Scan complete: " << fileCount << " files, "
+                      << reusedCount << " reused (unchanged), " << scannedCount << " parsed, "
+                      << ignoredCount << " ignored, " << symbols.size() << " symbols" << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[SymbolManager] Scan failed with exception: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[SymbolManager] Scan failed with unknown exception" << std::endl;
+    }
     saveIndex();
+    if (enableDebugLog) {
+        std::cout << "[SymbolManager] Index saved" << std::endl;
+    }
     scanning = false;
 }
 
@@ -152,7 +259,7 @@ void SymbolManager::checkFileChanges() {
                 
                 bool needsUpdate = false;
                 {
-                    std::lock_guard<std::mutex> lock(mtx);
+                    std::unique_lock<std::shared_mutex> lock(mtx);
                     auto it = fileMeta.find(relPath);
                     if (it != fileMeta.end()) {
                         if (it->second.mtime != currentMeta.mtime || it->second.size != currentMeta.size) {
@@ -169,24 +276,56 @@ void SymbolManager::checkFileChanges() {
             }
         }
         
+        // 批量扫描（不持有锁）
+        std::unordered_map<std::string, std::vector<Symbol>> updatedFiles;
         for (const auto& filePath : filesToUpdate) {
-            updateSingleFile(filePath);
+            std::string relPath = fs::relative(filePath, root).generic_string();
+            std::vector<Symbol> fileSyms;
+            scanFile(filePath, fileSyms);
+            updatedFiles[relPath] = std::move(fileSyms);
         }
         
-        std::lock_guard<std::mutex> lock(mtx);
-        for (auto it = fileSymbols.begin(); it != fileSymbols.end(); ) {
-            if (currentFiles.find(it->first) == currentFiles.end()) {
-                fileMeta.erase(it->first);
-                symbols.erase(
-                    std::remove_if(symbols.begin(), symbols.end(),
-                        [&](const Symbol& s) { return s.path == it->first; }),
-                    symbols.end());
-                it = fileSymbols.erase(it);
-            } else {
-                ++it;
+        // 计算删除的文件
+        std::vector<std::string> filesToRemove;
+        {
+            std::unique_lock<std::shared_mutex> lock(mtx);
+            for (const auto& [path, _] : fileSymbols) {
+                if (currentFiles.find(path) == currentFiles.end()) {
+                    filesToRemove.push_back(path);
+                }
             }
         }
-        if (!filesToUpdate.empty() || !currentFiles.empty()) {
+        
+        // 一次性更新（持有锁时间最短）
+        {
+            std::unique_lock<std::shared_mutex> lock(mtx);
+            
+            // 删除旧符号
+            for (const auto& path : filesToRemove) {
+                fileMeta.erase(path);
+                fileSymbols.erase(path);
+                symbols.erase(
+                    std::remove_if(symbols.begin(), symbols.end(),
+                        [&](const Symbol& s) { return s.path == path; }),
+                    symbols.end());
+            }
+            
+            // 更新新符号
+            for (auto& pair : updatedFiles) {
+                const std::string& filePath = pair.first;
+                auto& syms = pair.second;
+                symbols.erase(
+                    std::remove_if(symbols.begin(), symbols.end(),
+                        [&filePath](const Symbol& s) { return s.path == filePath; }),
+                    symbols.end());
+                if (!syms.empty()) {
+                    fileSymbols[filePath] = syms;
+                    symbols.insert(symbols.end(), syms.begin(), syms.end());
+                }
+            }
+        }
+        
+        if (!filesToUpdate.empty() || !filesToRemove.empty()) {
             saveIndex();
         }
     } catch (...) {}
@@ -205,13 +344,18 @@ void SymbolManager::updateSingleFile(const fs::path& filePath) {
     std::vector<Symbol> newSymbols;
     scanFile(filePath, newSymbols);
     
-    std::lock_guard<std::mutex> lock(mtx);
-    symbols.erase(
-        std::remove_if(symbols.begin(), symbols.end(),
-            [&](const Symbol& s) { return s.path == relPath; }),
-        symbols.end());
-    if (!newSymbols.empty()) {
-        symbols.insert(symbols.end(), newSymbols.begin(), newSymbols.end());
+    {
+        std::unique_lock<std::shared_mutex> lock(mtx);
+        symbols.erase(
+            std::remove_if(symbols.begin(), symbols.end(),
+                [&](const Symbol& s) { return s.path == relPath; }),
+            symbols.end());
+        if (!newSymbols.empty()) {
+            fileSymbols[relPath] = newSymbols;
+            symbols.insert(symbols.end(), newSymbols.begin(), newSymbols.end());
+        } else {
+            fileSymbols.erase(relPath);
+        }
     }
 }
 
@@ -223,8 +367,11 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
     std::vector<ISymbolProvider*> fallbackProviders;
     std::unordered_map<std::string, LSPClient*> lspByExtSnapshot;
     LSPClient* lspFallbackSnapshot = nullptr;
+    
+    static bool enableDebugLog = std::getenv("PHOTON_DEBUG_SCAN") != nullptr;
+    
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::unique_lock<std::shared_mutex> lock(mtx);
         for (const auto& provider : providers) {
             if (provider->supportsExtension(ext)) {
                 supported = true;
@@ -241,7 +388,12 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
     std::string extLower = ext;
     std::transform(extLower.begin(), extLower.end(), extLower.begin(), ::tolower);
     bool lspSupported = (lspByExtSnapshot.find(extLower) != lspByExtSnapshot.end()) || (lspFallbackSnapshot != nullptr);
-    if (!supported && !lspSupported) return;
+    
+    // 策略：只依赖 providers 决定是否扫描
+    // LSP 仅用于符号提取的回退，不影响扫描决策
+    if (!supported) {
+        return;
+    }
     const std::vector<ISymbolProvider*>& primaryProviders =
         !treeProviders.empty() ? treeProviders : fallbackProviders;
     const std::vector<ISymbolProvider*>& secondaryProviders =
@@ -263,7 +415,7 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
     meta.hash = fnv1a64(content);
 
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::unique_lock<std::shared_mutex> lock(mtx);
         auto itMeta = fileMeta.find(relPath);
         auto itSymbols = fileSymbols.find(relPath);
         if (itMeta != fileMeta.end() && itSymbols != fileSymbols.end()) {
@@ -294,27 +446,30 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
         }
     };
 
-    LSPClient* lsp = pickLsp(extLower);
-    if (lsp) {
-        std::string fileUri = "file://" + fs::absolute(filePath).u8string();
-        auto docSymbols = lsp->documentSymbols(fileUri);
-        for (const auto& ds : docSymbols) {
-            Symbol s;
-            s.name = ds.name;
-            s.type = mapKindToType(ds.kind);
-            s.source = "lsp";
-            s.path = relPath;
-            s.line = ds.range.start.line + 1;
-            s.endLine = ds.range.end.line + 1;
-            s.signature = ds.detail;
-            extractedAll.push_back(std::move(s));
-        }
+    // 优先使用 Tree-sitter/Regex providers（更可靠）
+    // LSP 可能在扫描时还未完全初始化，导致返回空结果
+    for (const auto* provider : primaryProviders) {
+        auto extracted = provider->extractSymbols(content, relPath);
+        extractedAll.insert(extractedAll.end(), extracted.begin(), extracted.end());
     }
-
+    
+    // 如果 providers 没有提取到符号，尝试使用 LSP（作为回退）
     if (extractedAll.empty()) {
-        for (const auto* provider : primaryProviders) {
-            auto extracted = provider->extractSymbols(content, relPath);
-            extractedAll.insert(extractedAll.end(), extracted.begin(), extracted.end());
+        LSPClient* lsp = pickLsp(extLower);
+        if (lsp) {
+            std::string fileUri = "file://" + fs::absolute(filePath).u8string();
+            auto docSymbols = lsp->documentSymbols(fileUri);
+            for (const auto& ds : docSymbols) {
+                Symbol s;
+                s.name = ds.name;
+                s.type = mapKindToType(ds.kind);
+                s.source = "lsp";
+                s.path = relPath;
+                s.line = ds.range.start.line + 1;
+                s.endLine = ds.range.end.line + 1;
+                s.signature = ds.detail;
+                extractedAll.push_back(std::move(s));
+            }
         }
     }
     if (extractedAll.empty() && !secondaryProviders.empty() && secondaryProviders != primaryProviders) {
@@ -338,7 +493,7 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
     }
     std::vector<std::pair<std::string, std::vector<CallInfo>>> removedCalls;
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::unique_lock<std::shared_mutex> lock(mtx);
         fileSymbols[relPath] = extractedAll;
         fileMeta[relPath] = meta;
         for (auto it = symbolCalls.begin(); it != symbolCalls.end(); ) {
@@ -368,7 +523,7 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
 
     std::unordered_map<std::string, std::vector<Symbol>> globalNameIndex;
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::unique_lock<std::shared_mutex> lock(mtx);
         for (const auto& s : symbols) {
             globalNameIndex[s.name].push_back(s);
         }
@@ -498,7 +653,7 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
             for (const auto& c : calls) {
                 uniq.insert(resolveCalleeCall(c));
             }
-            std::lock_guard<std::mutex> lock(mtx);
+            std::unique_lock<std::shared_mutex> lock(mtx);
             std::string key = makeSymbolKey(s);
             symbolCalls[key] = calls;
             callerOutCounts[key] = static_cast<int>(calls.size());
@@ -588,7 +743,7 @@ void SymbolManager::loadIndex() {
             }
         }
 
-        std::lock_guard<std::mutex> lock(mtx);
+        std::unique_lock<std::shared_mutex> lock(mtx);
         symbols = std::move(loaded);
         fileSymbols = std::move(loadedFileSymbols);
         fileMeta = std::move(loadedMeta);
@@ -603,7 +758,7 @@ void SymbolManager::saveIndex() {
         std::unordered_map<std::string, std::vector<Symbol>> snapshotFileSymbols;
         std::unordered_map<std::string, FileMeta> snapshotMeta;
         {
-            std::lock_guard<std::mutex> lock(mtx);
+            std::unique_lock<std::shared_mutex> lock(mtx);
             snapshot = symbols;
             snapshotFileSymbols = fileSymbols;
             snapshotMeta = fileMeta;
@@ -641,6 +796,8 @@ void SymbolManager::saveIndex() {
         std::ofstream file(indexPath);
         if (!file.is_open()) return;
         file << j.dump(2);
+        file.flush();
+        file.close();
     } catch (...) {}
     saveCallIndex();
     saveCallGraph();
@@ -669,7 +826,7 @@ void SymbolManager::loadCallIndex() {
             }
             if (!calls.empty()) loadedCalls[key] = std::move(calls);
         }
-        std::lock_guard<std::mutex> lock(mtx);
+        std::unique_lock<std::shared_mutex> lock(mtx);
         symbolCalls = std::move(loadedCalls);
         calleeCounts.clear();
         callerOutCounts.clear();
@@ -686,7 +843,7 @@ void SymbolManager::saveCallIndex() {
     try {
         std::unordered_map<std::string, std::vector<CallInfo>> snapshot;
         {
-            std::lock_guard<std::mutex> lock(mtx);
+            std::unique_lock<std::shared_mutex> lock(mtx);
             snapshot = symbolCalls;
         }
         nlohmann::json calls = nlohmann::json::array();
@@ -731,7 +888,7 @@ void SymbolManager::loadCallGraph() {
             }
             if (!tos.empty()) loadedAdj[from] = std::move(tos);
         }
-        std::lock_guard<std::mutex> lock(mtx);
+        std::unique_lock<std::shared_mutex> lock(mtx);
         callGraphAdj = std::move(loadedAdj);
     } catch (...) {}
 }
@@ -740,7 +897,7 @@ void SymbolManager::saveCallGraph() {
     try {
         std::unordered_map<std::string, std::vector<std::string>> snapshot;
         {
-            std::lock_guard<std::mutex> lock(mtx);
+            std::unique_lock<std::shared_mutex> lock(mtx);
             snapshot = callGraphAdj;
         }
         nlohmann::json edges = nlohmann::json::array();
@@ -759,7 +916,7 @@ void SymbolManager::saveCallGraph() {
 }
 
 std::vector<SymbolManager::Symbol> SymbolManager::search(const std::string& query) {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::shared_lock<std::shared_mutex> lock(mtx);
     std::vector<Symbol> results;
     std::string lowerQuery = query;
     std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::tolower);
@@ -793,15 +950,27 @@ std::vector<SymbolManager::Symbol> SymbolManager::search(const std::string& quer
 }
 
 std::vector<SymbolManager::Symbol> SymbolManager::getFileSymbols(const std::string& relPath) {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::shared_lock<std::shared_mutex> lock(mtx);
     auto it = fileSymbols.find(relPath);
     if (it == fileSymbols.end()) return {};
     return it->second;
 }
 
+bool SymbolManager::tryGetFileSymbols(const std::string& relPath, std::vector<Symbol>& outSymbols) {
+    std::shared_lock<std::shared_mutex> lock(mtx);
+    
+    auto it = fileSymbols.find(relPath);
+    if (it == fileSymbols.end()) {
+        return false;
+    }
+    
+    outSymbols = it->second;
+    return true;
+}
+
 std::optional<SymbolManager::Symbol> SymbolManager::findEnclosingSymbol(const std::string& relPath, int line) {
     if (line <= 0) return std::nullopt;
-    std::lock_guard<std::mutex> lock(mtx);
+    std::shared_lock<std::shared_mutex> lock(mtx);
     auto it = fileSymbols.find(relPath);
     if (it == fileSymbols.end()) return std::nullopt;
 
@@ -828,28 +997,28 @@ std::optional<SymbolManager::Symbol> SymbolManager::findEnclosingSymbol(const st
 }
 
 std::vector<SymbolManager::CallInfo> SymbolManager::getCallsForSymbol(const Symbol& symbol) {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::shared_mutex> lock(mtx);
     auto it = symbolCalls.find(makeSymbolKey(symbol));
     if (it == symbolCalls.end()) return {};
     return it->second;
 }
 
 int SymbolManager::getGlobalCalleeCount(const std::string& calleeName) const {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::shared_mutex> lock(mtx);
     auto it = calleeCounts.find(calleeName);
     if (it == calleeCounts.end()) return 0;
     return it->second;
 }
 
 int SymbolManager::getCallerOutDegree(const Symbol& symbol) const {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::shared_mutex> lock(mtx);
     auto it = callerOutCounts.find(makeSymbolKey(symbol));
     if (it == callerOutCounts.end()) return 0;
     return it->second;
 }
 
 std::vector<std::string> SymbolManager::getCalleesForSymbol(const Symbol& symbol) const {
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::shared_mutex> lock(mtx);
     auto it = callGraphAdj.find(makeSymbolKey(symbol));
     if (it == callGraphAdj.end()) return {};
     return it->second;
@@ -863,7 +1032,7 @@ std::vector<SymbolManager::CallInfo> SymbolManager::extractCalls(const std::stri
     file.close();
 
     std::vector<CallInfo> allCalls;
-    std::lock_guard<std::mutex> lock(mtx);
+    std::unique_lock<std::shared_mutex> lock(mtx);
     for (const auto& provider : providers) {
         if (auto* tsProvider = dynamic_cast<TreeSitterSymbolProvider*>(provider.get())) {
             auto calls = tsProvider->extractCalls(content, relPath, startLine, endLine);
@@ -877,8 +1046,21 @@ std::vector<SymbolManager::CallInfo> SymbolManager::extractCalls(const std::stri
 
 bool SymbolManager::shouldIgnore(const fs::path& path) {
     std::string p = path.string();
-    return p.find("node_modules") != std::string::npos || 
-           p.find(".git") != std::string::npos || 
-           p.find("build") != std::string::npos ||
-           p.find(".venv") != std::string::npos;
+    
+    // 使用配置的忽略模式
+    for (const auto& pattern : ignorePatterns) {
+        if (p.find(pattern) != std::string::npos) {
+            return true;
+        }
+    }
+    
+    // 如果没有配置，使用默认模式
+    if (ignorePatterns.empty()) {
+        return p.find("node_modules") != std::string::npos || 
+               p.find(".git") != std::string::npos || 
+               p.find("build") != std::string::npos ||
+               p.find(".venv") != std::string::npos;
+    }
+    
+    return false;
 }

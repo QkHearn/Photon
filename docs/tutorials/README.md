@@ -218,11 +218,51 @@ LLM 基于增强上下文做决策
 
 ---
 
+## 📁 实现笔记与修复记录
+
+以下文档为开发过程中的实现说明与修复记录，已整理到本目录。若尚未移动，可在项目根目录执行：`bash docs/tutorials/move_docs_here.sh`
+
+| 文档 | 说明 |
+|------|------|
+| [AGENT_AST_COMPLETE](./AGENT_AST_COMPLETE.md) | 智能体 AST 分析功能实现完成 |
+| [ARBITRARY_PATH_ANALYSIS](./ARBITRARY_PATH_ANALYSIS.md) | 任意路径分析 |
+| [CLEANUP_COMPLETE](./CLEANUP_COMPLETE.md) | 清理完成记录 |
+| [CONFIGURABLE_IGNORE_PATTERNS](./CONFIGURABLE_IGNORE_PATTERNS.md) | 可配置忽略模式 |
+| [CONSTITUTION_EVOLUTION](./CONSTITUTION_EVOLUTION.md) | Constitution 演进 |
+| [DEBUG_OPTIONS](./DEBUG_OPTIONS.md) | 调试选项说明 |
+| [FEATURES](./FEATURES.md) | 功能列表 |
+| [FIXES_SUMMARY](./FIXES_SUMMARY.md) | 修复汇总 |
+| [GLOBAL_PHOTON_SUPPORT](./GLOBAL_PHOTON_SUPPORT.md) | 全局 Photon 支持 |
+| [INTEGRATION_COMPLETE](./INTEGRATION_COMPLETE.md) | 集成完成记录 |
+| [LSP_OPTIMIZATION](./LSP_OPTIMIZATION.md) | LSP 优化 |
+| [PATH_NORMALIZATION_FIX](./PATH_NORMALIZATION_FIX.md) | 路径规范化修复 |
+| [PATH_SEPARATOR_FIX](./PATH_SEPARATOR_FIX.md) | 路径分隔符修复 |
+| [PERFORMANCE_DEBUG_GUIDE](./PERFORMANCE_DEBUG_GUIDE.md) | 性能调试指南 |
+| [READ_CODE_BLOCK_FIX](./READ_CODE_BLOCK_FIX.md) | read_code_block 修复 |
+| [README_REFACTOR](./README_REFACTOR.md) | README 重构说明 |
+| [REFACTOR_COMPLETE](./REFACTOR_COMPLETE.md) | 重构完成记录 |
+| [REFACTOR_STATUS](./REFACTOR_STATUS.md) | 重构状态 |
+| [REFACTOR_SUMMARY](./REFACTOR_SUMMARY.md) | 重构总结 |
+| [SEMANTIC_SEARCH_COMPLETE](./SEMANTIC_SEARCH_COMPLETE.md) | 语义搜索完成记录 |
+| [SEMANTIC_SEARCH_TOOL_COMPLETE](./SEMANTIC_SEARCH_TOOL_COMPLETE.md) | 语义搜索工具完成 |
+| [STARTUP_OPTIMIZATION_COMPLETE](./STARTUP_OPTIMIZATION_COMPLETE.md) | 启动优化完成 |
+| [SYMBOL_SCAN_FIX_COMPLETE](./SYMBOL_SCAN_FIX_COMPLETE.md) | 符号扫描修复完成 |
+| [SYMBOL_STRATEGY_DESIGN](./SYMBOL_STRATEGY_DESIGN.md) | 符号策略设计 |
+| [TOOL_INTELLIGENCE_COMPLETE](./TOOL_INTELLIGENCE_COMPLETE.md) | 工具智能完成 |
+| [TREESITTER_FIX_COMPLETE](./TREESITTER_FIX_COMPLETE.md) | Tree-sitter 修复完成 |
+| [TUTORIALS_UPDATE_COMPLETE](./TUTORIALS_UPDATE_COMPLETE.md) | 教程更新完成 |
+| [UTF8_FIX_COMPLETE](./UTF8_FIX_COMPLETE.md) | UTF-8 修复完成 |
+| [VIEW_SYMBOL_DEPRECATION](./VIEW_SYMBOL_DEPRECATION.md) | view_symbol 弃用说明 |
+| [WINDOWS_MSVC_FIX](./WINDOWS_MSVC_FIX.md) | Windows MSVC 修复 |
+| [文档整理完成](./文档整理完成.md) | 文档整理说明 |
+
+---
+
 ## 📖 相关文档
 
 - [Photon 主 README](../../README.md)
-- [Constitution v2.0](../../photon_agent_constitution_v_2.md)
-- [重构总结](../../REFACTOR_SUMMARY.md)
+- [Constitution v2.0](photon_agent_constitution_v_2.md)
+- [重构总结](./REFACTOR_SUMMARY.md)
 
 ---
 

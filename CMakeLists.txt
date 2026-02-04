@@ -103,7 +103,7 @@ add_library(agent_lib
     # Tools layer (NEW)
     src/tools/ToolRegistry.cpp
     src/tools/CoreTools.cpp
-    src/tools/ViewSymbolTool.cpp
+    src/tools/SemanticSearchTool.cpp
     # Memory layer (NEW)
     src/memory/MemoryManager.cpp
     src/memory/ProjectMemory.cpp
@@ -186,7 +186,7 @@ endif()
 find_package(Threads REQUIRED)
 
 # --- Optional Tree-sitter ---
-option(PHOTON_ENABLE_TREESITTER "Enable Tree-sitter parser support" OFF)
+option(PHOTON_ENABLE_TREESITTER "Enable Tree-sitter parser support" ON)
 if(PHOTON_ENABLE_TREESITTER)
     # Force tree-sitter to build as a static library to avoid DLL issues on Windows
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)

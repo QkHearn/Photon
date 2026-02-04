@@ -1,10 +1,15 @@
 #include "CoreTools.h"
+#include "analysis/SymbolManager.h"
 #include <iostream>
 #include <vector>
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
 #include <array>
+#include <map>
+#include <set>
+#include <algorithm>
+#include <chrono>
 
 // Windows compatibility
 #ifdef _WIN32
@@ -56,7 +61,7 @@ namespace UTF8Utils {
                         // 额外验证：避免过长编码
                         if (c == 0xE0 && c1 < 0xA0) {
                             output.push_back('?');
-                            i++;
+                            i += 3;  // 跳过整个无效序列（3 字节）
                             continue;
                         }
                         output.push_back(input[i]);
@@ -82,7 +87,7 @@ namespace UTF8Utils {
                         // 额外验证：避免过长编码和超出 Unicode 范围
                         if ((c == 0xF0 && c1 < 0x90) || (c == 0xF4 && c1 > 0x8F)) {
                             output.push_back('?');
-                            i++;
+                            i += 4;  // 跳过整个无效序列（4 字节）
                             continue;
                         }
                         output.push_back(input[i]);
@@ -97,9 +102,8 @@ namespace UTF8Utils {
                 output.push_back('?');
                 i++;
             }
-            // 无效字节 (包括孤立的续字节 0x80-0xBF)
+            // 孤立的续字节 (0x80-0xBF) 或其他无效字节：直接跳过
             else {
-                output.push_back('?');
                 i++;
             }
         }
@@ -112,13 +116,16 @@ namespace UTF8Utils {
 // ReadCodeBlockTool Implementation
 // ============================================================================
 
-ReadCodeBlockTool::ReadCodeBlockTool(const std::string& rootPath) 
-    : rootPath(fs::u8path(rootPath)) {}
+ReadCodeBlockTool::ReadCodeBlockTool(const std::string& rootPath, SymbolManager* symbolMgr, bool enableDebug) 
+    : rootPath(fs::u8path(rootPath)), symbolMgr(symbolMgr), enableDebug(enableDebug) {}
 
 std::string ReadCodeBlockTool::getDescription() const {
-    return "Read a specific range of lines from a file. "
-           "Parameters: file_path (string), start_line (int, optional), end_line (int, optional). "
-           "If no line range specified, reads entire file.";
+    return "Read code from a file with intelligent strategies: "
+           "(1) No parameters → returns symbol summary for code files; "
+           "(2) symbol_name specified → returns that symbol's code; "
+           "(3) start_line/end_line specified → returns those lines; "
+           "(4) Otherwise → returns full file. "
+           "Parameters: file_path (required), symbol_name (optional), start_line (optional), end_line (optional).";
 }
 
 nlohmann::json ReadCodeBlockTool::getSchema() const {
@@ -129,13 +136,17 @@ nlohmann::json ReadCodeBlockTool::getSchema() const {
                 {"type", "string"},
                 {"description", "Relative path to the file"}
             }},
+            {"symbol_name", {
+                {"type", "string"},
+                {"description", "Name of a specific symbol (function, class, method) to read. If provided, only that symbol's code will be returned."}
+            }},
             {"start_line", {
                 {"type", "integer"},
-                {"description", "Starting line number (1-indexed, optional)"}
+                {"description", "Starting line number (1-indexed, optional). Use with end_line to read a specific range."}
             }},
             {"end_line", {
                 {"type", "integer"},
-                {"description", "Ending line number (1-indexed, optional)"}
+                {"description", "Ending line number (1-indexed, optional). Use with start_line to read a specific range."}
             }}
         }},
         {"required", {"file_path"}}
@@ -151,7 +162,16 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
     }
     
     std::string filePath = args["file_path"].get<std::string>();
-    fs::path fullPath = rootPath / fs::u8path(filePath);
+    
+    // 智能路径处理: 支持相对路径和绝对路径
+    fs::path inputPath = fs::u8path(filePath);
+    fs::path fullPath;
+    
+    if (inputPath.is_absolute()) {
+        fullPath = inputPath;
+    } else {
+        fullPath = rootPath / inputPath;
+    }
     
     // 检查文件是否存在
     if (!fs::exists(fullPath)) {
@@ -164,29 +184,462 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
         return result;
     }
     
+    // 智能策略选择
+    bool hasSymbolName = args.contains("symbol_name") && !args["symbol_name"].is_null();
+    bool hasLineRange = args.contains("start_line") || args.contains("end_line");
+    
+    // 策略 1: 指定了 symbol_name → 返回符号代码
+    if (hasSymbolName) {
+        std::string symbolName = args["symbol_name"].get<std::string>();
+        return readSymbolCode(filePath, symbolName);
+    }
+    
+    // 策略 2: 指定了行范围 → 返回指定行
+    if (hasLineRange) {
+        int startLine = args.value("start_line", 1);
+        int endLine = args.value("end_line", -1);
+        return readLineRange(filePath, startLine, endLine);
+    }
+    
+    // 策略 3: 无参数 + 代码文件 + SymbolManager 可用 → 返回符号摘要
+    if (symbolMgr && isCodeFile(filePath)) {
+        auto summary = generateSymbolSummaryNonBlocking(filePath);
+        if (!summary.contains("error")) {
+            return summary;
+        }
+    }
+    
+    // 策略 4: 默认 → 返回全文
+    return readFullFile(filePath);
+}
+
+// ============================================================================
+// ReadCodeBlockTool - 辅助方法实现
+// ============================================================================
+
+bool ReadCodeBlockTool::isCodeFile(const std::string& filePath) const {
+    // 支持的代码文件扩展名
+    static const std::vector<std::string> codeExtensions = {
+        ".cpp", ".h", ".hpp", ".cc", ".cxx", ".c",  // C/C++
+        ".py",                                       // Python
+        ".js", ".ts", ".jsx", ".tsx",               // JavaScript/TypeScript
+        ".java",                                     // Java
+        ".go",                                       // Go
+        ".rs",                                       // Rust
+        ".cs",                                       // C#
+        ".rb",                                       // Ruby
+        ".php",                                      // PHP
+        ".swift",                                    // Swift
+        ".kt", ".kts",                              // Kotlin
+        ".ets"                                       // ArkTS
+    };
+    
+    fs::path path(filePath);
+    std::string ext = path.extension().string();
+    
+    return std::find(codeExtensions.begin(), codeExtensions.end(), ext) != codeExtensions.end();
+}
+
+nlohmann::json ReadCodeBlockTool::generateSymbolSummary(const std::string& filePath) {
+    nlohmann::json result;
+    
+    if (!symbolMgr) {
+        if (enableDebug) std::cout << "[ReadCodeBlock] SymbolManager not available" << std::endl;
+        result["error"] = "SymbolManager not available";
+        return result;
+    }
+    
+    // 再次检查扫描状态（双重保险）
+    if (symbolMgr->isScanning()) {
+        if (enableDebug) std::cout << "[ReadCodeBlock] Scan started during symbol summary, aborting" << std::endl;
+        result["error"] = "Scan in progress";
+        return result;
+    }
+    
+    // 规范化路径: 统一转换为相对于 rootPath 的路径
+    std::string normalizedPath = filePath;
+    fs::path inputPath = fs::u8path(filePath);
+    
+    // 获取 rootPath 的规范化绝对路径（解析 . 和 .. 等）
+    fs::path rootAbsPath;
+    try {
+        // 优先使用 canonical，如果失败则使用 absolute
+        rootAbsPath = fs::canonical(rootPath);
+    } catch (...) {
+        rootAbsPath = fs::absolute(rootPath);
+    }
+    
+    // 计算文件的绝对路径
+    fs::path absPath;
+    if (inputPath.is_absolute()) {
+        absPath = inputPath;
+    } else {
+        absPath = fs::absolute(rootAbsPath / inputPath);
+    }
+    
+    // 调试信息 - 路径转换前（只在调试模式下）
+    static bool enableDebugLog = std::getenv("PHOTON_DEBUG_READ") != nullptr;
+    if (enableDebugLog) {
+        if (enableDebug) std::cout << "[ReadCodeBlock] === Path Normalization Debug ===" << std::endl;
+        if (enableDebug) std::cout << "[ReadCodeBlock] Original path: " << filePath << std::endl;
+        if (enableDebug) std::cout << "[ReadCodeBlock] SymbolManager root: " << symbolMgr->getRootPath() << std::endl;
+        if (enableDebug) std::cout << "[ReadCodeBlock] Root absolute path: " << rootAbsPath.string() << std::endl;
+        if (enableDebug) std::cout << "[ReadCodeBlock] File absolute path: " << absPath.string() << std::endl;
+        if (enableDebug) std::cout << "[ReadCodeBlock] Is input absolute? " << (inputPath.is_absolute() ? "yes" : "no") << std::endl;
+    }
+    
+    // 如果文件在 rootPath 下,计算相对路径
+    try {
+        // 使用 lexically_relative 或 relative 来计算相对路径
+        auto relPath = absPath.lexically_relative(rootAbsPath);
+        if (!relPath.empty() && relPath.string() != ".." && relPath.string().find("..") != 0) {
+            // 使用 generic_string() 确保路径分隔符一致 (统一为 '/')
+            normalizedPath = relPath.generic_string();
+            if (enableDebugLog) {
+                if (enableDebug) std::cout << "[ReadCodeBlock] Path is under root, converted to relative: " << normalizedPath << std::endl;
+            }
+        } else {
+            if (enableDebugLog) {
+                if (enableDebug) std::cout << "[ReadCodeBlock] Path is NOT under root, keeping original" << std::endl;
+            }
+        }
+    } catch (const std::exception& e) {
+        // 如果无法计算相对路径,保持原样
+        normalizedPath = filePath;
+        if (enableDebugLog) {
+            if (enableDebug) std::cout << "[ReadCodeBlock] Failed to compute relative path: " << e.what() << std::endl;
+        }
+    }
+    
+    if (enableDebugLog) {
+        if (enableDebug) std::cout << "[ReadCodeBlock] Final normalized path: " << normalizedPath << std::endl;
+        if (enableDebug) std::cout << "[ReadCodeBlock] Total symbols in index: " << symbolMgr->getSymbolCount() << std::endl;
+        if (enableDebug) std::cout << "[ReadCodeBlock] Is scanning: " << (symbolMgr->isScanning() ? "yes" : "no") << std::endl;
+    }
+    
+    auto symbols = symbolMgr->getFileSymbols(normalizedPath);
+    
+    if (enableDebugLog) {
+        if (enableDebug) std::cout << "[ReadCodeBlock] Query for '" << normalizedPath << "' returned " << symbols.size() << " symbols" << std::endl;
+        
+        // 如果没找到，尝试列出索引中的文件路径样本
+        if (symbols.empty()) {
+            auto allSymbols = symbolMgr->search("");  // 获取所有符号
+            std::set<std::string> uniquePaths;
+            for (const auto& sym : allSymbols) {
+                uniquePaths.insert(sym.path);
+                if (uniquePaths.size() >= 10) break;
+            }
+            if (!uniquePaths.empty()) {
+                if (enableDebug) std::cout << "[ReadCodeBlock] Sample paths in index:" << std::endl;
+                for (const auto& p : uniquePaths) {
+                    if (enableDebug) std::cout << "[ReadCodeBlock]   - '" << p << "'" << std::endl;
+                }
+            }
+        }
+    }
+    
+    // 如果索引中没有符号,检查是否可以实时分析
+    if (symbols.empty()) {
+        if (enableDebugLog) {
+            if (enableDebug) std::cout << "[ReadCodeBlock] No symbols in index" << std::endl;
+        }
+        
+        // 尝试找到实际文件路径
+        fs::path actualPath;
+        if (fs::exists(rootPath / fs::u8path(filePath))) {
+            actualPath = rootPath / fs::u8path(filePath);
+        } else if (fs::exists(fs::u8path(filePath))) {
+            actualPath = fs::u8path(filePath);
+        }
+        
+        // 如果文件存在且是代码文件,提示可以实时分析
+        if (!actualPath.empty() && isCodeFile(filePath)) {
+            if (enableDebugLog) {
+                if (enableDebug) std::cout << "[ReadCodeBlock] File exists but not in index" << std::endl;
+                if (enableDebug) std::cout << "[ReadCodeBlock] This might be:" << std::endl;
+                if (enableDebug) std::cout << "[ReadCodeBlock]   1. A file outside the project" << std::endl;
+                if (enableDebug) std::cout << "[ReadCodeBlock]   2. A newly created file" << std::endl;
+                if (enableDebug) std::cout << "[ReadCodeBlock]   3. An ignored file" << std::endl;
+                if (enableDebug) std::cout << "[ReadCodeBlock] Falling back to full file read" << std::endl;
+            }
+            
+            // TODO: 未来可以实现临时符号提取
+            // symbols = extractSymbolsOnDemand(actualPath);
+        } else {
+            if (enableDebugLog) {
+                if (enableDebug) std::cout << "[ReadCodeBlock] File not found or not a code file" << std::endl;
+            }
+        }
+        
+        result["error"] = "No symbols found in file";
+        return result;
+    }
+    
+    if (enableDebug) std::cout << "[ReadCodeBlock] Found " << symbols.size() << " symbols" << std::endl;
+    
+    // 按类型分组
+    std::map<std::string, std::vector<const Symbol*>> grouped;
+    for (const auto& sym : symbols) {
+        grouped[sym.type].push_back(&sym);
+    }
+    
+    // 格式化符号摘要
+    std::ostringstream summary;
+    summary << "📊 Symbol Summary for: " << filePath << "\n\n";
+    
+    int totalSymbols = 0;
+    for (const auto& [type, syms] : grouped) {
+        if (syms.empty()) continue;
+        
+        summary << "### " << type << "s (" << syms.size() << "):\n";
+        
+        for (const auto* sym : syms) {
+            summary << "  - `" << sym->name << "`";
+            if (!sym->signature.empty() && sym->signature != sym->name) {
+                summary << " - " << sym->signature;
+            }
+            summary << " (lines " << sym->line << "-" << sym->endLine << ")";
+            summary << " [" << sym->source << "]\n";
+            totalSymbols++;
+            
+            // 限制每个类型最多显示 20 个
+            if (totalSymbols >= 20) break;
+        }
+        
+        if (totalSymbols >= 20) {
+            summary << "  ... (truncated, " << (symbols.size() - totalSymbols) << " more symbols)\n";
+            break;
+        }
+    }
+    
+    summary << "\n💡 **Next Steps**:\n";
+    summary << "  - Use `read_code_block` with `symbol_name` to view specific symbols\n";
+    summary << "  - Use `view_symbol` tool for detailed symbol information\n";
+    summary << "  - Use `read_code_block` with `start_line`/`end_line` for specific ranges\n";
+    
+    // 返回格式化的摘要（清理 UTF-8 避免 JSON 报错）
+    nlohmann::json contentItem;
+    contentItem["type"] = "text";
+    contentItem["text"] = UTF8Utils::sanitize(summary.str());
+    
+    result["content"] = nlohmann::json::array({contentItem});
+    result["summary_mode"] = true;
+    result["symbol_count"] = static_cast<int>(symbols.size());
+    
+    return result;
+}
+
+nlohmann::json ReadCodeBlockTool::generateSymbolSummaryNonBlocking(const std::string& filePath) {
+    nlohmann::json result;
+    
+    if (!symbolMgr) {
+        result["error"] = "SymbolManager not available";
+        return result;
+    }
+    
+    // 规范化路径
+    std::string normalizedPath = filePath;
+    fs::path inputPath = fs::u8path(filePath);
+    
+    fs::path rootAbsPath;
+    try {
+        rootAbsPath = fs::canonical(rootPath);
+    } catch (...) {
+        rootAbsPath = fs::absolute(rootPath);
+    }
+    
+    fs::path absPath;
+    if (inputPath.is_absolute()) {
+        absPath = inputPath;
+    } else {
+        absPath = fs::absolute(rootAbsPath / inputPath);
+    }
+    
+    try {
+        auto relPath = absPath.lexically_relative(rootAbsPath);
+        if (!relPath.empty() && relPath.string() != ".." && relPath.string().find("..") != 0) {
+            normalizedPath = relPath.generic_string();
+        }
+    } catch (...) {
+        normalizedPath = filePath;
+    }
+    
+    if (enableDebug) std::cout << "[ReadCodeBlock] Normalized path: " << normalizedPath << std::endl;
+    
+    // 使用非阻塞查询
+    std::vector<SymbolManager::Symbol> symbols;
+    if (enableDebug) std::cout << "[ReadCodeBlock] Calling tryGetFileSymbols..." << std::endl;
+    
+    if (!symbolMgr->tryGetFileSymbols(normalizedPath, symbols)) {
+        if (enableDebug) std::cout << "[ReadCodeBlock] tryGetFileSymbols failed (lock unavailable or not found)" << std::endl;
+        result["error"] = "Lock unavailable or file not in index";
+        return result;
+    }
+    
+    if (enableDebug) std::cout << "[ReadCodeBlock] tryGetFileSymbols succeeded, got " << symbols.size() << " symbols" << std::endl;
+    
+    if (symbols.empty()) {
+        result["error"] = "No symbols found";
+        return result;
+    }
+    
+    // 按类型分组
+    std::map<std::string, std::vector<const SymbolManager::Symbol*>> grouped;
+    for (const auto& sym : symbols) {
+        grouped[sym.type].push_back(&sym);
+    }
+    
+    // 格式化符号摘要
+    std::ostringstream summary;
+    summary << "📊 Symbol Summary for: " << filePath << "\n\n";
+    
+    int totalSymbols = 0;
+    for (const auto& [type, syms] : grouped) {
+        if (syms.empty()) continue;
+        summary << "### " << type << "s (" << syms.size() << "):\n";
+        for (const auto* sym : syms) {
+            summary << "  - `" << sym->name << "`";
+            if (!sym->signature.empty()) {
+                summary << " - " << sym->signature;
+            }
+            summary << " (lines " << sym->line << "-" << sym->endLine << ")";
+            summary << " [" << sym->source << "]\n";
+            totalSymbols++;
+            if (totalSymbols >= 20) break;
+        }
+        if (totalSymbols >= 20) break;
+    }
+    
+    nlohmann::json contentItem;
+    contentItem["type"] = "text";
+    contentItem["text"] = UTF8Utils::sanitize(summary.str());
+    
+    result["content"] = nlohmann::json::array({contentItem});
+    result["summary_mode"] = true;
+    result["symbol_count"] = static_cast<int>(symbols.size());
+    
+    return result;
+}
+
+nlohmann::json ReadCodeBlockTool::readSymbolCode(const std::string& filePath, const std::string& symbolName) {
+    nlohmann::json result;
+    
+    if (!symbolMgr) {
+        result["error"] = "SymbolManager not available";
+        return result;
+    }
+    
+    // 规范化路径: 统一转换为相对于 rootPath 的路径
+    std::string normalizedPath = filePath;
+    fs::path inputPath = fs::u8path(filePath);
+    
+    // 获取 rootPath 的规范化绝对路径（解析 . 和 .. 等）
+    fs::path rootAbsPath;
+    try {
+        rootAbsPath = fs::canonical(rootPath);
+    } catch (...) {
+        rootAbsPath = fs::absolute(rootPath);
+    }
+    
+    // 计算文件的绝对路径
+    fs::path absPath;
+    if (inputPath.is_absolute()) {
+        absPath = inputPath;
+    } else {
+        absPath = fs::absolute(rootAbsPath / inputPath);
+    }
+    
+    // 如果文件在 rootPath 下,计算相对路径
+    try {
+        auto relPath = absPath.lexically_relative(rootAbsPath);
+        if (!relPath.empty() && relPath.string() != ".." && relPath.string().find("..") != 0) {
+            // 使用 generic_string() 确保路径分隔符一致 (统一为 '/')
+            normalizedPath = relPath.generic_string();
+        }
+    } catch (...) {
+        normalizedPath = filePath;
+    }
+    
+    // 查找符号
+    auto symbols = symbolMgr->getFileSymbols(normalizedPath);
+    const Symbol* targetSymbol = nullptr;
+    
+    for (const auto& sym : symbols) {
+        if (sym.name == symbolName) {
+            targetSymbol = &sym;
+            break;
+        }
+    }
+    
+    if (!targetSymbol) {
+        result["error"] = "Symbol '" + symbolName + "' not found in " + filePath;
+        
+        // 提供建议
+        if (!symbols.empty()) {
+            std::ostringstream suggestion;
+            suggestion << "Available symbols in this file:\n";
+            for (size_t i = 0; i < std::min(symbols.size(), size_t(10)); ++i) {
+                suggestion << "  - " << symbols[i].name << " (" << symbols[i].type << ")\n";
+            }
+            result["suggestion"] = suggestion.str();
+        }
+        
+        return result;
+    }
+    
+    // 读取符号对应的行范围
+    return readLineRange(filePath, targetSymbol->line, targetSymbol->endLine);
+}
+
+nlohmann::json ReadCodeBlockTool::readLineRange(const std::string& filePath, int startLine, int endLine) {
+    nlohmann::json result;
+    
+    // 智能路径处理: 支持相对路径和绝对路径
+    fs::path inputPath = fs::u8path(filePath);
+    fs::path fullPath;
+    
+    if (inputPath.is_absolute()) {
+        fullPath = inputPath;
+    } else {
+        fullPath = rootPath / inputPath;
+    }
+    
     // 读取文件（二进制模式以处理编码问题）
+    if (enableDebug) std::cout << "[ReadCodeBlock] Opening file: " << fullPath.string() << std::endl;
+    
     std::ifstream file(fullPath, std::ios::binary);
     if (!file.is_open()) {
         result["error"] = "Failed to open file: " + filePath;
         return result;
     }
     
+    if (enableDebug) std::cout << "[ReadCodeBlock] Reading lines..." << std::endl;
+    
     std::vector<std::string> lines;
     std::string line;
+    int lineNum = 0;
     while (std::getline(file, line)) {
-        // 移除行尾的 \r 字符（处理 Windows 风格的换行）
+        lineNum++;
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
         
-        // 验证并清理 UTF-8 字符串
-        lines.push_back(UTF8Utils::sanitize(line));
+        if (enableDebug && lineNum <= 3) {
+            std::cout << "[ReadCodeBlock] Line " << lineNum << " length: " << line.size() << std::endl;
+        }
+        lines.push_back(line);
     }
     file.close();
     
+    if (enableDebug) std::cout << "[ReadCodeBlock] Read " << lines.size() << " lines" << std::endl;
+    
     int totalLines = static_cast<int>(lines.size());
-    int startLine = args.value("start_line", 1);
-    int endLine = args.value("end_line", totalLines);
+    
+    // 如果 endLine 未指定或为 -1,使用总行数
+    if (endLine == -1) {
+        endLine = totalLines;
+    }
     
     // 边界检查
     if (startLine < 1) startLine = 1;
@@ -197,34 +650,49 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
     }
     
     // 构建内容
+    if (enableDebug) std::cout << "[ReadCodeBlock] Building content for lines " << startLine << "-" << endLine << std::endl;
+    
     std::ostringstream content;
     for (int i = startLine - 1; i < endLine; ++i) {
         content << (i + 1) << "|" << lines[i];
         if (i < endLine - 1) content << "\n";
     }
     
-    // 最终清理：再次验证整个内容字符串
+    // 构建最终内容
     std::string finalContent = "File: " + filePath + "\n" +
                                "Lines: " + std::to_string(startLine) + "-" + std::to_string(endLine) + 
                                " (Total: " + std::to_string(totalLines) + ")\n\n" +
                                content.str();
-    finalContent = UTF8Utils::sanitize(finalContent);
     
-    // 返回结果
-    // 使用 try-catch 包装 JSON 构建，捕获任何 UTF-8 错误
-    try {
-        nlohmann::json contentItem;
-        contentItem["type"] = "text";
-        contentItem["text"] = finalContent;
-        
-        result["content"] = nlohmann::json::array({contentItem});
-    } catch (const nlohmann::json::exception& e) {
-        // 如果仍然有 UTF-8 错误，返回错误信息
-        result["error"] = std::string("UTF-8 encoding error: ") + e.what();
-        result["hint"] = "File contains invalid UTF-8 sequences that could not be cleaned";
+    if (enableDebug) {
+        std::cout << "[ReadCodeBlock] Final content size: " << finalContent.size() << std::endl;
     }
     
+    // 始终清理无效 UTF-8
+    std::string cleanContent = UTF8Utils::sanitize(finalContent);
+    
+    nlohmann::json contentItem;
+    contentItem["type"] = "text";
+    try {
+        contentItem["text"] = cleanContent;
+    } catch (const std::exception& e) {
+        // sanitize 后仍可能触发校验：用仅 ASCII 兜底，保证不崩溃
+        std::string safe;
+        safe.reserve(cleanContent.size());
+        for (unsigned char c : cleanContent) {
+            if (c < 0x80) safe.push_back(c);
+            else safe.push_back('?');
+        }
+        contentItem["text"] = safe;
+    }
+    result["content"] = nlohmann::json::array({contentItem});
+    
     return result;
+}
+
+nlohmann::json ReadCodeBlockTool::readFullFile(const std::string& filePath) {
+    // 直接调用 readLineRange 读取全文
+    return readLineRange(filePath, 1, -1);
 }
 
 // ============================================================================

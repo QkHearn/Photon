@@ -13,24 +13,25 @@ cd build
 > 帮我理解 src/core/main.cpp 的主要逻辑
 ```
 
-### 3. 观察 Agent 行为
+### 3. 观察工具行为
 你会看到：
 ```
-[Agent] 🔍 Intercepted file read: src/core/main.cpp
-[Agent] 🧠 Performing AST analysis...
-[Agent] ✅ Symbol summary injected (1234 chars)
+[ReadCodeBlock] Strategy: Generate symbol summary
 ```
 
 ### 4. LLM 看到的符号摘要
 ```
-📊 [Agent Analysis] File structure for `src/core/main.cpp`:
+📊 Symbol Summary for: src/core/main.cpp
 
 ### functions (12):
-  - main (lines 100-250) [tree-sitter]
-  - parseConfig (lines 50-80) [lsp]
+  - `main` - int main(int argc, char** argv) (lines 100-250) [tree-sitter]
+  - `parseConfig` (lines 50-80) [lsp]
   ...
 
-💡 You can now ask to see specific symbols.
+💡 **Next Steps**:
+  - Use `read_code_block` with `symbol_name` to view specific symbols
+  - Use `read_code_block` with `start_line`/`end_line` for specific ranges
+  - Use `semantic_search` to find code by concept or functionality
 ```
 
 ## 🎯 核心概念
@@ -41,28 +42,48 @@ You: "读取 main.cpp"
 LLM: [读取 1612 行，消耗 8000 tokens]
 ```
 
-### 智能体方式
+### 智能工具方式
 ```
 You: "读取 main.cpp"
-Agent: [拦截] → [AST 分析] → [注入符号摘要 20 行]
+LLM: [调用 read_code_block("main.cpp")]
+Tool: [检测到代码文件] → [返回符号摘要 20 行]
 LLM: [看到摘要] → "我想看 main 函数"
-Agent: [返回 main 函数的 150 行代码]
+LLM: [调用 read_code_block("main.cpp", symbol_name="main")]
+Tool: [返回 main 函数的 150 行代码]
 总 token: ~1000 (节省 87.5%)
 ```
 
 ## 🛠️ 可用工具
 
-### `view_symbol`
-查看文件中特定符号的代码。
+### `read_code_block` (智能模式)
+智能读取文件内容,根据参数自动选择最佳策略。
 
 **参数**:
-- `file_path`: 文件路径 (如 `"src/core/main.cpp"`)
-- `symbol_name`: 符号名称 (如 `"main"`, `"LLMClient"`)
+- `file_path`: 文件路径 (必需)
+- `symbol_name`: 符号名称 (可选) - 指定后只返回该符号的代码
+- `start_line`: 起始行号 (可选) - 与 end_line 配合使用
+- `end_line`: 结束行号 (可选) - 与 start_line 配合使用
 
-**示例**:
+**策略选择**:
+1. 无额外参数 + 代码文件 → 返回符号摘要
+2. 指定 `symbol_name` → 返回该符号的代码
+3. 指定 `start_line`/`end_line` → 返回指定行范围
+4. 其他情况 → 返回全文
+
+**示例 1: 获取符号摘要**
 ```json
 {
-  "tool": "view_symbol",
+  "tool": "read_code_block",
+  "args": {
+    "file_path": "src/core/main.cpp"
+  }
+}
+```
+
+**示例 2: 读取特定符号**
+```json
+{
+  "tool": "read_code_block",
   "args": {
     "file_path": "src/core/main.cpp",
     "symbol_name": "main"
@@ -70,14 +91,18 @@ Agent: [返回 main 函数的 150 行代码]
 }
 ```
 
-**返回**:
+**示例 3: 读取行范围**
+```json
+{
+  "tool": "read_code_block",
+  "args": {
+    "file_path": "src/core/main.cpp",
+    "start_line": 100,
+    "end_line": 250
+  }
+}
 ```
-Symbol: main
-Type: function
-Location: src/core/main.cpp:100-250
-Signature: int main(int argc, char** argv)
-Code: [函数完整代码]
-```
+
 
 ## 📊 支持的语言
 
@@ -163,12 +188,12 @@ Step 3: 深入理解具体代码
 
 ## 🔍 调试
 
-### 查看 Agent 日志
+### 查看工具日志
 ```
-[Agent] Planning...
-[Agent] 🔍 Intercepted file read: src/core/main.cpp
-[Agent] 🧠 Performing AST analysis...
-[Agent] ✅ Symbol summary injected (1234 chars)
+[ReadCodeBlock] Strategy: Generate symbol summary
+[ReadCodeBlock] Strategy: Read symbol 'main'
+[ReadCodeBlock] Strategy: Read line range 100-250
+[ReadCodeBlock] Strategy: Read full file
 ```
 
 ### 检查工具是否注册
@@ -176,11 +201,11 @@ Step 3: 深入理解具体代码
 > tools
 
 [Core Tools]
-- read_code_block
+- read_code_block     ← 智能模式,支持符号摘要
+- semantic_search     ← 语义搜索
 - apply_patch
 - run_command
 - list_project_files
-- view_symbol  ← 新工具
 ```
 
 ### 验证 AST 引擎
@@ -215,17 +240,31 @@ Step 3: 深入理解具体代码
 1. Tree-sitter 未启用 → 检查 `config.json`
 2. LSP 未运行 → 检查 `lspServers` 配置
 3. 文件扩展名不支持 → 添加对应的 LSP 或 Tree-sitter 支持
+4. 文件中没有符号 → 工具会自动降级到全文读取
 
-### 问题: view_symbol 找不到符号
+**解决方法**:
+- 检查日志中是否有 `[ReadCodeBlock] Strategy: Generate symbol summary`
+- 如果看到 `Symbol summary failed, fallback to full file`,说明符号提取失败
+
+### 问题: read_code_block 找不到符号
 **可能原因**:
-1. 符号名称错误 → 检查符号摘要中的准确名称
+1. 符号名称错误 → 先不带参数调用获取符号摘要,查看准确名称
 2. 文件路径错误 → 使用相对于项目根目录的路径
 3. AST 分析失败 → 检查文件语法是否正确
 
+**解决方法**:
+- 工具会返回可用符号列表作为建议
+- 检查符号名称是否与代码中完全一致(区分大小写)
+
 ### 问题: Token 没有节省
 **可能原因**:
-1. LLM 仍在调用 `read_file` 全文读取 → 引导 LLM 使用 `view_symbol`
-2. Agent 拦截失败 → 检查日志是否有 "Intercepted" 消息
+1. LLM 指定了行范围参数 → 工具会直接返回指定行,绕过符号摘要
+2. 文件不是代码文件 → 工具会返回全文
+3. 符号提取失败 → 工具会自动降级到全文读取
+
+**解决方法**:
+- 确保文件扩展名在支持列表中(`.cpp`, `.py`, `.ts` 等)
+- 检查日志确认使用了哪种策略
 
 ## 📚 更多资源
 

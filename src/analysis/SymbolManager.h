@@ -7,6 +7,7 @@
 #include <regex>
 #include <thread>
 #include <mutex>
+#include <shared_mutex>
 #include <memory>
 #include <atomic>
 #include <unordered_map>
@@ -48,6 +49,7 @@ public:
     void registerProvider(std::unique_ptr<ISymbolProvider> provider);
     void setFallbackOnEmpty(bool enabled) { fallbackOnEmpty = enabled; }
     void setLSPClients(const std::unordered_map<std::string, LSPClient*>& byExt, LSPClient* fallback);
+    void setIgnorePatterns(const std::vector<std::string>& patterns) { ignorePatterns = patterns; }
 
     // Start asynchronous full scan
     void startAsyncScan();
@@ -66,6 +68,9 @@ public:
 
     // Get all symbols in a specific file
     std::vector<Symbol> getFileSymbols(const std::string& relPath);
+    
+    // Try to get file symbols without blocking (returns false if lock unavailable)
+    bool tryGetFileSymbols(const std::string& relPath, std::vector<Symbol>& outSymbols);
 
     // Find the most specific symbol that encloses a line
     std::optional<Symbol> findEnclosingSymbol(const std::string& relPath, int line);
@@ -86,7 +91,7 @@ public:
 
     bool isScanning() const { return scanning; }
     size_t getSymbolCount() const { 
-        std::lock_guard<std::mutex> lock(mtx);
+        std::shared_lock<std::shared_mutex> lock(mtx);
         return symbols.size(); 
     }
     
@@ -104,10 +109,11 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> callGraphAdj;
     std::unordered_map<std::string, LSPClient*> lspByExtension;
     LSPClient* lspFallback = nullptr;
-    mutable std::mutex mtx;
+    mutable std::shared_mutex mtx;
     std::atomic<bool> scanning{false};
     std::thread scanThread;
     bool fallbackOnEmpty = false;
+    std::vector<std::string> ignorePatterns;
 
     // Real-time watching
     std::atomic<bool> watching{false};

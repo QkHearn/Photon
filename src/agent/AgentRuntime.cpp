@@ -128,10 +128,6 @@ void AgentRuntime::planPhase() {
         state.plannedActions.clear();
         if (message.contains("tool_calls") && !message["tool_calls"].is_null()) {
             for (auto& toolCall : message["tool_calls"]) {
-                // 🆕 拦截 read_file 请求,主动进行 AST 分析
-                if (symbolMgr) {
-                    interceptAndAnalyzeFileRead(toolCall);
-                }
                 // 🆕 拦截查询请求,主动进行语义搜索
                 if (semanticMgr) {
                     interceptAndEnhanceQuery(toolCall);
@@ -208,8 +204,27 @@ void AgentRuntime::actPhase() {
             toolResult["role"] = "tool";
             toolResult["tool_call_id"] = toolCall["id"];
             toolResult["name"] = toolName;
-            toolResult["content"] = result.dump();
+            
+            // 直接赋值 JSON 对象，不要序列化成字符串
+            std::cout << "[Agent] Tool result type: " << result.type_name() << std::endl;
+            
+            try {
+                if (result.contains("content")) {
+                    std::cout << "[Agent] Extracting result['content']" << std::endl;
+                    toolResult["content"] = result["content"];
+                } else {
+                    std::cout << "[Agent] Using full result" << std::endl;
+                    toolResult["content"] = result;
+                }
+                std::cout << "[Agent] Assignment OK" << std::endl;
+            } catch (const std::exception& e) {
+                std::cerr << "[Agent] Assignment failed: " << e.what() << std::endl;
+                toolResult["content"] = "Tool result assignment failed";
+            }
+            
+            std::cout << "[Agent] Pushing to messageHistory..." << std::endl;
             messageHistory.push_back(toolResult);
+            std::cout << "[Agent] Push OK, messageHistory size: " << messageHistory.size() << std::endl;
             
         } catch (const std::exception& e) {
             std::cerr << "[Agent]   ! Exception: " << e.what() << std::endl;

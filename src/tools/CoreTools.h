@@ -8,6 +8,8 @@ namespace fs = std::filesystem;
 
 // 前向声明
 class SkillManager;
+class SymbolManager;
+struct Symbol;
 
 // UTF-8 验证和清理辅助函数
 namespace UTF8Utils {
@@ -20,12 +22,15 @@ namespace UTF8Utils {
 /**
  * @brief 读取代码块工具
  * 
- * 极简设计: 只读取指定文件的指定行范围
- * 不包含任何智能判断 (符号查找、上下文窗口等由 Agent 决定)
+ * 智能设计: 根据参数自动选择最佳读取策略
+ * - 无参数 + 代码文件 → 返回符号摘要
+ * - 指定 symbol_name → 返回符号代码
+ * - 指定 start_line/end_line → 返回指定行
+ * - 其他情况 → 返回全文
  */
 class ReadCodeBlockTool : public ITool {
 public:
-    explicit ReadCodeBlockTool(const std::string& rootPath);
+    explicit ReadCodeBlockTool(const std::string& rootPath, SymbolManager* symbolMgr = nullptr, bool enableDebug = false);
     
     std::string getName() const override { return "read_code_block"; }
     std::string getDescription() const override;
@@ -34,6 +39,29 @@ public:
 
 private:
     fs::path rootPath;
+    SymbolManager* symbolMgr;
+    bool enableDebug;
+    
+    // 检查是否是代码文件
+    bool isCodeFile(const std::string& filePath) const;
+    
+    // 生成符号摘要
+    nlohmann::json generateSymbolSummary(const std::string& filePath);
+    
+    // 生成符号摘要（非阻塞版本）
+    nlohmann::json generateSymbolSummaryNonBlocking(const std::string& filePath);
+    
+    // 读取指定符号的代码
+    nlohmann::json readSymbolCode(const std::string& filePath, const std::string& symbolName);
+    
+    // 读取指定行范围
+    nlohmann::json readLineRange(const std::string& filePath, int startLine, int endLine);
+    
+    // 读取全文
+    nlohmann::json readFullFile(const std::string& filePath);
+    
+    // 临时提取符号(用于项目外文件)
+    std::vector<Symbol> extractSymbolsOnDemand(const fs::path& filePath);
 };
 
 /**

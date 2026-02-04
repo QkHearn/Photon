@@ -34,7 +34,7 @@
 // 新架构: Tools 层
 #include "tools/ToolRegistry.h"
 #include "tools/CoreTools.h"
-#include "tools/ViewSymbolTool.h"
+#include "tools/SemanticSearchTool.h"
 // Agent 层: Constitution 校验
 #include "agent/ConstitutionValidator.h"
 #ifdef PHOTON_ENABLE_TREESITTER
@@ -514,18 +514,20 @@ int main(int argc, char* argv[]) {
         if (argc >= 2) {
             path = argv[1];
         }
-        
-        // Check if config.json exists in current directory, if not try other locations
-        if (argc < 3) {
+
+        // 与改动前一致：只查 cwd、../、exe 同目录；若传了第二参数则用其作 config 路径
+        if (argc >= 3) {
+            configPath = argv[2];
+        } else {
             if (fs::exists(fs::u8path("config.json"))) {
                 configPath = "config.json";
             } else if (fs::exists(fs::u8path("../config.json"))) {
                 configPath = "../config.json";
+            } else if (argc >= 2 && fs::exists(fs::u8path(path) / "config.json")) {
+                configPath = (fs::path(path) / "config.json").u8string();
             } else if (!exeDir.empty() && fs::exists(exeDir / "config.json")) {
                 configPath = (exeDir / "config.json").u8string();
             }
-        } else {
-            configPath = argv[2];
         }
 
     Config cfg;
@@ -610,6 +612,11 @@ int main(int argc, char* argv[]) {
     SymbolManager symbolManager(path);
     symbolManager.setFallbackOnEmpty(cfg.agent.symbolFallbackOnEmpty);
     
+    // 设置符号扫描忽略模式
+    if (!cfg.agent.symbolIgnorePatterns.empty()) {
+        symbolManager.setIgnorePatterns(cfg.agent.symbolIgnorePatterns);
+    }
+    
     // Initialize Semantic Manager
     auto semanticManager = std::make_shared<SemanticManager>(path, llmClient);
     
@@ -627,6 +634,18 @@ int main(int argc, char* argv[]) {
     }
 #endif
     symbolManager.registerProvider(std::make_unique<RegexSymbolProvider>());
+    
+    // 启动时阻塞构建索引
+    std::cout << "[Init] Building symbol index..." << std::endl;
+    symbolManager.startAsyncScan();
+    while (symbolManager.isScanning()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    std::cout << "[Init] Symbol index ready: " << symbolManager.getSymbolCount() << " symbols" << std::endl;
+    
+    // 启动文件监听
+    symbolManager.startWatching(5);
+    
     semanticManager->startAsyncIndexing();
 
     // Initialize LSP clients (Parallel initialization)
@@ -645,6 +664,13 @@ int main(int argc, char* argv[]) {
     };
 
     auto lspInitFuture = std::async(std::launch::async, [&]() -> LspInitResult {
+        LspInitResult result;
+        
+        // 如果 LSP 被禁用，直接返回空结果
+        if (!cfg.agent.enableLSP) {
+            return result;
+        }
+        
         std::vector<Config::Agent::LSPServer> merged = cfg.agent.lspServers;
         std::unordered_set<std::string> seen;
         for (const auto& s : merged) seen.insert(s.command);
@@ -689,7 +715,6 @@ int main(int argc, char* argv[]) {
             }));
         }
 
-        LspInitResult result;
         for (auto& f : lspFutures) {
             auto item = f.get();
             if (item.ok) {
@@ -707,11 +732,11 @@ int main(int argc, char* argv[]) {
     
     // 注册核心工具
     std::cout << CYAN << "  → Registering core tools..." << RESET << std::endl;
-    toolRegistry.registerTool(std::make_unique<ReadCodeBlockTool>(path));
+    toolRegistry.registerTool(std::make_unique<ReadCodeBlockTool>(path, &symbolManager, cfg.agent.enableDebug));
     toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path));
     toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
-    toolRegistry.registerTool(std::make_unique<ViewSymbolTool>(&symbolManager));
+    toolRegistry.registerTool(std::make_unique<SemanticSearchTool>(semanticManager.get()));
     
     std::cout << GREEN << "  ✔ Registered " << toolRegistry.getToolCount() << " core tools" << RESET << std::endl;
 
@@ -969,11 +994,11 @@ int main(int argc, char* argv[]) {
             //     if (!lspClients.empty()) builtin->setLSPClients(lspByExt, lspFallback);
             // }
 
+            // 设置 LSP 客户端（扫描已经在启动时开始了）
             symbolManager.setLSPClients(lspByExt, lspFallback);
-            symbolManager.startAsyncScan();
-            symbolManager.startWatching(5);
             
-            std::cout << "                                        \r" << std::flush;
+            // 清除初始化提示（使用足够长的空格并换行）
+            std::cout << "\r" << std::string(60, ' ') << "\r" << std::flush;
             engineInitialized = true;
         }
         
@@ -1515,11 +1540,19 @@ int main(int argc, char* argv[]) {
 
                             if (result.contains("error")) {
                                 Logger::getInstance().error("Tool " + toolName + " failed: " + result["error"].get<std::string>());
-                                Logger::getInstance().error("Tool " + toolName + " args: " + args.dump());
-                                Logger::getInstance().error("Tool " + toolName + " result: " + result.dump());
+                                try {
+                                    Logger::getInstance().error("Tool " + toolName + " args: " + args.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+                                    Logger::getInstance().error("Tool " + toolName + " result: " + result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+                                } catch (...) {
+                                    Logger::getInstance().error("Tool " + toolName + " - failed to serialize args/result");
+                                }
                             } else if (result.is_null() || (result.is_object() && result.empty())) {
                                 Logger::getInstance().warn("Tool " + toolName + " returned empty result.");
-                                Logger::getInstance().warn("Tool " + toolName + " args: " + args.dump());
+                                try {
+                                    Logger::getInstance().warn("Tool " + toolName + " args: " + args.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+                                } catch (...) {
+                                    Logger::getInstance().warn("Tool " + toolName + " - failed to serialize args");
+                                }
                             }
                             
                             if ((toolName == "read" || toolName.rfind("read_", 0) == 0) && !result.contains("error")) {
@@ -1538,23 +1571,39 @@ int main(int argc, char* argv[]) {
                             }
 
                             // Add tool result to messages
-                            // 处理不同的结果格式
-                            std::string contentStr;
-                            if (result.contains("content") && result["content"].is_array() && !result["content"].empty()) {
-                                // MCP 格式: {"content": [{"type": "text", "text": "..."}]}
-                                contentStr = result["content"][0]["text"].get<std::string>();
-                            } else if (result.contains("error")) {
-                                // 错误格式
-                                contentStr = result.dump();
-                            } else {
-                                // 其他格式,直接序列化
-                                contentStr = result.dump();
+                            // Kimi 要求 content 为 []object，即 [{"type":"text","text":"..."}]
+                            std::string textContent;
+                            try {
+                                if (result.contains("content") && result["content"].is_array() && !result["content"].empty()) {
+                                    const auto& first = result["content"][0];
+                                    if (first.contains("text") && first["text"].is_string()) {
+                                        textContent = first["text"].get<std::string>();
+                                    } else {
+                                        textContent = first.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                                    }
+                                } else if (result.contains("error")) {
+                                    textContent = result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                                } else {
+                                    textContent = result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                                }
+                            } catch (const std::exception& e) {
+                                textContent = "[Tool result serialization failed: invalid UTF-8]";
                             }
+                            
+                            if (cfg.agent.enableDebug) {
+                                size_t preview = std::min(textContent.size(), size_t(800));
+                                std::cout << "[Debug] Tool result to model (length=" << textContent.size() << ", preview " << preview << " chars):\n---\n"
+                                          << textContent.substr(0, preview) << (textContent.size() > preview ? "\n..." : "") << "\n---\n" << std::endl;
+                            }
+                            
+                            nlohmann::json contentArray = nlohmann::json::array({
+                                nlohmann::json::object({{"type", "text"}, {"text", textContent}})
+                            });
                             
                             messages.push_back({
                                 {"role", "tool"},
                                 {"tool_call_id", toolCall["id"]},
-                                {"content", contentStr}
+                                {"content", contentArray}
                             });
                         }
                 }

@@ -60,11 +60,8 @@ std::string LLMClient::chat(const std::string& prompt, const std::string& system
 // ---------------------------------------------------------------------------
 // LLM Request Adapter: normalizeForKimi
 // ---------------------------------------------------------------------------
-// Design (not workaround): Kimi Chat API has response/request schema inconsistency:
-// - Response: assistant message "content" may be array, e.g. [{"type":"text","text":"..."}]
-// - Request:  "content" must be string; array is rejected (invalid_request_error).
-// Photon normalizes messages before every send so the request is valid.
-// See docs/llm-adapters.md for full rationale and behavior.
+// Kimi 要求 messages[].content 为 []object，即 [{"type":"text","text":"..."}]，
+// 不能是 string 或裸 object。此处统一成数组格式。
 // ---------------------------------------------------------------------------
 static nlohmann::json normalizeForKimi(const nlohmann::json& messages) {
     if (!messages.is_array()) return messages;
@@ -72,20 +69,18 @@ static nlohmann::json normalizeForKimi(const nlohmann::json& messages) {
     for (const auto& msg : messages) {
         if (!msg.is_object()) continue;
         nlohmann::json m = msg;
-        // assistant (and any role): content must be string for request
         if (m.contains("content")) {
-            if (m["content"].is_null())
-                m["content"] = "";
-            else if (m["content"].is_array()) {
-                std::string flat;
-                for (const auto& part : m["content"]) {
-                    if (part.is_object() && part.contains("text") && part["text"].is_string())
-                        flat += part["text"].get<std::string>();
-                }
-                m["content"] = flat.empty() ? "" : flat;
+            if (m["content"].is_null()) {
+                m["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", ""}})});
+            } else if (m["content"].is_string()) {
+                m["content"] = nlohmann::json::array({
+                    nlohmann::json::object({{"type", "text"}, {"text", m["content"].get<std::string>()}})
+                });
+            } else if (!m["content"].is_array() || m["content"].empty()) {
+                m["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", ""}})});
             }
+            // 已是 array 则保持不动（含 [{"type":"text","text":"..."}]）
         }
-        // tool: Kimi may reject "name" in request; keep only role, tool_call_id, content
         if (m.contains("role") && m["role"] == "tool" && m.contains("name"))
             m.erase("name");
         out.push_back(m);
@@ -109,7 +104,7 @@ nlohmann::json LLMClient::chatWithTools(const nlohmann::json& messages, const nl
     }
 
     std::string endpoint = pathPrefix + "/chat/completions";
-    std::string bodyStr = body.dump();
+    std::string bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
     httplib::Result res;
     int retryCount = 0;
@@ -174,7 +169,7 @@ std::vector<float> LLMClient::getEmbedding(const std::string& text) {
     };
 
     std::string endpoint = pathPrefix + "/embeddings";
-    std::string bodyStr = body.dump();
+    std::string bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
     httplib::Result res;
     try {

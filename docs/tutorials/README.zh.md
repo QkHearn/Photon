@@ -21,7 +21,7 @@
 ---
 
 <p align="center">
-  <img src="./demo.png" width="600" alt="Photon 演示">
+  <img src="../../demo.png" width="600" alt="Photon 演示">
 </p>
 
 ---
@@ -151,7 +151,7 @@ chmod +x photon
 ---
 
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.zh.md">中文</a> | <a href="README.jp.md">日本語</a>
+  <a href="../../README.md">English</a> | <a href="README.zh.md">中文</a> | <a href="README.jp.md">日本語</a>
 </p>
 
 <p align="center">

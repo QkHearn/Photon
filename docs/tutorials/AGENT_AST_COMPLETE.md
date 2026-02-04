@@ -86,8 +86,6 @@ toolRegistry.registerTool(std::make_unique<ViewSymbolTool>(&symbolManager));
 │    ### functions (12):                          │
 │      - main (lines 100-250) [tree-sitter]       │
 │      - parseConfig (lines 50-80) [lsp]          │
-│    ### classes (3):                             │
-│      - LLMClient (lines 300-500) [lsp]          │
 └─────────────────┬───────────────────────────────┘
                   ↓
 ┌─────────────────────────────────────────────────┐

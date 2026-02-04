@@ -627,17 +627,17 @@ public:
 ```cmake
 # 更新源文件列表
 set(SOURCES
-    src/core/main.cpp
-    src/core/LLMClient.cpp
-    src/core/ContextManager.cpp
-    src/agent/AgentRuntime.cpp
-    src/agent/PromptAssembler.cpp
-    src/tools/ToolRegistry.cpp
-    src/tools/CoreTools.cpp
-    src/memory/MemoryManager.cpp
-    src/analysis/SymbolManager.cpp
-    src/analysis/LSPClient.cpp
-    # ...
+        ../../src/core/main.cpp
+        ../../src/core/LLMClient.cpp
+        ../../src/core/ContextManager.cpp
+        ../../src/agent/AgentRuntime.cpp
+        src/agent/PromptAssembler.cpp
+        ../../src/tools/ToolRegistry.cpp
+        ../../src/tools/CoreTools.cpp
+        ../../src/memory/MemoryManager.cpp
+        ../../src/analysis/SymbolManager.cpp
+        ../../src/analysis/LSPClient.cpp
+        # ...
 )
 ```
 
