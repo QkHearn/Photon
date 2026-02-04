@@ -1,6 +1,6 @@
 {
   "llm": {
-    "api_key": "sk-SXprMLe0hZFGovhuMnM4jrSm5AGTUpDNkm1wh0lVeS4yETFE",
+    "api_key": "",
     "base_url": "https://api.moonshot.cn/v1",
     "model": "kimi-k2-0905-preview",
     "system_role": "Project context: C++ codebase with CMake build system. Primary languages: C++17, Python. LSP servers available for navigation."
