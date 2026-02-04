@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #ifdef _WIN32
+    #define NOMINMAX  // prevent windows.h from defining min/max macros (breaks std::min/std::max)
     #include <winsock2.h>
 #endif
 // FileManager.h 已删除,功能由 CoreTools 提供
