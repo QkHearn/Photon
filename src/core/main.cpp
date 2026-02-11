@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <filesystem>
 #ifdef _WIN32
     #define NOMINMAX  // prevent windows.h from defining min/max macros (breaks std::min/std::max)
     #include <winsock2.h>
@@ -64,6 +65,36 @@ const std::string GOLD = "\033[38;5;220m";
 
 // 全局变量用于存储 Git 状态
 bool g_hasGit = false;
+
+// Windows兼容的Git检测函数
+bool checkGitAvailable() {
+#ifdef _WIN32
+    // Windows: 首先检查git命令是否存在
+    std::string gitPath = findExecutableInPath({"git"});
+    if (gitPath.empty()) {
+        std::cout << YELLOW << "  ⚠ Git command not found in PATH" << RESET << std::endl;
+        std::cout << GRAY << "    - Run 'where git' to check Git location" << RESET << std::endl;
+        std::cout << GRAY << "    - Make sure Git is installed and added to PATH" << RESET << std::endl;
+        return false;
+    }
+    
+    std::cout << GRAY << "  Git found at: " << gitPath << RESET << std::endl;
+    
+    // 检查是否在git仓库中
+    int result = system("git rev-parse --is-inside-work-tree >nul 2>nul");
+    if (result != 0) {
+        std::cout << YELLOW << "  ⚠ Git command found but not in a Git repository" << RESET << std::endl;
+        std::cout << GRAY << "    - Current directory: " << fs::current_path().u8string() << RESET << std::endl;
+        std::cout << GRAY << "    - Run 'git init' to initialize a repository" << RESET << std::endl;
+        return false;
+    }
+    
+    return true;
+#else
+    // Unix/Linux/macOS: 使用原始命令
+    return (system("git rev-parse --is-inside-work-tree >/dev/null 2>&1") == 0);
+#endif
+}
 
 std::string findExecutableInPath(const std::vector<std::string>& names) {
     const char* pathEnv = std::getenv("PATH");
@@ -466,6 +497,9 @@ int main(int argc, char* argv[]) {
     // Force UTF-8 encoding for Windows terminal
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
+    
+    // 设置Git命令环境
+    _putenv("GIT_TERMINAL_PROMPT=0");  // 禁用Git交互式提示
 
     // Enable Virtual Terminal Processing for ANSI colors on Windows 10+
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -490,7 +524,7 @@ int main(int argc, char* argv[]) {
     UIManager::getInstance().setMode(UIManager::Mode::CLI);
 
     // 全局 Git 状态检测
-    g_hasGit = (system("git rev-parse --is-inside-work-tree >/dev/null 2>&1") == 0);
+    g_hasGit = checkGitAvailable();
     if (g_hasGit) {
         std::cout << GRAY << "  (Git environment detected, using Git for version control)" << RESET << std::endl;
     } else {
@@ -751,7 +785,7 @@ int main(int argc, char* argv[]) {
     // 注册核心工具
     std::cout << CYAN << "  → Registering core tools..." << RESET << std::endl;
     toolRegistry.registerTool(std::make_unique<ReadCodeBlockTool>(path, &symbolManager, cfg.agent.enableDebug));
-    toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path));
+    toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path, g_hasGit));  // 统一补丁工具：只接受 unified diff
     toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
     
@@ -771,8 +805,7 @@ int main(int argc, char* argv[]) {
         std::string toolName = mcpTool.value("name", "");
         if (toolName != "read" && toolName != "write" && 
             toolName != "file_read" && toolName != "file_write" &&
-            toolName != "bash_execute" && toolName != "list_dir_tree" &&
-            toolName != "semantic_search") {
+            toolName != "bash_execute" && toolName != "list_dir_tree") {
             // 转换 MCP 工具格式
             nlohmann::json tool;
             tool["type"] = "function";
@@ -968,16 +1001,28 @@ int main(int argc, char* argv[]) {
         if (g_hasGit) {
             char buffer[128];
             std::string branch = "";
+#ifdef _WIN32
+            FILE* pipe = _popen("git rev-parse --abbrev-ref HEAD 2>nul", "r");
+#else
             FILE* pipe = popen("git rev-parse --abbrev-ref HEAD 2>/dev/null", "r");
+#endif
             if (pipe) {
                 if (fgets(buffer, sizeof(buffer), pipe)) {
                     branch = buffer;
                     if (!branch.empty() && branch.back() == '\n') branch.pop_back();
                 }
+#ifdef _WIN32
+                _pclose(pipe);
+#else
                 pclose(pipe);
+#endif
             }
             
+#ifdef _WIN32
+            bool isDirty = (system("git diff --quiet 2>nul") != 0);
+#else
             bool isDirty = (system("git diff --quiet 2>/dev/null") != 0);
+#endif
             if (!branch.empty()) {
                 gitStatusLine = GRAY + "(" + BLUE + branch + (isDirty ? YELLOW + "*" : "") + GRAY + ") " + RESET;
             }
@@ -1158,6 +1203,59 @@ int main(int argc, char* argv[]) {
         }
 
         if (userInput == "undo") {
+            // 优先：撤销最近一次 apply_patch 的 unified diff（如果存在）
+            try {
+                fs::path absolutePath = fs::absolute(fs::u8path(path));
+                fs::path lastPatchPath = absolutePath / ".photon" / "patches" / "last.patch";
+                if (g_hasGit && fs::exists(lastPatchPath) && fs::is_regular_file(lastPatchPath)) {
+                    std::cout << YELLOW << BOLD << "Reverting last patch: " << RESET << lastPatchPath.u8string() << std::endl;
+
+                    while (true) {
+                        std::cout << "\n " << YELLOW << BOLD << "⚠  UNDO PATCH CONFIRMATION" << RESET << std::endl;
+                        std::cout << GRAY << "   Action: " << RESET << "git apply -R last.patch" << std::endl;
+                        std::cout << "   " << BOLD << "[y]" << RESET << " Yes  "
+                                  << BOLD << "[n]" << RESET << " No  "
+                                  << BOLD << "[v]" << RESET << " View Patch" << std::endl;
+                        std::cout << " " << CYAN << BOLD << "❯ " << RESET << std::flush;
+
+                        std::string confirm;
+                        std::getline(std::cin, confirm);
+                        std::transform(confirm.begin(), confirm.end(), confirm.begin(), ::tolower);
+
+                        if (confirm == "v") {
+#ifdef _WIN32
+                            system(("git apply --stat \"" + lastPatchPath.u8string() + "\" >nul 2>nul").c_str());
+#else
+                            system(("git apply --stat \"" + lastPatchPath.u8string() + "\" 2>/dev/null || true").c_str());
+#endif
+                            continue;
+                        }
+
+                        if (confirm == "y" || confirm == "yes") {
+#ifdef _WIN32
+                            int rc = system(("git apply -R \"" + lastPatchPath.u8string() + "\" >nul 2>nul").c_str());
+#else
+                            int rc = system(("git apply -R \"" + lastPatchPath.u8string() + "\" 2>/dev/null").c_str());
+#endif
+                            if (rc == 0) {
+                                // 清理 last.patch 元信息，避免重复撤销
+                                std::error_code ec;
+                                fs::remove(lastPatchPath, ec);
+                                fs::remove(absolutePath / ".photon" / "patches" / "last_patch.json", ec);
+                                std::cout << GREEN << "✔ Successfully reverted last patch via Git." << RESET << std::endl;
+                            } else {
+                                std::cout << RED << "✖ Patch undo failed (git apply -R). Falling back to file undo..." << RESET << std::endl;
+                            }
+                        } else {
+                            std::cout << GRAY << "Undo cancelled." << RESET << std::endl;
+                        }
+                        break;
+                    }
+
+                    // 无论是否成功，都继续走后续 file undo（若补丁撤销成功，此处一般无改动）
+                }
+            } catch (...) {}
+
             std::string lastFile = mcpManager.getLastModifiedFile("builtin");
             if (lastFile.empty()) {
                 std::cout << YELLOW << "⚠ No recent file modifications recorded." << RESET << std::endl;
@@ -1165,7 +1263,11 @@ int main(int argc, char* argv[]) {
                 // 1. 根据全局状态决定回退策略
                 bool useGit = false;
                 if (g_hasGit) {
+#ifdef _WIN32
+                    std::string gitCheckCmd = "git ls-files --error-unmatch \"" + lastFile + "\" 2>nul";
+#else
                     std::string gitCheckCmd = "git ls-files --error-unmatch \"" + lastFile + "\" 2>/dev/null";
+#endif
                     useGit = (system(gitCheckCmd.c_str()) == 0);
                 }
 
@@ -1199,7 +1301,11 @@ int main(int argc, char* argv[]) {
 
                 // 预览逻辑
                 if (useGit) {
+#ifdef _WIN32
                     system(("git diff --color=always \"" + lastFile + "\"").c_str());
+#else
+                    system(("git diff --color=always \"" + lastFile + "\"").c_str());
+#endif
                 } else {
                     std::ifstream bFile(backupPath);
                     std::string bContent((std::istreambuf_iterator<char>(bFile)), std::istreambuf_iterator<char>());
@@ -1221,7 +1327,11 @@ int main(int argc, char* argv[]) {
                     
                     if (confirm == "v") {
                         if (useGit) {
+#ifdef _WIN32
                             system(("git diff --color=always \"" + lastFile + "\"").c_str());
+#else
+                            system(("git diff --color=always \"" + lastFile + "\"").c_str());
+#endif
                         } else {
                             std::ifstream bFile(backupPath);
                             std::string bContent((std::istreambuf_iterator<char>(bFile)), std::istreambuf_iterator<char>());
@@ -1233,7 +1343,11 @@ int main(int argc, char* argv[]) {
                     if (confirm == "y" || confirm == "yes") {
                         bool success = false;
                         if (useGit) {
+#ifdef _WIN32
+                            success = (system(("git checkout -- \"" + lastFile + "\"").c_str()) == 0);
+#else
                             success = (system(("git restore \"" + lastFile + "\"").c_str()) == 0);
+#endif
                             if (success) std::cout << GREEN << "✔ Successfully restored via Git." << RESET << std::endl;
                         } 
                         

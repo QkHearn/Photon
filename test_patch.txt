@@ -1,4 +1,0 @@
-line 1: Hello World
-line 2: This is a test
-line 3: Git integration test
-line 4: End of file

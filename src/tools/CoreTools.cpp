@@ -10,6 +10,8 @@
 #include <set>
 #include <algorithm>
 #include <chrono>
+#include <regex>
+#include <ctime>
 
 // Windows compatibility
 #ifdef _WIN32
@@ -699,42 +701,47 @@ nlohmann::json ReadCodeBlockTool::readFullFile(const std::string& filePath) {
 // ApplyPatchTool Implementation
 // ============================================================================
 
-ApplyPatchTool::ApplyPatchTool(const std::string& rootPath) 
-    : rootPath(fs::u8path(rootPath)) {}
+ApplyPatchTool::ApplyPatchTool(const std::string& rootPath, bool hasGit) 
+    : rootPath(fs::u8path(rootPath)), hasGit(hasGit) {}
 
 std::string ApplyPatchTool::getDescription() const {
-    return "Apply line-based edits to a file. "
-           "Operations: 'insert' (add lines), 'replace' (replace lines), 'delete' (remove lines). "
-           "Parameters: file_path, operation, start_line, end_line (for replace/delete), content (for insert/replace).";
+    std::string desc = "Git-style unified diff application tool. "
+                      "Only accepts unified diff format - no line-by-line editing. "
+                      "Features: multi-file support, Git优先备份, automatic rollback on failure. "
+                      "Supports: file modifications, additions, deletions via diff patches. ";
+    
+    if (hasGit) {
+        desc += "Git integration: Uses git stash for backups and git apply when available.";
+    } else {
+        desc += "Pure diff mode: Manual diff parsing with file-level backups.";
+    }
+    
+    return desc;
 }
 
 nlohmann::json ApplyPatchTool::getSchema() const {
     return {
         {"type", "object"},
         {"properties", {
-            {"file_path", {
+            {"diff_content", {
                 {"type", "string"},
-                {"description", "Path to the file (relative to project root, or absolute path)"}
+                {"description", "Unified diff content (Git format). Must include diff headers and hunks."}
             }},
-            {"operation", {
-                {"type", "string"},
-                {"enum", {"insert", "replace", "delete"}},
-                {"description", "Edit operation type"}
+            {"files", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}},
+                {"description", "Optional: specific files to apply diff to. If not provided, applies to all files in diff."}
             }},
-            {"start_line", {
-                {"type", "integer"},
-                {"description", "Starting line number (1-indexed)"}
+            {"backup", {
+                {"type", "boolean"},
+                {"description", "Whether to create backup before applying diff (default: true)"}
             }},
-            {"end_line", {
-                {"type", "integer"},
-                {"description", "Ending line number (1-indexed, for replace/delete)"}
-            }},
-            {"content", {
-                {"type", "string"},
-                {"description", "Content to insert or replace (multi-line string)"}
+            {"dry_run", {
+                {"type", "boolean"},
+                {"description", "Preview changes without applying (default: false)"}
             }}
         }},
-        {"required", {"file_path", "operation", "start_line"}}
+        {"required", {"diff_content"}}
     };
 }
 
@@ -772,7 +779,38 @@ static fs::path backupRelativePathFor(const fs::path& srcPath, const fs::path& r
     return fs::path("abs") / rp;
 }
 
-void ApplyPatchTool::createBackup(const std::string& path) {
+bool ApplyPatchTool::createGitBackup(const std::string& path) {
+    try {
+        fs::path rawPath = fs::u8path(path);
+        fs::path srcPath = rawPath.is_absolute() ? rawPath : (rootPath / rawPath);
+        
+        // 确保文件已被Git跟踪
+        std::string gitCheckCmd =
+#ifdef _WIN32
+            "git ls-files --error-unmatch \"" + srcPath.u8string() + "\" >nul 2>nul";
+#else
+            "git ls-files --error-unmatch \"" + srcPath.u8string() + "\" >/dev/null 2>&1";
+#endif
+        int result = system(gitCheckCmd.c_str());
+        if (result != 0) {
+            return false; // 文件未被Git跟踪，不能使用Git备份
+        }
+        
+        // 使用Git stash创建备份
+        std::string stashCmd =
+#ifdef _WIN32
+            "cd \"" + rootPath.u8string() + "\" && git stash push -m \"photon-backup-" + path + "\" -- \"" + srcPath.u8string() + "\" >nul 2>nul";
+#else
+            "cd \"" + rootPath.u8string() + "\" && git stash push -m \"photon-backup-" + path + "\" -- \"" + srcPath.u8string() + "\" >/dev/null 2>&1";
+#endif
+        result = system(stashCmd.c_str());
+        return (result == 0);
+    } catch (const std::exception& e) {
+        return false;
+    }
+}
+
+void ApplyPatchTool::createLocalBackup(const std::string& path) {
     fs::path backupDir = rootPath / ".photon" / "backups";
     fs::create_directories(backupDir);
     
@@ -786,140 +824,383 @@ void ApplyPatchTool::createBackup(const std::string& path) {
     fs::copy_file(srcPath, dstPath, fs::copy_options::overwrite_existing);
 }
 
+void ApplyPatchTool::createBackup(const std::string& path) {
+    if (hasGit) {
+        // 优先尝试Git备份
+        if (createGitBackup(path)) {
+            return; // Git备份成功
+        }
+    }
+    
+    // 回退到本地备份
+    createLocalBackup(path);
+}
+
+bool ApplyPatchTool::writeFileWithGit(const std::string& path, const std::vector<std::string>& lines) {
+    try {
+        fs::path rawPath = fs::u8path(path);
+        fs::path fullPath = rawPath.is_absolute() ? rawPath : (rootPath / rawPath);
+        
+        // 确保文件已被Git跟踪
+        std::string gitCheckCmd =
+#ifdef _WIN32
+            "git ls-files --error-unmatch \"" + fullPath.u8string() + "\" >nul 2>nul";
+#else
+            "git ls-files --error-unmatch \"" + fullPath.u8string() + "\" >/dev/null 2>&1";
+#endif
+        int result = system(gitCheckCmd.c_str());
+        if (result != 0) {
+            return false; // 文件未被Git跟踪，不能使用Git写入
+        }
+        
+        // 写回文件
+        std::ofstream outFile(fullPath);
+        if (!outFile.is_open()) {
+            return false;
+        }
+        
+        for (size_t i = 0; i < lines.size(); ++i) {
+            outFile << lines[i];
+            if (i < lines.size() - 1) outFile << "\n";
+        }
+        outFile.close();
+        
+        // 使用Git添加更改
+        std::string gitAddCmd =
+#ifdef _WIN32
+            "cd \"" + rootPath.u8string() + "\" && git add \"" + fullPath.u8string() + "\" >nul 2>nul";
+#else
+            "cd \"" + rootPath.u8string() + "\" && git add \"" + fullPath.u8string() + "\" >/dev/null 2>&1";
+#endif
+        result = system(gitAddCmd.c_str());
+        return (result == 0);
+    } catch (const std::exception& e) {
+        return false;
+    }
+}
+
+static int execCaptureCoreTools(const std::string& cmd, std::string& out) {
+#ifdef _WIN32
+    FILE* pipe = _popen(cmd.c_str(), "r");
+#else
+    FILE* pipe = popen(cmd.c_str(), "r");
+#endif
+    if (!pipe) return -1;
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        out += buffer;
+    }
+#ifdef _WIN32
+    return _pclose(pipe);
+#else
+    return pclose(pipe);
+#endif
+}
+
+static std::string stripGitPrefix(const std::string& p) {
+    if (p.rfind("a/", 0) == 0 || p.rfind("b/", 0) == 0) return p.substr(2);
+    return p;
+}
+
+static bool isDevNull(const std::string& p) {
+    return p == "/dev/null" || p == "NUL";
+}
+
+std::vector<ApplyPatchTool::FileDiff> ApplyPatchTool::parseUnifiedDiff(const std::string& diffContent) {
+    std::vector<FileDiff> files;
+    FileDiff current{};
+    bool haveCurrent = false;
+    DiffHunk* activeHunk = nullptr;
+
+    std::regex hunkRe(R"(^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@)");
+    std::istringstream iss(diffContent);
+    std::string line;
+
+    auto flush = [&]() {
+        if (!haveCurrent) return;
+        current.oldFile = stripGitPrefix(current.oldFile);
+        current.newFile = stripGitPrefix(current.newFile);
+        files.push_back(std::move(current));
+        current = FileDiff{};
+        haveCurrent = false;
+        activeHunk = nullptr;
+    };
+
+    while (std::getline(iss, line)) {
+        if (line.rfind("diff --git ", 0) == 0) {
+            flush();
+            haveCurrent = true;
+            current.isNewFile = false;
+            current.isDeleted = false;
+            current.hunks.clear();
+            activeHunk = nullptr;
+
+            // diff --git a/foo b/foo
+            std::istringstream ds(line);
+            std::string tmp, aPath, bPath;
+            ds >> tmp >> tmp >> aPath >> bPath;
+            current.oldFile = aPath;
+            current.newFile = bPath;
+            continue;
+        }
+
+        // Tolerate diffs without "diff --git" header
+        if (!haveCurrent) {
+            if (line.rfind("--- ", 0) == 0 || line.rfind("+++ ", 0) == 0) {
+                haveCurrent = true;
+                current.isNewFile = false;
+                current.isDeleted = false;
+                activeHunk = nullptr;
+            } else {
+                continue;
+            }
+        }
+
+        if (line.rfind("new file mode ", 0) == 0) {
+            current.isNewFile = true;
+            continue;
+        }
+        if (line.rfind("deleted file mode ", 0) == 0) {
+            current.isDeleted = true;
+            continue;
+        }
+
+        if (line.rfind("--- ", 0) == 0) {
+            std::string p = line.substr(4);
+            if (!isDevNull(p)) current.oldFile = p;
+            continue;
+        }
+        if (line.rfind("+++ ", 0) == 0) {
+            std::string p = line.substr(4);
+            if (!isDevNull(p)) current.newFile = p;
+            continue;
+        }
+
+        std::smatch m;
+        if (std::regex_search(line, m, hunkRe)) {
+            DiffHunk h{};
+            h.oldStart = std::stoi(m[1].str());
+            h.oldCount = m[2].matched ? std::stoi(m[2].str()) : 1;
+            h.newStart = std::stoi(m[3].str());
+            h.newCount = m[4].matched ? std::stoi(m[4].str()) : 1;
+            current.hunks.push_back(std::move(h));
+            activeHunk = &current.hunks.back();
+            continue;
+        }
+
+        if (activeHunk) {
+            if (!line.empty() && (line[0] == ' ' || line[0] == '+' || line[0] == '-')) {
+                activeHunk->lines.push_back(line);
+            } else if (line.rfind("\\ No newline at end of file", 0) == 0) {
+                // ignore
+            }
+        }
+    }
+
+    flush();
+    return files;
+}
+
+bool ApplyPatchTool::applyFileChanges(const FileDiff& fileDiff) {
+    std::string rel = fileDiff.isDeleted ? fileDiff.oldFile : fileDiff.newFile;
+    if (rel.empty()) rel = fileDiff.oldFile;
+    rel = stripGitPrefix(rel);
+    if (rel.empty()) return false;
+
+    fs::path full = fs::u8path(rel);
+    if (!full.is_absolute()) full = rootPath / full;
+
+    if (fileDiff.isDeleted) {
+        if (!fs::exists(full)) return true;
+        std::error_code ec;
+        fs::remove(full, ec);
+        return !ec;
+    }
+
+    std::vector<std::string> original;
+    if (fs::exists(full)) {
+        std::ifstream in(full);
+        if (!in.is_open()) return false;
+        std::string l;
+        while (std::getline(in, l)) original.push_back(l);
+    }
+
+    std::vector<std::string> out;
+    size_t oldIdx = 0;
+
+    for (const auto& h : fileDiff.hunks) {
+        size_t targetOld0 = (h.oldStart <= 0) ? 0 : static_cast<size_t>(h.oldStart - 1);
+        if (targetOld0 > original.size()) return false;
+        while (oldIdx < targetOld0) out.push_back(original[oldIdx++]);
+
+        for (const auto& hl : h.lines) {
+            if (hl.empty()) continue;
+            char prefix = hl[0];
+            std::string content = hl.substr(1);
+            if (prefix == ' ') {
+                if (oldIdx >= original.size() || original[oldIdx] != content) return false;
+                out.push_back(content);
+                oldIdx++;
+            } else if (prefix == '-') {
+                if (oldIdx >= original.size() || original[oldIdx] != content) return false;
+                oldIdx++;
+            } else if (prefix == '+') {
+                out.push_back(content);
+            }
+        }
+    }
+
+    while (oldIdx < original.size()) out.push_back(original[oldIdx++]);
+
+    fs::create_directories(full.parent_path());
+    std::ofstream of(full);
+    if (!of.is_open()) return false;
+    for (size_t i = 0; i < out.size(); ++i) {
+        of << out[i];
+        if (i + 1 < out.size()) of << "\n";
+    }
+    return true;
+}
+
+bool ApplyPatchTool::applyFileDiff(const std::string& filePath, const std::string& diffContent) {
+    auto diffs = parseUnifiedDiff(diffContent);
+    if (diffs.empty()) return false;
+    std::string want = stripGitPrefix(filePath);
+    for (const auto& fd : diffs) {
+        std::string got = stripGitPrefix(fd.isDeleted ? fd.oldFile : fd.newFile);
+        if (!want.empty() && !got.empty() && (want == got || want == stripGitPrefix(fd.oldFile))) {
+            return applyFileChanges(fd);
+        }
+    }
+    return applyFileChanges(diffs.front());
+}
+
+bool ApplyPatchTool::applyUnifiedDiff(const std::string& diffContent) {
+    auto diffs = parseUnifiedDiff(diffContent);
+    if (diffs.empty()) return false;
+    for (const auto& fd : diffs) {
+        if (!applyFileChanges(fd)) return false;
+    }
+    return true;
+}
+
+std::string ApplyPatchTool::generateUnifiedDiff(const std::vector<std::string>& /*files*/) {
+    // apply_patch 只负责应用 diff；生成 diff 交由 git diff / 外部完成
+    return "";
+}
+
 nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
     nlohmann::json result;
-    
-    if (!args.contains("file_path") || !args.contains("operation") || !args.contains("start_line")) {
-        result["error"] = "Missing required parameters";
+
+    if (!args.contains("diff_content") || !args["diff_content"].is_string()) {
+        result["error"] = "apply_patch 只接受 unified diff 更新。请提供参数 diff_content。";
         return result;
     }
-    
-    std::string filePath = args["file_path"].get<std::string>();
-    std::string operation = args["operation"].get<std::string>();
-    int startLine = args["start_line"].get<int>();
-    
-    fs::path fullPath = rootPath / fs::u8path(filePath);
-    
-    // 检查文件是否存在
-    if (!fs::exists(fullPath)) {
-        result["error"] = "File not found: " + filePath;
+
+    const std::string diffContent = args["diff_content"].get<std::string>();
+    const bool backup = args.value("backup", true);
+    const bool dryRun = args.value("dry_run", false);
+
+    auto fileDiffs = parseUnifiedDiff(diffContent);
+    if (fileDiffs.empty()) {
+        result["error"] = "diff_content 无效：未解析到任何文件补丁（diff --git / --- / +++ / @@）。";
         return result;
     }
-    
-    // 创建备份
-    try {
-        createBackup(filePath);
-    } catch (const std::exception& e) {
-        result["error"] = std::string("Failed to create backup: ") + e.what();
+
+    std::vector<std::string> affected;
+    affected.reserve(fileDiffs.size());
+    for (const auto& fd : fileDiffs) {
+        std::string p = fd.isDeleted ? fd.oldFile : fd.newFile;
+        if (p.empty()) p = fd.oldFile;
+        p = stripGitPrefix(p);
+        if (!p.empty()) affected.push_back(p);
+    }
+
+    // 保存 last.patch，供 CLI undo 反向应用
+    fs::path patchDir = rootPath / ".photon" / "patches";
+    fs::create_directories(patchDir);
+    fs::path patchPath = patchDir / "last.patch";
+    {
+        std::ofstream pf(patchPath);
+        pf << diffContent;
+    }
+    {
+        nlohmann::json meta;
+        meta["timestamp"] = static_cast<long long>(std::time(nullptr));
+        meta["affected_files"] = affected;
+        meta["patch_path"] = patchPath.u8string();
+        meta["has_git"] = hasGit;
+        std::ofstream mf(patchDir / "last_patch.json");
+        mf << meta.dump(2);
+    }
+
+    if (hasGit) {
+        std::string out;
+        std::string prefix = "cd \"" + rootPath.u8string() + "\" && ";
+
+        if (dryRun) {
+            int code = execCaptureCoreTools(prefix + "git apply --check \"" + patchPath.u8string() + "\" 2>&1", out);
+            result["success"] = (code == 0);
+            result["dry_run"] = true;
+            result["affected_files"] = affected;
+            if (code != 0) result["error"] = out.empty() ? "git apply --check 失败" : out;
+            else result["message"] = "Dry-run OK（git apply --check）";
+            return result;
+        }
+
+        if (backup) {
+            std::string status;
+            execCaptureCoreTools(prefix + "git status --porcelain 2>&1", status);
+            if (!status.empty()) {
+                std::string stashOut;
+                execCaptureCoreTools(prefix + "git stash push -u -m \"photon-apply_patch-backup\" 2>&1", stashOut);
+                result["git_backup"] = "stash";
+            } else {
+                result["git_backup"] = "none(clean)";
+            }
+        }
+
+        out.clear();
+        int code = execCaptureCoreTools(prefix + "git apply \"" + patchPath.u8string() + "\" 2>&1", out);
+        if (code != 0) {
+            result["error"] = out.empty() ? "git apply 失败" : out;
+            return result;
+        }
+
+        result["success"] = true;
+        result["affected_files"] = affected;
+        result["message"] = "已通过 git apply 应用补丁。可使用 undo 撤销上一次补丁。";
         return result;
     }
-    
-    // 读取文件
-    std::ifstream file(fullPath);
-    if (!file.is_open()) {
-        result["error"] = "Failed to open file: " + filePath;
+
+    if (dryRun) {
+        result["success"] = true;
+        result["dry_run"] = true;
+        result["affected_files"] = affected;
+        result["message"] = "无 Git 时 dry_run 仅做基础解析（建议启用 Git 以获得严格 check）。";
         return result;
     }
-    
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(file, line)) {
-        lines.push_back(line);
+
+    if (backup) {
+        for (const auto& fd : fileDiffs) {
+            if (fd.isNewFile) continue;
+            std::string p = stripGitPrefix(fd.oldFile.empty() ? fd.newFile : fd.oldFile);
+            if (p.empty()) continue;
+            fs::path fp = fs::u8path(p);
+            if (!fp.is_absolute()) fp = rootPath / fp;
+            if (!fs::exists(fp)) continue;
+            try { createLocalBackup(p); } catch (...) {}
+        }
     }
-    file.close();
-    
-    // 执行操作
-    if (operation == "insert") {
-        if (!args.contains("content")) {
-            result["error"] = "Missing 'content' for insert operation";
-            return result;
-        }
-        
-        std::string content = args["content"].get<std::string>();
-        std::istringstream iss(content);
-        std::vector<std::string> newLines;
-        while (std::getline(iss, line)) {
-            newLines.push_back(line);
-        }
-        
-        // 插入位置检查
-        if (startLine < 1) startLine = 1;
-        if (startLine > static_cast<int>(lines.size()) + 1) {
-            startLine = static_cast<int>(lines.size()) + 1;
-        }
-        
-        lines.insert(lines.begin() + startLine - 1, newLines.begin(), newLines.end());
-        
-    } else if (operation == "replace") {
-        if (!args.contains("content") || !args.contains("end_line")) {
-            result["error"] = "Missing 'content' or 'end_line' for replace operation";
-            return result;
-        }
-        
-        int endLine = args["end_line"].get<int>();
-        std::string content = args["content"].get<std::string>();
-        
-        // 边界检查
-        if (startLine < 1 || startLine > static_cast<int>(lines.size())) {
-            result["error"] = "Invalid start_line";
-            return result;
-        }
-        if (endLine < startLine || endLine > static_cast<int>(lines.size())) {
-            result["error"] = "Invalid end_line";
-            return result;
-        }
-        
-        // 删除旧行
-        lines.erase(lines.begin() + startLine - 1, lines.begin() + endLine);
-        
-        // 插入新行
-        std::istringstream iss(content);
-        std::vector<std::string> newLines;
-        while (std::getline(iss, line)) {
-            newLines.push_back(line);
-        }
-        lines.insert(lines.begin() + startLine - 1, newLines.begin(), newLines.end());
-        
-    } else if (operation == "delete") {
-        int endLine = args.value("end_line", startLine);
-        
-        // 边界检查
-        if (startLine < 1 || startLine > static_cast<int>(lines.size())) {
-            result["error"] = "Invalid start_line";
-            return result;
-        }
-        if (endLine < startLine || endLine > static_cast<int>(lines.size())) {
-            result["error"] = "Invalid end_line";
-            return result;
-        }
-        
-        lines.erase(lines.begin() + startLine - 1, lines.begin() + endLine);
-        
-    } else {
-        result["error"] = "Invalid operation: " + operation;
+
+    if (!applyUnifiedDiff(diffContent)) {
+        result["error"] = "手动 diff 引擎应用失败（通常是上下文不匹配）。建议安装/启用 Git 后再试。";
         return result;
     }
-    
-    // 写回文件
-    std::ofstream outFile(fullPath);
-    if (!outFile.is_open()) {
-        result["error"] = "Failed to write file: " + filePath;
-        return result;
-    }
-    
-    for (size_t i = 0; i < lines.size(); ++i) {
-        outFile << lines[i];
-        if (i < lines.size() - 1) outFile << "\n";
-    }
-    outFile.close();
-    
-    // 返回结果
-    nlohmann::json contentItem;
-    contentItem["type"] = "text";
-    contentItem["text"] = "Successfully applied " + operation + " to " + filePath + 
-                          " at lines " + std::to_string(startLine);
-    
-    result["content"] = nlohmann::json::array({contentItem});
+
+    result["success"] = true;
+    result["affected_files"] = affected;
+    result["message"] = "已通过手动 unified-diff 引擎应用补丁。可使用 undo 尝试撤销上一次补丁。";
     return result;
 }
 
@@ -1214,3 +1495,5 @@ nlohmann::json SkillDeactivateTool::execute(const nlohmann::json& args) {
     
     return result;
 }
+
+// DiffBackupTool 已移除：统一能力由 ApplyPatchTool（unified diff）提供

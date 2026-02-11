@@ -1,0 +1,30 @@
+{
+  "llm": {
+    "api_key": "test-key",
+    "base_url": "https://api.test.com/v1",
+    "model": "test-model",
+    "system_role": "Test configuration for ArkTS integration testing"
+  },
+  "agent": {
+    "context_threshold": 10000,
+    "file_extensions": [
+      ".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json",
+      ".cmake", ".yml", ".yaml", ".ets"
+    ],
+    "use_builtin_tools": false,
+    "search_api_key": "",
+    "enable_tree_sitter": true,
+    "symbol_fallback_on_empty": false,
+    "enable_lsp": false,
+    "enable_debug": true,
+    "lsp_server_path": "",
+    "lsp_root_uri": "",
+    "lsp_servers": [],
+    "skill_roots": [],
+    "tree_sitter_languages": [],
+    "symbol_ignore_patterns": [
+      ".git", "node_modules", "build", "dist"
+    ]
+  },
+  "mcp_servers": []
+}

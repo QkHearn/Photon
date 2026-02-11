@@ -159,6 +159,7 @@ endif()
 
 add_executable(agent_tests 
     tests/test_ContextManager.cpp
+    tests/test_ApplyPatchDiff.cpp
     # TODO: 添加新的测试文件
     # tests/test_ToolRegistry.cpp
     # tests/test_CoreTools.cpp

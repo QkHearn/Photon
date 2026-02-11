@@ -76,7 +76,7 @@ private:
  */
 class ApplyPatchTool : public ITool {
 public:
-    explicit ApplyPatchTool(const std::string& rootPath);
+    explicit ApplyPatchTool(const std::string& rootPath, bool hasGit = false);
     
     std::string getName() const override { return "apply_patch"; }
     std::string getDescription() const override;
@@ -85,9 +85,41 @@ public:
 
 private:
     fs::path rootPath;
+    bool hasGit;
     
-    // 创建备份
+    // 创建备份 - 优先使用Git
     void createBackup(const std::string& path);
+    
+    // Git备份
+    bool createGitBackup(const std::string& path);
+    
+    // 本地备份（回退方案）
+    void createLocalBackup(const std::string& path);
+    
+    // 使用Git写入文件
+    bool writeFileWithGit(const std::string& path, const std::vector<std::string>& lines);
+    
+    // Git风格diff支持（核心功能）
+    bool applyUnifiedDiff(const std::string& diffContent);
+    std::string generateUnifiedDiff(const std::vector<std::string>& files);
+    bool applyFileDiff(const std::string& filePath, const std::string& diffContent);
+    
+    // Diff解析和应用
+    struct DiffHunk {
+        int oldStart, oldCount, newStart, newCount;
+        std::vector<std::string> lines; // +, -, 空格前缀
+    };
+    
+    struct FileDiff {
+        std::string oldFile;
+        std::string newFile;
+        bool isNewFile;
+        bool isDeleted;
+        std::vector<DiffHunk> hunks;
+    };
+    
+    std::vector<FileDiff> parseUnifiedDiff(const std::string& diffContent);
+    bool applyFileChanges(const FileDiff& fileDiff);
 };
 
 /**

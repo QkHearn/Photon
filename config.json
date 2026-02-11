@@ -9,7 +9,7 @@
     "context_threshold": 217000,
     "file_extensions": [
       ".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json",
-      ".cmake", ".yml", ".yaml"
+      ".cmake", ".yml", ".yaml", ".ets"
     ],
     "use_builtin_tools": true,
     "search_api_key": "",
