@@ -13,6 +13,3 @@
 [submodule "third_party/tree-sitter-arkts"]
 	path = third_party/tree-sitter-arkts
 	url = https://github.com/Million-mo/tree-sitter-arkts
-[submodule "third_party/ftxui"]
-	path = third_party/ftxui
-	url = https://github.com/ArthurSonzogni/ftxui.git

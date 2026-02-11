@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <functional>
 
 namespace fs = std::filesystem;
 
@@ -198,20 +199,25 @@ private:
 };
 
 /**
- * @brief 语法/构建检查工具（少 token）
+ * @brief 语法检查工具（少 token）
  *
- * 在项目目录执行构建（如 cmake --build build），仅返回前 N 行输出或仅错误行，
- * 便于用较少 token 发现编译/语法问题。
+ * 无需传文件：自动检查 git 最近变更及新增文件。LSP 优先，无 LSP 用回退（构建/脚本），都没有则跳过该语言。
  */
 class SyntaxCheckTool : public ITool {
 public:
-    explicit SyntaxCheckTool(const std::string& rootPath);
+    using LspDiagnosticsFn = std::function<std::string(const std::string& relPath)>;
+    using HasLspForExtFn = std::function<bool(const std::string& ext)>;
+    explicit SyntaxCheckTool(const std::string& rootPath,
+                            LspDiagnosticsFn getLspDiagnostics = nullptr,
+                            HasLspForExtFn hasLspForExtension = nullptr);
     std::string getName() const override { return "syntax_check"; }
     std::string getDescription() const override;
     nlohmann::json getSchema() const override;
     nlohmann::json execute(const nlohmann::json& args) override;
 private:
     fs::path rootPath;
+    LspDiagnosticsFn getLspDiagnostics;
+    HasLspForExtFn hasLspForExtension;
 };
 
 /**

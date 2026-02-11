@@ -43,9 +43,6 @@ if(APPLE)
     set(PHOTON_BREW_LIB "/opt/homebrew/lib")
 endif()
 
-# --- FTXUI Integration ---
-add_subdirectory(third_party/ftxui)
-
 # nlohmann_json (use bundled on Apple to avoid mixed include paths)
 option(PHOTON_USE_BUNDLED_JSON "Build nlohmann_json from source" ${APPLE})
 if(PHOTON_USE_BUNDLED_JSON)
@@ -78,9 +75,6 @@ endif()
 target_link_libraries(photon PRIVATE 
     agent_lib
     nlohmann_json::nlohmann_json
-    ftxui::screen
-    ftxui::dom
-    ftxui::component
     OpenSSL::SSL 
     OpenSSL::Crypto
     Threads::Threads
@@ -125,9 +119,6 @@ target_link_libraries(agent_lib PRIVATE
     nlohmann_json::nlohmann_json 
     OpenSSL::SSL 
     OpenSSL::Crypto
-    ftxui::screen
-    ftxui::dom
-    ftxui::component
 )
 
 if(SQLite3_FOUND)

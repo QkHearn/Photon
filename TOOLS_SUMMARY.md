@@ -54,9 +54,20 @@ Photon 拥有分层工具架构，包含**核心工具(Core Tools)**和**MCP工�
 - **用途**: 资源管理、上下文清理
 
 ### 7. **syntax_check** - 少 token 语法/构建检查（多语言 + 仅改动的文件）
-- **支持语言**: C++、C、Python、ArkTS（.ets）、TypeScript（.ts/.tsx）。按扩展名识别。
-- **仅检测修改文件**: 默认 `modified_only: true`，用 `git diff --name-only` 取修改/新增文件，只对这些文件做检查并只保留与之相关的错误行，进一步省 token。C/C++ 仍跑一次 `cmake --build`，输出过滤为仅含修改文件路径的行；Python 对每个修改的 .py 跑 `python3 -m py_compile`；TS 跑 `npx tsc --noEmit` 后过滤；ArkTS 若有 `ets2panda` 则对每个 .ets 检查。
-- **参数**: `modified_only`（默认 true）、`max_output_lines`（默认 60）、`errors_only`（只保留错误行）、`build_dir`（C/C++ 构建目录）
+
+#### 语法检查 · 各语言一览
+
+| 语言 | 扩展名 | 非 lsp_only 时检查方式 | LSP（lsp_only 或合并输出）| 备注 |
+|------|--------|------------------------|----------------------------|------|
+| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.h` | 默认 `cmake --build <build_dir>`；可设 **cxx_build_command** 为 `make`、`ninja -C build` 等；设为 `''` 或 `none` 则**不跑构建**，仅用 LSP（无 CMake 时可用）| clangd 等（需 LSP 启用）| 链接错误只有构建能报；无 CMake 时用 `cxx_build_command: "none"` + LSP |
+| **C** | `.c` | 同上（与 C++ 共用同一套构建命令）| 同上 | 同上 |
+| **Python** | `.py` | 每个修改文件 `python3 -m py_compile <path>` | Pyright / pylsp 等 | 单文件语法为主 |
+| **TypeScript** | `.ts`, `.tsx` | `npx tsc --noEmit`，再按修改的 .ts/.tsx 过滤行 | typescript-language-server 等 | 项目需有 tsconfig.json |
+| **ArkTS** | `.ets` | 若 PATH 有 `ets2panda` 则对每个修改的 .ets 执行 `ets2panda <path>` | arkts-lsp-server / ets2panda（LSP）| 无 ets2panda 时跳过构建检查 |
+
+- **lsp_only**: 设为 `true` 时**仅用 LSP** 做语法检查（不跑上表里的构建/命令），速度快、省 token；**可能漏掉**链接错误、跨文件符号缺失等，适合快速反馈。需启用 LSP。
+- **仅检测修改文件**: 默认 `modified_only: true`，用 `git diff --name-only` 取修改/新增文件，只对这些文件做检查并只保留与之相关的错误行。
+- **参数**: `lsp_only`、`modified_only`（默认 true）、`max_output_lines`（默认 60）、`errors_only`、`build_dir`（默认 `build`）、**cxx_build_command**（C/C++ 构建命令，默认 cmake；设为 `''` 或 `none` 表示不跑构建、仅用 LSP，适合无 CMake 项目）
 - **用途**: 改代码后只检查改动文件语法，用较少 token 发现编译/语法问题
 
 ### 8. （已移除）

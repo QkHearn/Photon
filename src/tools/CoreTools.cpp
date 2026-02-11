@@ -1643,7 +1643,7 @@ nlohmann::json GrepTool::execute(const nlohmann::json& args) {
     std::string prefix = "cd \"" + rootPath.u8string() + "\" && ";
     std::string cmd;
     std::string out;
-    // Prefer ripgrep (rg), fallback to grep -rn
+    // Prefer ripgrep (rg), then grep -rn; on Windows fallback to findstr when grep is missing
     bool useRg = false;
 #ifdef _WIN32
     { std::string d; if (execCaptureCoreTools("where rg 2>nul", d) == 0 && !d.empty()) useRg = true; }
@@ -1655,9 +1655,18 @@ nlohmann::json GrepTool::execute(const nlohmann::json& args) {
         if (!include.empty()) cmd += "-g " + shellEscape(include) + " ";
         cmd += " -- " + patternEsc + " " + searchPath + " 2>&1";
     } else {
+#ifdef _WIN32
+        // Windows has findstr by default; grep usually not in PATH
+        std::string findstrPattern = pattern;
+        for (size_t i = 0; i < findstrPattern.size(); ++i) {
+            if (findstrPattern[i] == '"') { findstrPattern.insert(i, "\\"); ++i; }
+        }
+        cmd = prefix + "findstr /s /n /c:\"" + findstrPattern + "\" * 2>&1";
+#else
         cmd = prefix + "grep -rn ";
         if (!include.empty()) cmd += "--include=" + shellEscape(include) + " ";
         cmd += " -e " + patternEsc + " " + searchPath + " 2>&1";
+#endif
     }
     int code = execCaptureCoreTools(cmd, out);
     if (code != 0 && code != 1) {
@@ -1838,22 +1847,21 @@ nlohmann::json AttemptTool::execute(const nlohmann::json& args) {
 // SyntaxCheckTool Implementation
 // ============================================================================
 
-SyntaxCheckTool::SyntaxCheckTool(const std::string& rootPath) : rootPath(fs::u8path(rootPath)) {}
+SyntaxCheckTool::SyntaxCheckTool(const std::string& rootPath, LspDiagnosticsFn getLspDiagnostics, HasLspForExtFn hasLspForExtension)
+    : rootPath(fs::u8path(rootPath))
+    , getLspDiagnostics(std::move(getLspDiagnostics))
+    , hasLspForExtension(std::move(hasLspForExtension)) {}
 
 std::string SyntaxCheckTool::getDescription() const {
-    return "Syntax/compile check with minimal token usage. Supports C++, C, Python, ArkTS, TypeScript. "
-           "When modified_only is true (default), only checks modified files (git). "
-           "Parameters: modified_only (bool), max_output_lines (int), errors_only (bool), build_dir (string).";
+    return "Syntax check: no need to pass files—automatically checks recent changes and new files (git). "
+           "LSP first when available, else fallback (build/linter); neither then skip that language. "
+           "Optional: max_output_lines, errors_only, build_dir.";
 }
 
 nlohmann::json SyntaxCheckTool::getSchema() const {
     return {
         {"type", "object"},
         {"properties", {
-            {"modified_only", {
-                {"type", "boolean"},
-                {"description", "If true (default), only check modified/added files (git). Fewer tokens."}
-            }},
             {"max_output_lines", {
                 {"type", "integer"},
                 {"description", "Max lines to return (default 60). Lower value saves tokens."}
@@ -1864,7 +1872,7 @@ nlohmann::json SyntaxCheckTool::getSchema() const {
             }},
             {"build_dir", {
                 {"type", "string"},
-                {"description", "Build directory for C/C++ (default 'build')."}
+                {"description", "C/C++ build directory for cmake --build (default 'build')."}
             }}
         }}
     };
@@ -1878,7 +1886,12 @@ static bool lineLooksLikeError(const std::string& line) {
            lower.find("error ") != std::string::npos;
 }
 
-// Language by extension: cpp, c, py, arkts, ts. Returns empty if not supported.
+// Syntax check language by extension. Supported:
+//   cpp: .cpp .cc .cxx .hpp .h  -> cmake --build (filter by path) + optional LSP
+//   c:   .c                     -> same as cpp
+//   py:  .py                    -> python3 -m py_compile + optional LSP
+//   ts:  .ts .tsx               -> npx tsc --noEmit (filter by path) + optional LSP
+//   arkts: .ets                 -> ets2panda if in PATH + optional LSP
 static std::string syntaxCheckLang(const std::string& path) {
     std::string ext;
     size_t dot = path.rfind('.');
@@ -1946,18 +1959,13 @@ nlohmann::json SyntaxCheckTool::execute(const nlohmann::json& args) {
     bool errorsOnly = false;
     if (args.contains("errors_only") && args["errors_only"].is_boolean())
         errorsOnly = args["errors_only"].get<bool>();
-    bool modifiedOnly = true;
-    if (args.contains("modified_only") && args["modified_only"].is_boolean())
-        modifiedOnly = args["modified_only"].get<bool>();
     std::string buildDir = "build";
     if (args.contains("build_dir") && args["build_dir"].is_string() && !args["build_dir"].get<std::string>().empty())
         buildDir = args["build_dir"].get<std::string>();
 
     std::string prefix = "cd \"" + rootPath.u8string() + "\" && ";
-    std::vector<std::string> modifiedFiles;
-    if (modifiedOnly) {
-        modifiedFiles = getGitModifiedFiles(prefix);
-        // Filter to supported extensions only
+    std::vector<std::string> modifiedFiles = getGitModifiedFiles(prefix);
+    {
         std::vector<std::string> supported;
         for (const auto& p : modifiedFiles) {
             if (!syntaxCheckLang(p).empty()) supported.push_back(p);
@@ -1969,7 +1977,26 @@ nlohmann::json SyntaxCheckTool::execute(const nlohmann::json& args) {
     int globalExit = 0;
     std::set<std::string> cppPaths, tsPaths;
 
-    if (modifiedOnly && !modifiedFiles.empty()) {
+    auto useLspForExt = [this](const std::string& path) -> bool {
+        if (!hasLspForExtension || !getLspDiagnostics) return false;
+        size_t dot = path.rfind('.');
+        if (dot == std::string::npos || dot + 1 >= path.size()) return false;
+        std::string ext = path.substr(dot);
+        return hasLspForExtension(ext);
+    };
+    auto runLspForFile = [this, &allLines, &globalExit](const std::string& p) {
+        if (!getLspDiagnostics) return;
+        std::string out = getLspDiagnostics(p);
+        if (out.empty()) return;
+        std::vector<std::string> lines;
+        splitLines(out, lines);
+        for (const auto& l : lines) {
+            allLines.push_back(l);
+            if (lineLooksLikeError(l)) globalExit = 1;
+        }
+    };
+
+    if (!modifiedFiles.empty()) {
         for (const auto& p : modifiedFiles) {
             std::string lang = syntaxCheckLang(p);
             if (lang == "cpp" || lang == "c") cppPaths.insert(p);
@@ -1977,89 +2004,88 @@ nlohmann::json SyntaxCheckTool::execute(const nlohmann::json& args) {
         }
     }
 
-    // C/C++: cmake --build; if modified_only and we have cpp paths, filter output to those paths; else full build
-    bool runCpp = !modifiedOnly || !cppPaths.empty() || modifiedFiles.empty();
-    if (runCpp) {
+    // C/C++: LSP 优先，否则 cmake --build build_dir
+    if (!cppPaths.empty()) {
+        bool useLspCxx = (useLspForExt(".cpp") || useLspForExt(".c"));
+        if (useLspCxx && getLspDiagnostics) {
+            for (const auto& p : modifiedFiles)
+                if (syntaxCheckLang(p) == "cpp" || syntaxCheckLang(p) == "c") runLspForFile(p);
+        } else {
+            std::string out;
+            int code = execCaptureCoreTools(prefix + "cmake --build \"" + buildDir + "\" 2>&1", out);
+            if (code != 0) globalExit = code;
+            std::vector<std::string> lines;
+            splitLines(out, lines);
+            filterLinesByPaths(lines, cppPaths);
+            for (const auto& l : lines) allLines.push_back(l);
+        }
+    }
+
+    // Python: LSP 优先，否则 py_compile
+    for (const auto& p : modifiedFiles) {
+        if (syntaxCheckLang(p) != "py") continue;
+        if (useLspForExt(p)) { runLspForFile(p); continue; }
         std::string out;
-        int code = execCaptureCoreTools(prefix + "cmake --build \"" + buildDir + "\" 2>&1", out);
+        std::string escaped = p;
+        if (escaped.find('"') != std::string::npos) {
+            std::string e; e.reserve(escaped.size() + 2);
+            e += '"'; for (char c : escaped) { if (c == '"' || c == '\\') e += '\\'; e += c; }
+            e += '"'; escaped = e;
+        } else if (escaped.find(' ') != std::string::npos) escaped = "\"" + escaped + "\"";
+        int code = execCaptureCoreTools(prefix + "python3 -m py_compile " + escaped + " 2>&1", out);
         if (code != 0) globalExit = code;
         std::vector<std::string> lines;
         splitLines(out, lines);
-        if (modifiedOnly && !cppPaths.empty())
-            filterLinesByPaths(lines, cppPaths);
         for (const auto& l : lines) allLines.push_back(l);
     }
 
-    // Python: py_compile per modified .py
-    if (modifiedOnly) {
-        for (const auto& p : modifiedFiles) {
-            if (syntaxCheckLang(p) != "py") continue;
+    // TypeScript: LSP 优先，否则 tsc --noEmit
+    if (!tsPaths.empty()) {
+        bool useLspTs = useLspForExt(".ts");
+        if (useLspTs && getLspDiagnostics) {
+            for (const auto& p : modifiedFiles)
+                if (syntaxCheckLang(p) == "ts") runLspForFile(p);
+        } else {
             std::string out;
-            std::string escaped = p;
-            if (escaped.find('"') != std::string::npos) {
-                std::string e; e.reserve(escaped.size() + 2);
-                e += '"';
-                for (char c : escaped) { if (c == '"' || c == '\\') e += '\\'; e += c; }
-                e += '"'; escaped = e;
-            } else if (escaped.find(' ') != std::string::npos) { escaped = "\"" + escaped + "\""; }
-            int code = execCaptureCoreTools(prefix + "python3 -m py_compile " + escaped + " 2>&1", out);
+            int code = execCaptureCoreTools(prefix + "npx tsc --noEmit 2>&1", out);
             if (code != 0) globalExit = code;
+            std::vector<std::string> lines;
+            splitLines(out, lines);
+            filterLinesByPaths(lines, tsPaths);
+            for (const auto& l : lines) allLines.push_back(l);
+        }
+    }
+
+    // ArkTS: LSP 优先，否则 ets2panda，都没有则跳过
+    std::string whichOut;
+#ifdef _WIN32
+    int hasEts = execCaptureCoreTools(prefix + "where ets2panda 2>nul", whichOut);
+#else
+    int hasEts = execCaptureCoreTools(prefix + "which ets2panda 2>/dev/null || command -v ets2panda 2>/dev/null", whichOut);
+#endif
+    bool hasEts2panda = (hasEts == 0 && !whichOut.empty());
+    for (const auto& p : modifiedFiles) {
+        if (syntaxCheckLang(p) != "arkts") continue;
+        if (useLspForExt(p)) { runLspForFile(p); continue; }
+        if (!hasEts2panda) continue;
+        std::string out;
+        std::string escaped = p;
+        if (escaped.find('"') != std::string::npos) {
+            std::string e; e.reserve(escaped.size() + 2);
+            e += '"'; for (char c : escaped) { if (c == '"' || c == '\\') e += '\\'; e += c; }
+            e += '"'; escaped = e;
+        } else if (escaped.find(' ') != std::string::npos) escaped = "\"" + escaped + "\"";
+        int code = execCaptureCoreTools(prefix + "ets2panda " + escaped + " 2>&1", out);
+        if (code != 0) globalExit = code;
+        if (!out.empty()) {
             std::vector<std::string> lines;
             splitLines(out, lines);
             for (const auto& l : lines) allLines.push_back(l);
         }
     }
 
-    // TypeScript: tsc --noEmit, then filter by modified .ts/.tsx paths
-    if (modifiedOnly && !tsPaths.empty()) {
-        std::string out;
-        int code = execCaptureCoreTools(prefix + "npx tsc --noEmit 2>&1", out);
-        if (code != 0) globalExit = code;
-        std::vector<std::string> lines;
-        splitLines(out, lines);
-        filterLinesByPaths(lines, tsPaths);
-        for (const auto& l : lines) allLines.push_back(l);
-    } else if (!modifiedOnly) {
-        std::string out;
-        int code = execCaptureCoreTools(prefix + "npx tsc --noEmit 2>&1", out);
-        if (code != 0) globalExit = code;
-        std::vector<std::string> lines;
-        splitLines(out, lines);
-        for (const auto& l : lines) allLines.push_back(l);
-    }
-
-    // ArkTS: try ets2panda per modified .ets
-    if (modifiedOnly) {
-        std::string whichOut;
-#ifdef _WIN32
-        int hasEts = execCaptureCoreTools(prefix + "where ets2panda 2>nul", whichOut);
-#else
-        int hasEts = execCaptureCoreTools(prefix + "which ets2panda 2>/dev/null || command -v ets2panda 2>/dev/null", whichOut);
-#endif
-        for (const auto& p : modifiedFiles) {
-            if (syntaxCheckLang(p) != "arkts") continue;
-            std::string out;
-            std::string escaped = p;
-            if (escaped.find('"') != std::string::npos) {
-                std::string e; e.reserve(escaped.size() + 2);
-                e += '"';
-                for (char c : escaped) { if (c == '"' || c == '\\') e += '\\'; e += c; }
-                e += '"'; escaped = e;
-            } else if (escaped.find(' ') != std::string::npos) { escaped = "\"" + escaped + "\""; }
-            int code = (hasEts == 0 && !whichOut.empty())
-                ? execCaptureCoreTools(prefix + "ets2panda " + escaped + " 2>&1", out)
-                : 1;
-            if (code != 0 && hasEts == 0) globalExit = code;
-            if (!out.empty()) {
-                std::vector<std::string> lines;
-                splitLines(out, lines);
-                for (const auto& l : lines) allLines.push_back(l);
-            }
-        }
-    }
-
-    if (modifiedOnly && modifiedFiles.empty() && runCpp && allLines.empty()) {
-        allLines.push_back("(no modified C/C++/Python/ArkTS/TS files; ran C++ build only, no errors in output)");
+    if (modifiedFiles.empty()) {
+        allLines.push_back("(no modified files; nothing to check)");
     }
 
     if (errorsOnly) {
@@ -2082,7 +2108,7 @@ nlohmann::json SyntaxCheckTool::execute(const nlohmann::json& args) {
     result["content"] = nlohmann::json::array({
         nlohmann::json::object({{"type", "text"}, {"text", "Exit: " + std::to_string(globalExit) + "\n\n" + text}})
     });
-    if (modifiedOnly && !modifiedFiles.empty())
+    if (!modifiedFiles.empty())
         result["modified_files_checked"] = modifiedFiles.size();
     return result;
 }

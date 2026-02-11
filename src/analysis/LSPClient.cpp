@@ -303,6 +303,8 @@ void LSPClient::readerLoop() {
                         responses[id] = msg;
                     }
                     cv.notify_all();
+                } else if (msg.contains("method") && msg["method"].get<std::string>() == "textDocument/publishDiagnostics") {
+                    if (msg.contains("params")) handlePublishDiagnostics(msg["params"]);
                 }
             } catch (...) {
             }
@@ -518,6 +520,66 @@ std::string LSPClient::uriToPath(const std::string& uri) {
     const std::string prefix = "file://";
     if (uri.rfind(prefix, 0) == 0) return uri.substr(prefix.size());
     return uri;
+}
+
+std::string LSPClient::pathToUri(const std::string& absolutePath) {
+    std::string path = absolutePath;
+    for (auto& c : path) { if (c == '\\') c = '/'; }
+    if (path.empty() || path[0] != '/') return "file:///" + path;
+    return "file://" + path;
+}
+
+void LSPClient::handlePublishDiagnostics(const nlohmann::json& params) {
+    if (!params.contains("uri") || !params.contains("diagnostics") || !params["diagnostics"].is_array()) return;
+    std::string uri = params["uri"].get<std::string>();
+    std::vector<Diagnostic> list;
+    for (const auto& d : params["diagnostics"]) {
+        Diagnostic diag;
+        diag.severity = d.value("severity", 0);
+        diag.message = d.value("message", "");
+        diag.source = d.value("source", "");
+        if (d.contains("range")) {
+            const auto& r = d["range"];
+            if (r.contains("start")) {
+                diag.range.start.line = r["start"].value("line", 0);
+                diag.range.start.character = r["start"].value("character", 0);
+            }
+            if (r.contains("end")) {
+                diag.range.end.line = r["end"].value("line", 0);
+                diag.range.end.character = r["end"].value("character", 0);
+            }
+        }
+        list.push_back(std::move(diag));
+    }
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        diagnostics[uri] = std::move(list);
+    }
+    cv.notify_all();
+}
+
+std::vector<LSPClient::Diagnostic> LSPClient::getDiagnostics(const std::string& fileUri) {
+    std::lock_guard<std::mutex> lock(mtx);
+    auto it = diagnostics.find(fileUri);
+    if (it != diagnostics.end()) return it->second;
+    return {};
+}
+
+std::vector<LSPClient::Diagnostic> LSPClient::getDiagnosticsForFile(const std::string& filePath, int timeoutMs) {
+    std::string absPath = filePath;
+    if (filePath.empty() || filePath[0] != '/' && (filePath.size() < 2 || filePath[1] != ':')) {
+        std::string root = uriToPath(rootUri);
+        while (!root.empty() && (root.back() == '/' || root.back() == '\\')) root.pop_back();
+        absPath = root + "/" + filePath;
+    }
+    std::string uri = pathToUri(absPath);
+    if (!initialized && !initialize()) return {};
+    if (!ensureDocumentOpen(uri)) return {};
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&] { return diagnostics.find(uri) != diagnostics.end(); });
+    auto it = diagnostics.find(uri);
+    if (it != diagnostics.end()) return it->second;
+    return {};
 }
 
 std::vector<std::string> LSPClient::splitArgs(const std::string& cmd) {

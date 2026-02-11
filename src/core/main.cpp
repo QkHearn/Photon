@@ -804,7 +804,26 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
     toolRegistry.registerTool(std::make_unique<GrepTool>(path));  // 代码搜索：grep，先定位再 read_code_block
     toolRegistry.registerTool(std::make_unique<AttemptTool>(path));  // 用户 attempt：持久化意图与任务状态，防遗忘
-    toolRegistry.registerTool(std::make_unique<SyntaxCheckTool>(path));  // 语法检查：少 token 构建/报错输出
+    {
+        SyntaxCheckTool::LspDiagnosticsFn lspDiagFn = [&lspByExt, &lspFallback](const std::string& relPath) -> std::string {
+            if (lspByExt.empty() && !lspFallback) return "";
+            std::string ext = fs::path(relPath).extension().string();
+            for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            LSPClient* client = nullptr;
+            if (!ext.empty()) { auto it = lspByExt.find(ext); if (it != lspByExt.end()) client = it->second; }
+            if (!client) client = lspFallback;
+            if (!client) return "";
+            auto diags = client->getDiagnosticsForFile(relPath, 800);
+            std::string out;
+            for (const auto& d : diags) {
+                const char* label = (d.severity == 1) ? "error" : "warning";
+                out += relPath + ":" + std::to_string(d.range.start.line + 1) + ": " + label + ": " + d.message + "\n";
+            }
+            return out;
+        };
+        auto hasLspForExt = [&lspByExt, &lspFallback](const std::string& ext) { return lspByExt.count(ext) || lspFallback != nullptr; };
+        toolRegistry.registerTool(std::make_unique<SyntaxCheckTool>(path, std::move(lspDiagFn), hasLspForExt));  // 语法检查：不传文件，自动检查最近变更；LSP 优先，无 LSP 回退，都没有则跳过
+    }
     
     std::cout << GREEN << "  ✔ Registered " << toolRegistry.getToolCount() << " core tools" << RESET << std::endl;
 

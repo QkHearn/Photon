@@ -38,6 +38,14 @@ public:
         std::vector<DocumentSymbol> children;
     };
 
+    /** LSP diagnostic (syntax/type error or warning from textDocument/publishDiagnostics) */
+    struct Diagnostic {
+        Range range;
+        int severity = 0;  /* 1=Error, 2=Warning, 3=Info, 4=Hint */
+        std::string message;
+        std::string source;
+    };
+
     LSPClient(const std::string& serverPath, const std::string& rootUri);
     ~LSPClient();
 
@@ -46,7 +54,14 @@ public:
     std::vector<Location> findReferences(const std::string& fileUri, const Position& position);
     std::vector<DocumentSymbol> documentSymbols(const std::string& fileUri);
 
+    /** Get cached diagnostics for a file URI (after server sent publishDiagnostics). */
+    std::vector<Diagnostic> getDiagnostics(const std::string& fileUri);
+    /** Open file and wait up to timeoutMs for LSP to push diagnostics, then return them. */
+    std::vector<Diagnostic> getDiagnosticsForFile(const std::string& filePath, int timeoutMs = 800);
+
     static std::string uriToPath(const std::string& uri);
+    /** Build file URI from absolute path (file:///...) */
+    static std::string pathToUri(const std::string& absolutePath);
 
 private:
     std::string serverPath;
@@ -72,6 +87,7 @@ private:
     std::condition_variable cv;
     std::unordered_map<int, nlohmann::json> responses;
     std::unordered_set<std::string> openedDocuments;
+    std::unordered_map<std::string, std::vector<Diagnostic>> diagnostics;
     std::atomic<bool> lastRequestTimedOut{false};
 
     bool startProcess();
@@ -83,5 +99,6 @@ private:
     bool ensureDocumentOpen(const std::string& fileUri);
     std::vector<Location> parseLocations(const nlohmann::json& result);
     std::vector<DocumentSymbol> parseDocumentSymbols(const nlohmann::json& result);
+    void handlePublishDiagnostics(const nlohmann::json& params);
     static std::vector<std::string> splitArgs(const std::string& cmd);
 };
