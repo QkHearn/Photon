@@ -705,9 +705,10 @@ ApplyPatchTool::ApplyPatchTool(const std::string& rootPath, bool hasGit)
     : rootPath(fs::u8path(rootPath)), hasGit(hasGit) {}
 
 std::string ApplyPatchTool::getDescription() const {
-    std::string desc = "Modify project files by applying a unified diff (recommended for all file edits: reversible, trackable). "
+    std::string desc = "Modify or create project files by applying a unified diff (recommended for all file edits: reversible, trackable). "
                       "Provide diff_content: each line added with '+' prefix, removed with '-' prefix, unchanged with space. "
-                      "Include at least one hunk header like \"@@ -1,3 +1,4 @@\". "
+                      "Include at least one hunk header (e.g. \"@@ -1,3 +1,4 @@\" for edits, \"@@ -0,0 +1,N @@\" for new files). "
+                      "New file: use \"--- /dev/null\" and \"+++ b/path/to/newfile\" with only '+' lines. "
                       "Multi-file, backup and rollback supported. ";
     
     if (hasGit) {
@@ -725,7 +726,7 @@ nlohmann::json ApplyPatchTool::getSchema() const {
         {"properties", {
             {"diff_content", {
                 {"type", "string"},
-                {"description", "Unified diff string. Each line must start with '+', '-' or space, and the diff must contain at least one '@@' hunk header."}
+                {"description", "Unified diff string. Each line must start with '+', '-' or space; must contain at least one '@@' hunk. For new files use --- /dev/null, +++ b/path, and @@ -0,0 +1,N @@ with only '+' lines."}
             }},
             {"files", {
                 {"type", "array"},
@@ -1264,7 +1265,8 @@ RunCommandTool::RunCommandTool(const std::string& rootPath)
     : rootPath(fs::u8path(rootPath)) {}
 
 std::string RunCommandTool::getDescription() const {
-    return "Execute a shell command in the project directory. "
+    return "Execute a shell command in the project directory (build, test, lint, list, logs, etc.). "
+           "For creating or editing project files, use apply_patch instead. "
            "Parameters: command (string), timeout (int, optional, default 30 seconds).";
 }
 

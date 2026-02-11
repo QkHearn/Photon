@@ -73,7 +73,8 @@ Heuristic file guessing is prohibited.
 
 ### 3.3 Write Constraints
 
-- **Single write path**: All file modifications MUST go through the **apply_patch** tool.
+- **Writes only via apply_patch**: All file create, modify, and delete (source and project content) MUST go through the **apply_patch** tool—there is no other allowed write mechanism. Use run_command for build, test, list, and log viewing (redirects/tee for logs are allowed).
+- **Multi-file in one call**: One `diff_content` may contain multiple files (multiple `diff --git` / `---` / `+++` / `@@` sections); apply_patch applies all of them in a single invocation.
 - Full-file overwrites are prohibited.
 - All modifications must be expressed as **line-bounded patches** (unified diff format).
 - Each patch must be reversible.
