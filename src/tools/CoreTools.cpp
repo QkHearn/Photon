@@ -124,7 +124,7 @@ ReadCodeBlockTool::ReadCodeBlockTool(const std::string& rootPath, SymbolManager*
 std::string ReadCodeBlockTool::getDescription() const {
     return "Read code from a file with intelligent strategies: "
            "(1) No parameters → returns symbol summary for code files; "
-           "(2) symbol_name specified → returns that symbol's code; "
+           "(2) symbol_name specified → returns that symbol's code plus call chain (Calls / Called by) when index is available; "
            "(3) start_line/end_line specified → returns those lines; "
            "(4) Otherwise → returns full file. "
            "Parameters: file_path (required), symbol_name (optional), start_line (optional), end_line (optional).";
@@ -591,7 +591,46 @@ nlohmann::json ReadCodeBlockTool::readSymbolCode(const std::string& filePath, co
     }
     
     // 读取符号对应的行范围
-    return readLineRange(filePath, targetSymbol->line, targetSymbol->endLine);
+    result = readLineRange(filePath, targetSymbol->line, targetSymbol->endLine);
+    if (result.contains("error")) return result;
+
+    // 附加调用链信息（Calls / Called by），便于分析调用关系
+    auto callees = symbolMgr->getCalleesForSymbol(*targetSymbol);
+    auto callers = symbolMgr->getCallerKeysForSymbol(*targetSymbol);
+    if (!callees.empty() || !callers.empty()) {
+        std::ostringstream chain;
+        chain << "\n\n--- Call chain ---\n";
+        auto formatKey = [](const std::string& k) -> std::string {
+            size_t last = k.rfind(':');
+            if (last == std::string::npos || last == 0) return k;
+            size_t prev = k.rfind(':', last - 1);
+            if (prev == std::string::npos) return k;
+            return k.substr(0, prev) + "::" + k.substr(last + 1);
+        };
+        if (!callees.empty()) {
+            chain << "Calls: ";
+            for (size_t i = 0; i < callees.size(); ++i) {
+                if (i > 0) chain << ", ";
+                chain << formatKey(callees[i]);
+            }
+            chain << "\n";
+        }
+        if (!callers.empty()) {
+            chain << "Called by: ";
+            for (size_t i = 0; i < callers.size(); ++i) {
+                if (i > 0) chain << ", ";
+                chain << formatKey(callers[i]);
+            }
+            chain << "\n";
+        }
+        std::string append = chain.str();
+        if (result.contains("content") && result["content"].is_array() && !result["content"].empty()
+            && result["content"][0].contains("text") && result["content"][0]["text"].is_string()) {
+            std::string existing = result["content"][0]["text"].get<std::string>();
+            result["content"][0]["text"] = existing + UTF8Utils::sanitize(append);
+        }
+    }
+    return result;
 }
 
 nlohmann::json ReadCodeBlockTool::readLineRange(const std::string& filePath, int startLine, int endLine) {
@@ -709,6 +748,7 @@ std::string ApplyPatchTool::getDescription() const {
                       "Provide diff_content: each line added with '+' prefix, removed with '-' prefix, unchanged with space. "
                       "Include at least one hunk header (e.g. \"@@ -1,3 +1,4 @@\" for edits, \"@@ -0,0 +1,N @@\" for new files). "
                       "New file: use \"--- /dev/null\" and \"+++ b/path/to/newfile\" with only '+' lines. "
+                      "For multiple files: put all file sections in one diff_content (multiple diff --git / --- / +++ blocks), then use read/search to analyze the result. "
                       "Multi-file, backup and rollback supported. ";
     
     if (hasGit) {
@@ -726,7 +766,7 @@ nlohmann::json ApplyPatchTool::getSchema() const {
         {"properties", {
             {"diff_content", {
                 {"type", "string"},
-                {"description", "Unified diff string. Each line must start with '+', '-' or space; must contain at least one '@@' hunk. For new files use --- /dev/null, +++ b/path, and @@ -0,0 +1,N @@ with only '+' lines."}
+                {"description", "Unified diff string. Each line must start with '+', '-' or space; must contain at least one '@@' hunk. For new files use --- /dev/null, +++ b/path, and @@ -0,0 +1,N @@ with only '+' lines. Multiple files: concatenate multiple diff --git / --- / +++ sections in one string."}
             }},
             {"files", {
                 {"type", "array"},
@@ -739,7 +779,7 @@ nlohmann::json ApplyPatchTool::getSchema() const {
             }},
             {"dry_run", {
                 {"type", "boolean"},
-                {"description", "Preview changes without applying (default: false)"}
+                {"description", "If true, only validate diff (git apply --check), do not write. Recommend setting true first for complex patches to avoid apply errors (default: false)."}
             }}
         }},
         {"required", {"diff_content"}}
@@ -1002,11 +1042,14 @@ std::vector<ApplyPatchTool::FileDiff> ApplyPatchTool::parseUnifiedDiff(const std
     return files;
 }
 
-bool ApplyPatchTool::applyFileChanges(const FileDiff& fileDiff) {
+bool ApplyPatchTool::applyFileChanges(const FileDiff& fileDiff, std::string* applyError) {
     std::string rel = fileDiff.isDeleted ? fileDiff.oldFile : fileDiff.newFile;
     if (rel.empty()) rel = fileDiff.oldFile;
     rel = stripGitPrefix(rel);
-    if (rel.empty()) return false;
+    if (rel.empty()) {
+        if (applyError) *applyError = "补丁中未解析到有效文件路径。";
+        return false;
+    }
 
     fs::path full = fs::u8path(rel);
     if (!full.is_absolute()) full = rootPath / full;
@@ -1015,13 +1058,17 @@ bool ApplyPatchTool::applyFileChanges(const FileDiff& fileDiff) {
         if (!fs::exists(full)) return true;
         std::error_code ec;
         fs::remove(full, ec);
+        if (ec && applyError) *applyError = rel + ": 删除文件失败。";
         return !ec;
     }
 
     std::vector<std::string> original;
     if (fs::exists(full)) {
         std::ifstream in(full);
-        if (!in.is_open()) return false;
+        if (!in.is_open()) {
+            if (applyError) *applyError = rel + ": 无法打开文件读取。";
+            return false;
+        }
         std::string l;
         while (std::getline(in, l)) original.push_back(l);
     }
@@ -1031,7 +1078,10 @@ bool ApplyPatchTool::applyFileChanges(const FileDiff& fileDiff) {
 
     for (const auto& h : fileDiff.hunks) {
         size_t targetOld0 = (h.oldStart <= 0) ? 0 : static_cast<size_t>(h.oldStart - 1);
-        if (targetOld0 > original.size()) return false;
+        if (targetOld0 > original.size()) {
+            if (applyError) *applyError = rel + ": 上下文不匹配（补丁期望从第 " + std::to_string(h.oldStart) + " 行开始，当前文件仅 " + std::to_string(original.size()) + " 行）。可能 diff 是针对其他项目/版本生成的。";
+            return false;
+        }
         while (oldIdx < targetOld0) out.push_back(original[oldIdx++]);
 
         for (const auto& hl : h.lines) {
@@ -1039,23 +1089,40 @@ bool ApplyPatchTool::applyFileChanges(const FileDiff& fileDiff) {
             char prefix = hl[0];
             std::string content = hl.substr(1);
             if (prefix == ' ') {
-                if (oldIdx >= original.size() || original[oldIdx] != content) return false;
+                if (oldIdx >= original.size() || original[oldIdx] != content) {
+                    if (applyError) {
+                        size_t lineNo = oldIdx + 1;
+                        std::string expected = content.length() > 40 ? content.substr(0, 37) + "..." : content;
+                        std::string actual = (oldIdx < original.size() ? original[oldIdx] : "").length() > 40 ? original[oldIdx].substr(0, 37) + "..." : (oldIdx < original.size() ? original[oldIdx] : "(文件已结束)");
+                        *applyError = rel + " 第 " + std::to_string(lineNo) + " 行: 上下文不匹配（预期与当前文件不一致）。可能 diff 是针对其他项目/版本生成的。";
+                    }
+                    return false;
+                }
                 out.push_back(content);
                 oldIdx++;
             } else if (prefix == '-') {
-                if (oldIdx >= original.size() || original[oldIdx] != content) return false;
+                if (oldIdx >= original.size() || original[oldIdx] != content) {
+                    if (applyError) *applyError = rel + " 第 " + std::to_string(oldIdx + 1) + " 行: 待删除行与当前文件不一致，上下文不匹配。可能 diff 是针对其他项目/版本生成的。";
+                    return false;
+                }
                 oldIdx++;
             } else if (prefix == '+') {
                 out.push_back(content);
             }
         }
+        // 新增文件型 hunk（oldCount==0）：不再追加原文件剩余内容，避免「补丁内容+整份原文件」重复
+        if (h.oldCount == 0)
+            oldIdx = original.size();
     }
 
     while (oldIdx < original.size()) out.push_back(original[oldIdx++]);
 
     fs::create_directories(full.parent_path());
     std::ofstream of(full);
-    if (!of.is_open()) return false;
+    if (!of.is_open()) {
+        if (applyError) *applyError = rel + ": 无法写入文件（无权限或路径不可用）。";
+        return false;
+    }
     for (size_t i = 0; i < out.size(); ++i) {
         of << out[i];
         if (i + 1 < out.size()) of << "\n";
@@ -1076,11 +1143,11 @@ bool ApplyPatchTool::applyFileDiff(const std::string& filePath, const std::strin
     return applyFileChanges(diffs.front());
 }
 
-bool ApplyPatchTool::applyUnifiedDiff(const std::string& diffContent) {
+bool ApplyPatchTool::applyUnifiedDiff(const std::string& diffContent, std::string* applyError) {
     auto diffs = parseUnifiedDiff(diffContent);
     if (diffs.empty()) return false;
     for (const auto& fd : diffs) {
-        if (!applyFileChanges(fd)) return false;
+        if (!applyFileChanges(fd, applyError)) return false;
     }
     return true;
 }
@@ -1216,6 +1283,19 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
         out.clear();
         int code = execCaptureCoreTools(prefix + "git apply \"" + patchPath.u8string() + "\" 2>&1", out);
         if (code != 0) {
+            // 补丁是「新增文件」但工作区已有同名文件时，git apply 会报 "already exists in working directory"。
+            // 回退到内置引擎：按 diff 内容写入/覆盖文件，便于 LLM 重试或覆盖已存在文件。
+            bool alreadyExists = (out.find("already exists in working directory") != std::string::npos);
+            if (alreadyExists) {
+                std::string detail;
+                if (applyUnifiedDiff(diffContent, &detail)) {
+                    result["success"] = true;
+                    result["affected_files"] = affected;
+                    result["message"] = "目标文件已存在，已通过内置引擎覆盖应用补丁。可使用 undo 撤销。";
+                    result["git_fallback"] = "already_exists";
+                    return result;
+                }
+            }
             result["error"] = out.empty() ? "git apply 失败" : out;
             return result;
         }
@@ -1246,8 +1326,9 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
         }
     }
 
-    if (!applyUnifiedDiff(diffContent)) {
-        result["error"] = "手动 diff 引擎应用失败（通常是上下文不匹配）。建议安装/启用 Git 后再试。";
+    std::string detail;
+    if (!applyUnifiedDiff(diffContent, &detail)) {
+        result["error"] = detail.empty() ? "手动 diff 引擎应用失败（通常是上下文不匹配）。建议安装/启用 Git 后再试。" : ("apply_patch 应用失败: " + detail);
         return result;
     }
 
@@ -1440,6 +1521,288 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
     
     result["content"] = nlohmann::json::array({contentItem});
     result["tree"] = tree;
+    return result;
+}
+
+// ============================================================================
+// GrepTool Implementation
+// ============================================================================
+
+GrepTool::GrepTool(const std::string& rootPath) : rootPath(fs::u8path(rootPath)) {}
+
+std::string GrepTool::getDescription() const {
+    return "Search project files by text or regex (grep). Returns file, line, and matching line content. "
+           "Use when you do not know which file contains something; then use read_code_block with the returned path and line. "
+           "Parameters: pattern (required), path (optional, default '.'), include (optional glob, e.g. '*.cpp'), max_results (optional, default 200).";
+}
+
+nlohmann::json GrepTool::getSchema() const {
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"pattern", {
+                {"type", "string"},
+                {"description", "Search pattern (literal or regex). Escape for shell if needed."}
+            }},
+            {"path", {
+                {"type", "string"},
+                {"description", "Directory to search under (default '.'). Relative to project root."}
+            }},
+            {"include", {
+                {"type", "string"},
+                {"description", "Glob to include files, e.g. '*.cpp', '*.h' (optional)."}
+            }},
+            {"max_results", {
+                {"type", "integer"},
+                {"description", "Maximum number of matches to return (default 200)."}
+            }}
+        }},
+        {"required", {"pattern"}}
+    };
+}
+
+static void parseGrepLine(const std::string& line, std::string& outPath, int& outLine, std::string& outContent) {
+    outPath.clear();
+    outLine = 0;
+    outContent.clear();
+    if (line.empty()) return;
+    // Format "path:line:content" — path may contain ':' (e.g. C:\a\b). Split from right: last ':' -> content, second-to-last -> line.
+    size_t lastColon = line.rfind(':');
+    if (lastColon == std::string::npos) return;
+    outContent = line.substr(lastColon + 1);
+    std::string rest = line.substr(0, lastColon);
+    size_t prevColon = rest.rfind(':');
+    if (prevColon == std::string::npos) return;
+    outPath = rest.substr(0, prevColon);
+    std::string lineStr = rest.substr(prevColon + 1);
+    try {
+        outLine = std::stoi(lineStr);
+    } catch (...) {
+        return;
+    }
+    if (outLine < 0) outLine = 0;
+}
+
+nlohmann::json GrepTool::execute(const nlohmann::json& args) {
+    nlohmann::json result;
+    if (!args.contains("pattern") || !args["pattern"].is_string()) {
+        result["error"] = "Missing required parameter: pattern";
+        return result;
+    }
+    std::string pattern = args["pattern"].get<std::string>();
+    if (pattern.empty()) {
+        result["error"] = "pattern must be non-empty";
+        return result;
+    }
+    std::string searchPath = args.value("path", ".");
+    std::string include = args.value("include", "");
+    int maxResults = args.value("max_results", 200);
+    if (maxResults <= 0 || maxResults > 2000) maxResults = 200;
+
+    auto shellEscape = [](const std::string& s) -> std::string {
+        if (s.find(' ') == std::string::npos && s.find('"') == std::string::npos && s.find('$') == std::string::npos) return s;
+        std::string r;
+        r.reserve(s.size() + 2);
+        r += '"';
+        for (char c : s) {
+            if (c == '"' || c == '\\') r += '\\';
+            r += c;
+        }
+        r += '"';
+        return r;
+    };
+    std::string patternEsc = shellEscape(pattern);
+    std::string prefix = "cd \"" + rootPath.u8string() + "\" && ";
+    std::string cmd;
+    std::string out;
+    // Prefer ripgrep (rg), fallback to grep -rn
+    bool useRg = false;
+#ifdef _WIN32
+    { std::string d; if (execCaptureCoreTools("where rg 2>nul", d) == 0 && !d.empty()) useRg = true; }
+#else
+    { std::string d; if (execCaptureCoreTools("which rg 2>/dev/null || command -v rg 2>/dev/null", d) == 0 && !d.empty()) useRg = true; }
+#endif
+    if (useRg) {
+        cmd = prefix + "rg -n --no-heading --color never ";
+        if (!include.empty()) cmd += "-g " + shellEscape(include) + " ";
+        cmd += " -- " + patternEsc + " " + searchPath + " 2>&1";
+    } else {
+        cmd = prefix + "grep -rn ";
+        if (!include.empty()) cmd += "--include=" + shellEscape(include) + " ";
+        cmd += " -e " + patternEsc + " " + searchPath + " 2>&1";
+    }
+    int code = execCaptureCoreTools(cmd, out);
+    if (code != 0 && code != 1) {
+        result["error"] = out.empty() ? "grep failed" : out;
+        return result;
+    }
+    // Parse "path:line:content" lines
+    nlohmann::json matches = nlohmann::json::array();
+    std::istringstream iss(out);
+    std::string line;
+    int count = 0;
+    while (count < maxResults && std::getline(iss, line)) {
+        if (line.empty()) continue;
+        std::string p, c;
+        int ln = 0;
+        parseGrepLine(line, p, ln, c);
+        if (!p.empty() && ln > 0) {
+            matches.push_back({{"file", p}, {"line", ln}, {"content", c}});
+            ++count;
+        }
+    }
+    result["matches"] = matches;
+    result["count"] = static_cast<int>(matches.size());
+    nlohmann::json contentItem;
+    contentItem["type"] = "text";
+    std::ostringstream text;
+    text << "grep pattern: " << pattern << "\nmatches: " << result["count"].get<int>() << "\n";
+    for (const auto& m : matches) {
+        text << m["file"].get<std::string>() << ":" << m["line"].get<int>() << ":" << m["content"].get<std::string>() << "\n";
+    }
+    contentItem["text"] = text.str();
+    result["content"] = nlohmann::json::array({contentItem});
+    return result;
+}
+
+// ============================================================================
+// AttemptTool Implementation
+// ============================================================================
+
+AttemptTool::AttemptTool(const std::string& rootPath) : rootPath(fs::u8path(rootPath)) {}
+
+std::string AttemptTool::getDescription() const {
+    return "Maintain current user attempt (intent + task state) so the model does not forget across turns. "
+           "Stored in .photon/current_attempt.json. Use at start of turn to recall what we are doing; "
+           "update when user gives new requirement or when a step is done; clear when task is complete. "
+           "Parameters: action (required: 'get' | 'update' | 'clear'). For update: intent, status, read_scope, affected_files, step_done (optional).";
+}
+
+nlohmann::json AttemptTool::getSchema() const {
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"action", {
+                {"type", "string"},
+                {"description", "get = return current attempt; update = merge fields and save; clear = remove attempt for new task"}
+            }},
+            {"intent", {
+                {"type", "string"},
+                {"description", "User intent / requirement description (for update)"}
+            }},
+            {"status", {
+                {"type", "string"},
+                {"description", "in_progress | done | blocked (for update)"}
+            }},
+            {"read_scope", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}},
+                {"description", "Planned files or path::symbol to read (for update)"}
+            }},
+            {"affected_files", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}},
+                {"description", "Files already or planned to be modified (for update)"}
+            }},
+            {"step_done", {
+                {"type", "string"},
+                {"description", "Append a completed step description (for update)"}
+            }}
+        }},
+        {"required", {"action"}}
+    };
+}
+
+nlohmann::json AttemptTool::execute(const nlohmann::json& args) {
+    nlohmann::json result;
+    if (!args.contains("action") || !args["action"].is_string()) {
+        result["error"] = "Missing required parameter: action (get | update | clear)";
+        return result;
+    }
+    std::string action = args["action"].get<std::string>();
+    fs::path attemptPath = rootPath / ".photon" / "current_attempt.json";
+
+    if (action == "get") {
+        if (!fs::exists(attemptPath) || !fs::is_regular_file(attemptPath)) {
+            result["attempt"] = nlohmann::json::object();
+            result["message"] = "No current attempt; use update with intent to start one.";
+        } else {
+            try {
+                std::ifstream f(attemptPath);
+                nlohmann::json cur;
+                f >> cur;
+                result["attempt"] = cur;
+            } catch (const std::exception& e) {
+                result["error"] = std::string("Failed to read attempt: ") + e.what();
+                return result;
+            }
+        }
+        nlohmann::json contentItem;
+        contentItem["type"] = "text";
+        contentItem["text"] = result.dump(2);
+        result["content"] = nlohmann::json::array({contentItem});
+        return result;
+    }
+
+    if (action == "clear") {
+        std::error_code ec;
+        if (fs::exists(attemptPath)) fs::remove(attemptPath, ec);
+        result["message"] = "Attempt cleared. Ready for new task.";
+        nlohmann::json contentItem;
+        contentItem["type"] = "text";
+        contentItem["text"] = result.dump(2);
+        result["content"] = nlohmann::json::array({contentItem});
+        return result;
+    }
+
+    if (action == "update") {
+        nlohmann::json cur;
+        if (fs::exists(attemptPath) && fs::is_regular_file(attemptPath)) {
+            try {
+                std::ifstream f(attemptPath);
+                f >> cur;
+            } catch (...) {
+                cur = nlohmann::json::object();
+            }
+        }
+        if (!cur.is_object()) cur = nlohmann::json::object();
+
+        auto now = std::chrono::system_clock::now();
+        auto t = std::chrono::system_clock::to_time_t(now);
+        std::string ts = std::to_string(static_cast<long long>(t));
+        if (!cur.contains("created_at") || cur["created_at"].is_null()) cur["created_at"] = ts;
+        cur["updated_at"] = ts;
+
+        if (args.contains("intent") && args["intent"].is_string()) cur["intent"] = args["intent"].get<std::string>();
+        if (args.contains("status") && args["status"].is_string()) cur["status"] = args["status"].get<std::string>();
+        if (args.contains("read_scope") && args["read_scope"].is_array()) cur["read_scope"] = args["read_scope"];
+        if (args.contains("affected_files") && args["affected_files"].is_array()) cur["affected_files"] = args["affected_files"];
+        if (args.contains("step_done") && args["step_done"].is_string()) {
+            std::string step = args["step_done"].get<std::string>();
+            if (!cur.contains("steps_completed")) cur["steps_completed"] = nlohmann::json::array();
+            cur["steps_completed"].push_back(step);
+        }
+
+        if (!cur.contains("status")) cur["status"] = "in_progress";
+
+        try {
+            fs::create_directories(attemptPath.parent_path());
+            std::ofstream of(attemptPath);
+            of << cur.dump(2);
+        } catch (const std::exception& e) {
+            result["error"] = std::string("Failed to write attempt: ") + e.what();
+            return result;
+        }
+        result["attempt"] = cur;
+        result["message"] = "Attempt updated.";
+        nlohmann::json contentItem;
+        contentItem["type"] = "text";
+        contentItem["text"] = result.dump(2);
+        result["content"] = nlohmann::json::array({contentItem});
+        return result;
+    }
+
+    result["error"] = "action must be get, update, or clear";
     return result;
 }
 

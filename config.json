@@ -1,8 +1,8 @@
 {
   "llm": {
-    "api_key": "",
-    "base_url": "https://api.moonshot.cn/v1",
-    "model": "kimi-k2-0905-preview",
+    "api_key": "951a92cb8bcb4dacac7a4c35d83eac22.aVfdVda7toxj3X3h",
+    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "model": "glm-4.7",
     "system_role": "Project context: C++ codebase with CMake build system. Primary languages: C++17, Python. LSP servers available for navigation."
   },
   "agent": {

@@ -93,6 +93,9 @@ public:
     int getCallerOutDegree(const Symbol& symbol) const;
     std::vector<std::string> getCalleesForSymbol(const Symbol& symbol) const;
 
+    /** 返回调用该符号的其它符号的 key 列表（path:line:name），用于调用链分析 */
+    std::vector<std::string> getCallerKeysForSymbol(const Symbol& symbol) const;
+
     std::vector<CallInfo> extractCalls(const std::string& relPath, int startLine, int endLine);
 
     bool isScanning() const { return scanning; }

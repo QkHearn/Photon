@@ -1106,6 +1106,21 @@ std::vector<std::string> SymbolManager::getCalleesForSymbol(const Symbol& symbol
     return it->second;
 }
 
+std::vector<std::string> SymbolManager::getCallerKeysForSymbol(const Symbol& symbol) const {
+    std::unique_lock<std::shared_mutex> lock(mtx);
+    std::string key = makeSymbolKey(symbol);
+    std::vector<std::string> callers;
+    for (const auto& [callerKey, calleeKeys] : callGraphAdj) {
+        for (const auto& c : calleeKeys) {
+            if (c == key) {
+                callers.push_back(callerKey);
+                break;
+            }
+        }
+    }
+    return callers;
+}
+
 std::vector<SymbolManager::CallInfo> SymbolManager::extractCalls(const std::string& relPath, int startLine, int endLine) {
     fs::path fullPath = fs::path(rootPath) / fs::u8path(relPath);
     std::ifstream file(fullPath);

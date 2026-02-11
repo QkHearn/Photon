@@ -161,10 +161,9 @@ add_executable(agent_tests
     tests/test_ContextManager.cpp
     tests/test_ApplyPatchDiff.cpp
     tests/test_WriteTool.cpp
-    # TODO: 添加新的测试文件
-    # tests/test_ToolRegistry.cpp
-    # tests/test_CoreTools.cpp
-    # tests/test_MemoryManager.cpp
+    tests/test_GrepTool.cpp
+    tests/test_AttemptTool.cpp
+    tests/test_SystemRequirementFlow.cpp
 )
 if(PHOTON_USE_BUNDLED_GTEST)
     target_link_libraries(agent_tests PRIVATE gtest gtest_main agent_lib nlohmann_json::nlohmann_json)

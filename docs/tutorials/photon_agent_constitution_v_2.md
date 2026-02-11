@@ -75,6 +75,7 @@ Heuristic file guessing is prohibited.
 
 - **Writes only via apply_patch**: All file create, modify, and delete (source and project content) MUST go through the **apply_patch** tool—there is no other allowed write mechanism. Use run_command for build, test, list, and log viewing (redirects/tee for logs are allowed).
 - **Multi-file in one call**: One `diff_content` may contain multiple files (multiple `diff --git` / `---` / `+++` / `@@` sections); apply_patch applies all of them in a single invocation.
+- **Batch workflow**: When creating or modifying multiple files, prefer a **single** apply_patch with one diff_content that includes all file sections; after applying, use **read** or **search** to verify and analyze the result as a whole.
 - Full-file overwrites are prohibited.
 - All modifications must be expressed as **line-bounded patches** (unified diff format).
 - Each patch must be reversible.

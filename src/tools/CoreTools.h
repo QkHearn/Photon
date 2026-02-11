@@ -99,8 +99,8 @@ private:
     // 使用Git写入文件
     bool writeFileWithGit(const std::string& path, const std::vector<std::string>& lines);
     
-    // Git风格diff支持（核心功能）
-    bool applyUnifiedDiff(const std::string& diffContent);
+    // Git风格diff支持（核心功能）。可选传入 applyError 以获取失败时的详细原因（如文件路径、上下文不匹配）。
+    bool applyUnifiedDiff(const std::string& diffContent, std::string* applyError = nullptr);
     std::string generateUnifiedDiff(const std::vector<std::string>& files);
     bool applyFileDiff(const std::string& filePath, const std::string& diffContent);
     
@@ -119,7 +119,8 @@ private:
     };
     
     std::vector<FileDiff> parseUnifiedDiff(const std::string& diffContent);
-    bool applyFileChanges(const FileDiff& fileDiff);
+    // 若 applyError 非空且应用失败，会写入具体原因（如：文件路径、行号、上下文不匹配）。
+    bool applyFileChanges(const FileDiff& fileDiff, std::string* applyError = nullptr);
 };
 
 /**
@@ -161,6 +162,39 @@ private:
     
     // 递归列出目录
     void listDirectory(const fs::path& dir, nlohmann::json& result, int maxDepth, int currentDepth);
+};
+
+/**
+ * @brief 代码搜索工具（grep）
+ *
+ * 在项目目录下按文本/正则查找，返回 文件:行号:内容。便于「不知道在哪个文件」时先定位再 read_code_block。
+ */
+class GrepTool : public ITool {
+public:
+    explicit GrepTool(const std::string& rootPath);
+    std::string getName() const override { return "grep"; }
+    std::string getDescription() const override;
+    nlohmann::json getSchema() const override;
+    nlohmann::json execute(const nlohmann::json& args) override;
+private:
+    fs::path rootPath;
+};
+
+/**
+ * @brief 用户 Attempt 工具：持久化当前任务意图与状态，避免多轮遗忘
+ *
+ * 存于 .photon/current_attempt.json。模型每轮可 get 回忆「正在做什么」，
+ * 按 intent/read_scope 推进，用 update 记录进度或完成，用 clear 清空以便新需求。
+ */
+class AttemptTool : public ITool {
+public:
+    explicit AttemptTool(const std::string& rootPath);
+    std::string getName() const override { return "attempt"; }
+    std::string getDescription() const override;
+    nlohmann::json getSchema() const override;
+    nlohmann::json execute(const nlohmann::json& args) override;
+private:
+    fs::path rootPath;
 };
 
 /**

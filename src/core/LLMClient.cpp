@@ -60,10 +60,10 @@ std::string LLMClient::chat(const std::string& prompt, const std::string& system
 // ---------------------------------------------------------------------------
 // LLM Request Adapter: normalizeForKimi
 // ---------------------------------------------------------------------------
-// Kimi 要求 messages[].content 为 []object，即 [{"type":"text","text":"..."}]，
-// 且 text 不能为空，否则返回 "Invalid request: text content is empty"。
+// API 要求 messages[].content 为 [{"type":"text","text":"..."}]，且 text 非空（如 1214）。
+// 在此统一规范化，main 无需关心格式，任意 content 都会在发送前被修正。
 // ---------------------------------------------------------------------------
-static const std::string kEmptyContentPlaceholder = " ";  // 空 content 时占位，避免 API 报错
+static const std::string kEmptyContentPlaceholder = "{\"message\":\"(no output)\"}";
 
 static nlohmann::json normalizeForKimi(const nlohmann::json& messages) {
     if (!messages.is_array()) return messages;
@@ -83,8 +83,9 @@ static nlohmann::json normalizeForKimi(const nlohmann::json& messages) {
             } else if (!m["content"].is_array() || m["content"].empty()) {
                 m["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", kEmptyContentPlaceholder}})});
             } else {
-                // 已是 array：确保每个 text 不为空
-                for (auto& part : m["content"]) {
+                // 已是 array：确保 content[0].text 等非空（按索引修改保证写回）
+                for (size_t i = 0; i < m["content"].size(); ++i) {
+                    auto& part = m["content"][i];
                     if (part.is_object() && part.contains("text") && part["text"].is_string()) {
                         std::string t = part["text"].get<std::string>();
                         if (t.empty()) part["text"] = kEmptyContentPlaceholder;

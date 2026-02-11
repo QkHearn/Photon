@@ -802,6 +802,8 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path, g_hasGit));  // 统一补丁工具：只接受 unified diff
     toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
+    toolRegistry.registerTool(std::make_unique<GrepTool>(path));  // 代码搜索：grep，先定位再 read_code_block
+    toolRegistry.registerTool(std::make_unique<AttemptTool>(path));  // 用户 attempt：持久化意图与任务状态，防遗忘
     
     std::cout << GREEN << "  ✔ Registered " << toolRegistry.getToolCount() << " core tools" << RESET << std::endl;
 
@@ -837,7 +839,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  " << CYAN << "Model  " << RESET << " : " << PURPLE << cfg.llm.model << RESET << std::endl;
     
     std::cout << "\n  " << YELLOW << "Shortcuts:" << RESET << std::endl;
-    std::cout << GRAY << "  ┌──────────────────────────────────────────────────────────┐" << RESET << std::endl;
+    std::cout << GRAY << "  ┌───────────────────────────────────────────────────────────┐" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "tools   " << RESET << GRAY << " List all sensors   " 
               << "│ " << RESET << BOLD << "undo    " << RESET << GRAY << " Revert change      " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "patch   " << RESET << GRAY << " Preview last patch " 
@@ -848,7 +850,7 @@ int main(int argc, char* argv[]) {
               << "│ " << RESET << BOLD << "memory  " << RESET << GRAY << " Show long-term mem " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "clear   " << RESET << GRAY << " Reset context      " 
               << "│ " << RESET << BOLD << "exit    " << RESET << GRAY << " Terminate agent    " << "│" << RESET << std::endl;
-    std::cout << GRAY << "  └──────────────────────────────────────────────────────────┘" << RESET << std::endl;
+    std::cout << GRAY << "  └───────────────────────────────────────────────────────────┘" << RESET << std::endl;
 
     // Optimization: Define the core identity as an Autonomous Agent.
     auto now = std::chrono::system_clock::now();
@@ -877,6 +879,8 @@ int main(int argc, char* argv[]) {
     std::string systemPrompt = 
         "You are Photon.\n"
         "You must operate under Photon Agent Constitution v2.0.\n"
+        "Before any read or write: plan first—identify entry symbols, affected files, and read scope. Then use list_project_files / grep / read_code_block only within that scope to save tokens.\n"
+        "Use the attempt tool to avoid forgetting: call attempt(action=get) at the start of a turn to recall current task; call attempt(action=update, intent=..., read_scope=...) when the user gives a new requirement; call attempt(action=update, step_done=...) after completing a step; call attempt(action=clear) when the task is done so the next task starts clean.\n"
         "All behavior is governed by the constitution and validated configuration.\n\n" +
         (constitutionText.empty() ? std::string("") : (std::string("# Constitution v2.0\n\n") + constitutionText + "\n\n")) +
         
@@ -1817,7 +1821,7 @@ int main(int argc, char* argv[]) {
                                 result["error"] = "Constitution violation: " + validation.error;
                                 Logger::getInstance().error("Constitution violation in " + toolName + ": " + validation.error);
                                 
-                                // Add error response to messages
+                                // Add error response to messages（格式由 LLMClient::normalizeForKimi 统一处理）
                                 std::string errorMsg = "Constitution violation (" + validation.constraint + "): " + validation.error;
                                 messages.push_back({
                                     {"role", "tool"},
@@ -1895,7 +1899,8 @@ int main(int argc, char* argv[]) {
                             } catch (const std::exception& e) {
                                 textContent = "[Tool result serialization failed: invalid UTF-8]";
                             }
-                            
+                            // 空 content 由 LLMClient::normalizeForKimi 在发送前统一占位，此处不再重复处理
+
                             if (cfg.agent.enableDebug) {
                                 size_t preview = std::min(textContent.size(), size_t(800));
                                 std::cout << "[Debug] Tool result to model (length=" << textContent.size() << ", preview " << preview << " chars):\n---\n"
