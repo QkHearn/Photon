@@ -73,23 +73,25 @@ Heuristic file guessing is prohibited.
 
 ### 3.3 Write Constraints
 
+- **Single write path**: All file modifications MUST go through the **apply_patch** tool.
 - Full-file overwrites are prohibited.
-- All modifications must be expressed as **line-bounded patches**.
+- All modifications must be expressed as **line-bounded patches** (unified diff format).
 - Each patch must be reversible.
 
 Direct write operations without a patch representation are invalid.
+
+**Tool contract**: `apply_patch` accepts `diff_content` (unified diff string). The diff MUST contain hunk headers (`@@ ... @@`) so that changes are line-scoped.
 
 ---
 
 ### 3.4 Patch Semantics
 
-Each patch MUST specify:
-- target file
-- start line
-- end line
-- replacement content
+Each patch (unified diff) MUST specify:
+- target file (from `---` / `+++` or `diff --git` header)
+- line scope per hunk (`@@ start,count ...`)
+- replacement content (lines prefixed with `+`, `-`, or space)
 
-Patches lacking precise line scope are invalid.
+Patches lacking precise line scope (e.g. no `@@` hunks) are invalid.
 
 ---
 

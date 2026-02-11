@@ -68,28 +68,22 @@ private:
     }
 
     /**
-     * @brief Section 3.3: Write Constraints
-     * - Full-file overwrites are prohibited
-     * - All modifications must be line-bounded patches
+     * @brief Section 3.3: Write Constraints (apply_patch)
+     * - All writes go through apply_patch with unified diff (line-bounded, reversible).
+     * - Full-file overwrites are prohibited; diff_content must describe bounded hunks.
      */
     static ValidationResult validateWriteConstraints(const nlohmann::json& args) {
-        if (!args.contains("operation")) {
-            return {false, "Write operation lacks operation type (insert/replace/delete)", "Section 3.3: Write Constraints"};
+        if (!args.contains("diff_content") || !args["diff_content"].is_string()) {
+            return {false, "Write operation requires diff_content (unified diff string).", "Section 3.3: Write Constraints"};
         }
-
-        if (!args.contains("start_line")) {
-            return {false, "Write operation lacks start_line (line-bounded patches required)", "Section 3.3: Write Constraints"};
+        std::string diff = args["diff_content"].get<std::string>();
+        if (diff.empty()) {
+            return {false, "diff_content must be non-empty.", "Section 3.3: Write Constraints"};
         }
-
-        std::string operation = args["operation"].get<std::string>();
-        if (operation != "insert" && operation != "replace" && operation != "delete") {
-            return {
-                false, 
-                "Invalid operation type: " + operation + " (must be insert/replace/delete)",
-                "Section 3.3: Write Constraints"
-            };
+        // Unified diff must contain at least one hunk header (line-bounded patch)
+        if (diff.find("@@") == std::string::npos) {
+            return {false, "diff_content must be a valid unified diff (contain @@ hunk headers).", "Section 3.3: Write Constraints"};
         }
-
         return {true, "", ""};
     }
 };
