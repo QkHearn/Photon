@@ -826,6 +826,8 @@ int main(int argc, char* argv[]) {
     std::cout << GRAY << "  ┌──────────────────────────────────────────────────────────┐" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "tools   " << RESET << GRAY << " List all sensors   " 
               << "│ " << RESET << BOLD << "undo    " << RESET << GRAY << " Revert change     " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "patch   " << RESET << GRAY << " Preview last patch " 
+              << "│ " << RESET << BOLD << "        " << RESET << GRAY << "                   " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "skills  " << RESET << GRAY << " List active skills " 
               << "│ " << RESET << BOLD << "lsp     " << RESET << GRAY << " List LSP servers  " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "tasks   " << RESET << GRAY << " List sched tasks   " 
@@ -1123,6 +1125,82 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
+        if (userInput == "patch") {
+            try {
+                fs::path absolutePath = fs::absolute(fs::u8path(path));
+                fs::path lastPatchPath = absolutePath / ".photon" / "patches" / "last.patch";
+                if (!fs::exists(lastPatchPath) || !fs::is_regular_file(lastPatchPath)) {
+                    // 回退预览：没有 last.patch 时，预览当前工作区的改动（优先 git diff，否则用本地备份 diff）
+                    if (g_hasGit) {
+                        std::cout << CYAN << "\n--- Working Tree Diff (no last.patch) ---" << RESET << std::endl;
+#ifdef _WIN32
+                        system("git diff --stat");
+                        system("git diff --color=always");
+#else
+                        system("git diff --stat 2>/dev/null || true");
+                        system("git diff --color=always 2>/dev/null || true");
+#endif
+                        std::cout << CYAN << "----------------------------------------\n" << RESET << std::endl;
+                        continue;
+                    }
+
+                    std::string lastFile = mcpManager.getLastModifiedFile("builtin");
+                    if (!lastFile.empty()) {
+                        fs::path backupDir = absolutePath / ".photon" / "backups";
+                        fs::path lf = fs::u8path(lastFile);
+                        fs::path backupRel;
+                        if (!lf.is_absolute()) {
+                            backupRel = lf;
+                        } else {
+                            fs::path rn = lf.root_name();
+                            fs::path rp = lf.relative_path();
+                            if (!rn.empty()) {
+                                std::string s = rn.u8string();
+                                for (auto& ch : s) if (ch == ':' || ch == '\\') ch = '_';
+                                backupRel = fs::path("abs") / fs::u8path(s) / rp;
+                            } else {
+                                backupRel = fs::path("abs") / rp;
+                            }
+                        }
+                        fs::path backupPath = backupDir / backupRel;
+                        if (fs::exists(backupPath)) {
+                            std::ifstream bFile(backupPath);
+                            std::string bContent((std::istreambuf_iterator<char>(bFile)), std::istreambuf_iterator<char>());
+                            std::cout << CYAN << "\n--- Last File Diff (no last.patch, via backup) ---" << RESET << std::endl;
+                            showGitDiff(lastFile, bContent, true);
+                            std::cout << CYAN << "-------------------------------------------------\n" << RESET << std::endl;
+                            continue;
+                        }
+                    }
+
+                    std::cout << YELLOW << "⚠ No last.patch found, and no Git/backups diff available." << RESET << std::endl;
+                    continue;
+                }
+
+                std::cout << CYAN << "\n--- Last Patch Preview ---" << RESET << std::endl;
+
+                if (g_hasGit) {
+#ifdef _WIN32
+                    system(("git apply --stat \"" + lastPatchPath.u8string() + "\"").c_str());
+#else
+                    system(("git apply --stat \"" + lastPatchPath.u8string() + "\" 2>/dev/null || true").c_str());
+#endif
+                }
+
+                std::string patchText = readTextFileTruncated(lastPatchPath, 20000);
+                if (patchText.empty()) {
+                    std::cout << GRAY << "  (Patch file is empty)" << RESET << std::endl;
+                } else {
+                    std::cout << patchText << std::endl;
+                }
+
+                std::cout << CYAN << "-------------------------\n" << RESET << std::endl;
+            } catch (...) {
+                std::cout << RED << "✖ Failed to preview last patch." << RESET << std::endl;
+            }
+            continue;
+        }
+
         if (userInput == "skills") {
             std::cout << CYAN << "\n--- Loaded Skills ---\n" << RESET << std::endl;
             if (skillManager.getCount() == 0) {
@@ -1206,13 +1284,31 @@ int main(int argc, char* argv[]) {
             // 优先：撤销最近一次 apply_patch 的 unified diff（如果存在）
             try {
                 fs::path absolutePath = fs::absolute(fs::u8path(path));
-                fs::path lastPatchPath = absolutePath / ".photon" / "patches" / "last.patch";
-                if (g_hasGit && fs::exists(lastPatchPath) && fs::is_regular_file(lastPatchPath)) {
-                    std::cout << YELLOW << BOLD << "Reverting last patch: " << RESET << lastPatchPath.u8string() << std::endl;
+                fs::path patchDir = absolutePath / ".photon" / "patches";
+                fs::path stackPath = patchDir / "patch_stack.json";
+                fs::path patchPath = patchDir / "last.patch";
+
+                // 如果有栈，优先用栈顶 patch（支持多次 undo）
+                if (fs::exists(stackPath) && fs::is_regular_file(stackPath)) {
+                    try {
+                        std::ifstream sf(stackPath);
+                        nlohmann::json stack;
+                        sf >> stack;
+                        if (stack.is_array() && !stack.empty()) {
+                            auto& last = stack.back();
+                            if (last.contains("patch_path") && last["patch_path"].is_string()) {
+                                patchPath = fs::u8path(last["patch_path"].get<std::string>());
+                            }
+                        }
+                    } catch (...) {}
+                }
+
+                if (g_hasGit && fs::exists(patchPath) && fs::is_regular_file(patchPath)) {
+                    std::cout << YELLOW << BOLD << "Reverting last patch: " << RESET << patchPath.u8string() << std::endl;
 
                     while (true) {
                         std::cout << "\n " << YELLOW << BOLD << "⚠  UNDO PATCH CONFIRMATION" << RESET << std::endl;
-                        std::cout << GRAY << "   Action: " << RESET << "git apply -R last.patch" << std::endl;
+                        std::cout << GRAY << "   Action: " << RESET << "git apply -R <patch>" << std::endl;
                         std::cout << "   " << BOLD << "[y]" << RESET << " Yes  "
                                   << BOLD << "[n]" << RESET << " No  "
                                   << BOLD << "[v]" << RESET << " View Patch" << std::endl;
@@ -1224,24 +1320,62 @@ int main(int argc, char* argv[]) {
 
                         if (confirm == "v") {
 #ifdef _WIN32
-                            system(("git apply --stat \"" + lastPatchPath.u8string() + "\" >nul 2>nul").c_str());
+                            system(("git apply --stat \"" + patchPath.u8string() + "\" >nul 2>nul").c_str());
 #else
-                            system(("git apply --stat \"" + lastPatchPath.u8string() + "\" 2>/dev/null || true").c_str());
+                            system(("git apply --stat \"" + patchPath.u8string() + "\" 2>/dev/null || true").c_str());
 #endif
                             continue;
                         }
 
                         if (confirm == "y" || confirm == "yes") {
 #ifdef _WIN32
-                            int rc = system(("git apply -R \"" + lastPatchPath.u8string() + "\" >nul 2>nul").c_str());
+                            int rc = system(("git apply -R \"" + patchPath.u8string() + "\" >nul 2>nul").c_str());
 #else
-                            int rc = system(("git apply -R \"" + lastPatchPath.u8string() + "\" 2>/dev/null").c_str());
+                            int rc = system(("git apply -R \"" + patchPath.u8string() + "\" 2>/dev/null").c_str());
 #endif
                             if (rc == 0) {
-                                // 清理 last.patch 元信息，避免重复撤销
+                                // 从 patch 栈里弹出（支持多次 undo）
                                 std::error_code ec;
-                                fs::remove(lastPatchPath, ec);
-                                fs::remove(absolutePath / ".photon" / "patches" / "last_patch.json", ec);
+                                try {
+                                    if (fs::exists(stackPath) && fs::is_regular_file(stackPath)) {
+                                        std::ifstream sf(stackPath);
+                                        nlohmann::json stack;
+                                        sf >> stack;
+                                        if (stack.is_array() && !stack.empty()) {
+                                            stack.erase(stack.end() - 1);
+                                            std::ofstream of(stackPath);
+                                            of << stack.dump(2);
+                                        }
+                                    }
+                                } catch (...) {}
+
+                                // 删除刚撤销的 patch 文件（可选）
+                                fs::remove(patchPath, ec);
+
+                                // 维护 last.patch 指向新的栈顶（或删除）
+                                try {
+                                    nlohmann::json stack;
+                                    if (fs::exists(stackPath) && fs::is_regular_file(stackPath)) {
+                                        std::ifstream sf(stackPath);
+                                        sf >> stack;
+                                    }
+                                    if (stack.is_array() && !stack.empty()) {
+                                        auto& last = stack.back();
+                                        if (last.contains("patch_path") && last["patch_path"].is_string()) {
+                                            fs::path newTop = fs::u8path(last["patch_path"].get<std::string>());
+                                            if (fs::exists(newTop) && fs::is_regular_file(newTop)) {
+                                                std::ifstream in(newTop);
+                                                std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                                                std::ofstream out(patchDir / "last.patch");
+                                                out << content;
+                                            }
+                                        }
+                                    } else {
+                                        fs::remove(patchDir / "last.patch", ec);
+                                        fs::remove(patchDir / "last_patch.json", ec);
+                                    }
+                                } catch (...) {}
+
                                 std::cout << GREEN << "✔ Successfully reverted last patch via Git." << RESET << std::endl;
                             } else {
                                 std::cout << RED << "✖ Patch undo failed (git apply -R). Falling back to file undo..." << RESET << std::endl;

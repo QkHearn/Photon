@@ -1005,3 +1005,7 @@ build/third_party/tree-sitter/CMakeFiles/tree-sitter.dir/lib/src/wasm_store.c.o.
 .cache/clangd/index/vbox.cpp.63DA1CAFDFCE03D4.idx
 .cache/clangd/index/warn_windows_macro.hpp.37CB37331AB95C5A.idx
 .cache/clangd/index/window.cpp.1290D1C424C22B47.idx
+.photon/index/call_graph.json
+.photon/index/symbol_calls.json
+.photon/index/symbols.json
+build/CMakeFiles/photon.dir/compiler_depend.internal

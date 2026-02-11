@@ -1116,10 +1116,24 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
         if (!p.empty()) affected.push_back(p);
     }
 
-    // 保存 last.patch，供 CLI undo 反向应用
+    // 保存 patch 历史（支持多次 undo）：每次 apply_patch 生成一个独立 patch 文件，并维护栈
     fs::path patchDir = rootPath / ".photon" / "patches";
     fs::create_directories(patchDir);
-    fs::path patchPath = patchDir / "last.patch";
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ts;
+    {
+        struct tm time_info;
+#ifdef _WIN32
+        localtime_s(&time_info, &in_time_t);
+#else
+        localtime_r(&in_time_t, &time_info);
+#endif
+        ts << std::put_time(&time_info, "%Y%m%d_%H%M%S");
+    }
+    std::string stamp = ts.str();
+
+    fs::path patchPath = patchDir / ("patch_" + stamp + ".patch");
     {
         std::ofstream pf(patchPath);
         pf << diffContent;
@@ -1130,8 +1144,46 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
         meta["affected_files"] = affected;
         meta["patch_path"] = patchPath.u8string();
         meta["has_git"] = hasGit;
-        std::ofstream mf(patchDir / "last_patch.json");
+        std::ofstream mf(patchDir / ("patch_" + stamp + ".json"));
         mf << meta.dump(2);
+    }
+
+    // 更新 patch_stack.json
+    fs::path stackPath = patchDir / "patch_stack.json";
+    nlohmann::json stack = nlohmann::json::array();
+    try {
+        if (fs::exists(stackPath) && fs::is_regular_file(stackPath)) {
+            std::ifstream sf(stackPath);
+            if (sf.is_open()) {
+                sf >> stack;
+            }
+        }
+    } catch (...) {
+        stack = nlohmann::json::array();
+    }
+    if (!stack.is_array()) stack = nlohmann::json::array();
+    stack.push_back({
+        {"timestamp", static_cast<long long>(std::time(nullptr))},
+        {"patch_path", patchPath.u8string()},
+        {"affected_files", affected}
+    });
+    {
+        std::ofstream sf(stackPath);
+        sf << stack.dump(2);
+    }
+
+    // 兼容：始终写一份 last.patch 指向最新补丁（供 patch/undo 旧逻辑和快速预览）
+    {
+        std::ofstream lf(patchDir / "last.patch");
+        lf << diffContent;
+    }
+    {
+        nlohmann::json lastMeta;
+        lastMeta["timestamp"] = static_cast<long long>(std::time(nullptr));
+        lastMeta["affected_files"] = affected;
+        lastMeta["patch_path"] = patchPath.u8string();
+        std::ofstream mf(patchDir / "last_patch.json");
+        mf << lastMeta.dump(2);
     }
 
     if (hasGit) {
