@@ -12,6 +12,8 @@
 #include <chrono>
 #include <regex>
 #include <ctime>
+#include <cctype>
+#include <sstream>
 
 // Windows compatibility
 #ifdef _WIN32
@@ -748,8 +750,7 @@ std::string ApplyPatchTool::getDescription() const {
                       "Provide diff_content: each line added with '+' prefix, removed with '-' prefix, unchanged with space. "
                       "Include at least one hunk header (e.g. \"@@ -1,3 +1,4 @@\" for edits, \"@@ -0,0 +1,N @@\" for new files). "
                       "New file: use \"--- /dev/null\" and \"+++ b/path/to/newfile\" with only '+' lines. "
-                      "For multiple files: put all file sections in one diff_content (multiple diff --git / --- / +++ blocks), then use read/search to analyze the result. "
-                      "Multi-file, backup and rollback supported. ";
+                      "Multiple files: write one block per file (diff --git / --- / +++ / @@ hunks), then immediately the next block with no blank line between files; inside each hunk every line must start with ' ', '+', or '-' (no empty lines in hunks, no trailing spaces). Use dry_run: true for complex or multi-file diffs first. ";
     
     if (hasGit) {
         desc += "Uses git stash for backup and git apply when available.";
@@ -766,7 +767,7 @@ nlohmann::json ApplyPatchTool::getSchema() const {
         {"properties", {
             {"diff_content", {
                 {"type", "string"},
-                {"description", "Unified diff string. Each line must start with '+', '-' or space; must contain at least one '@@' hunk. For new files use --- /dev/null, +++ b/path, and @@ -0,0 +1,N @@ with only '+' lines. Multiple files: concatenate multiple diff --git / --- / +++ sections in one string."}
+                {"description", "Unified diff string. Rules: (1) Every line inside a hunk must start with exactly one of: space ' ', '+', or '-'; no empty lines inside hunks. (2) No trailing spaces on any line. (3) Single file: one block with ---/+++/@@ and hunk lines. (4) Multiple files: for each file write 'diff --git a/path b/path', then '--- a/path' (or '--- /dev/null' for new file), then '+++ b/path', then '@@ -... +... @@' and hunk lines; start the next file's 'diff --git' or '--- /dev/null' on the very next line after the last hunk line (no blank line between files). New file: --- /dev/null, +++ b/path, @@ -0,0 +1,N @@, then only '+' lines."}
             }},
             {"files", {
                 {"type", "array"},
@@ -941,6 +942,32 @@ static int execCaptureCoreTools(const std::string& cmd, std::string& out) {
 static std::string stripGitPrefix(const std::string& p) {
     if (p.rfind("a/", 0) == 0 || p.rfind("b/", 0) == 0) return p.substr(2);
     return p;
+}
+
+// Normalize diff so git apply accepts it: strip trailing whitespace per line, and replace
+// empty lines inside hunks with " " (unified diff requires every hunk line to start with ' ', '+', or '-').
+static std::string normalizePatchForGitApply(const std::string& diffContent) {
+    std::string out;
+    out.reserve(diffContent.size());
+    bool inHunk = false;
+    size_t i = 0;
+    while (i < diffContent.size()) {
+        size_t lineStart = i;
+        while (i < diffContent.size() && diffContent[i] != '\n' && diffContent[i] != '\r') ++i;
+        std::string line(diffContent.substr(lineStart, i - lineStart));
+        if (i < diffContent.size() && diffContent[i] == '\r') ++i;
+        if (i < diffContent.size() && diffContent[i] == '\n') ++i;
+        // Strip trailing spaces/tabs
+        while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
+        if (inHunk && line.empty()) line = " ";
+        if (line.size() >= 3 && line.compare(0, 3, "@@ ") == 0 &&
+            line.find(" @@") != std::string::npos) inHunk = true;
+        if (line.rfind("--- ", 0) == 0 || line.rfind("diff --git ", 0) == 0) inHunk = false;
+        if (inHunk && !line.empty() && line[0] != ' ' && line[0] != '+' && line[0] != '-') inHunk = false;
+        out += line;
+        out += '\n';
+    }
+    return out;
 }
 
 static bool isDevNull(const std::string& p) {
@@ -1166,10 +1193,11 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
     }
 
     const std::string diffContent = args["diff_content"].get<std::string>();
+    const std::string normalizedContent = normalizePatchForGitApply(diffContent);
     const bool backup = args.value("backup", true);
     const bool dryRun = args.value("dry_run", false);
 
-    auto fileDiffs = parseUnifiedDiff(diffContent);
+    auto fileDiffs = parseUnifiedDiff(normalizedContent);
     if (fileDiffs.empty()) {
         result["error"] = "diff_content 无效：未解析到任何文件补丁（diff --git / --- / +++ / @@）。";
         return result;
@@ -1204,7 +1232,7 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
     fs::path patchPath = patchDir / ("patch_" + stamp + ".patch");
     {
         std::ofstream pf(patchPath);
-        pf << diffContent;
+        pf << normalizedContent;
     }
     {
         nlohmann::json meta;
@@ -1243,7 +1271,7 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
     // 兼容：始终写一份 last.patch 指向最新补丁（供 patch/undo 旧逻辑和快速预览）
     {
         std::ofstream lf(patchDir / "last.patch");
-        lf << diffContent;
+        lf << normalizedContent;
     }
     {
         nlohmann::json lastMeta;
@@ -1259,7 +1287,7 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
         std::string prefix = "cd \"" + rootPath.u8string() + "\" && ";
 
         if (dryRun) {
-            int code = execCaptureCoreTools(prefix + "git apply --check \"" + patchPath.u8string() + "\" 2>&1", out);
+            int code = execCaptureCoreTools(prefix + "git apply --whitespace=fix --check \"" + patchPath.u8string() + "\" 2>&1", out);
             result["success"] = (code == 0);
             result["dry_run"] = true;
             result["affected_files"] = affected;
@@ -1281,14 +1309,14 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
         }
 
         out.clear();
-        int code = execCaptureCoreTools(prefix + "git apply \"" + patchPath.u8string() + "\" 2>&1", out);
+        int code = execCaptureCoreTools(prefix + "git apply --whitespace=fix \"" + patchPath.u8string() + "\" 2>&1", out);
         if (code != 0) {
             // 补丁是「新增文件」但工作区已有同名文件时，git apply 会报 "already exists in working directory"。
             // 回退到内置引擎：按 diff 内容写入/覆盖文件，便于 LLM 重试或覆盖已存在文件。
             bool alreadyExists = (out.find("already exists in working directory") != std::string::npos);
             if (alreadyExists) {
                 std::string detail;
-                if (applyUnifiedDiff(diffContent, &detail)) {
+                if (applyUnifiedDiff(normalizedContent, &detail)) {
                     result["success"] = true;
                     result["affected_files"] = affected;
                     result["message"] = "目标文件已存在，已通过内置引擎覆盖应用补丁。可使用 undo 撤销。";
@@ -1327,7 +1355,7 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
     }
 
     std::string detail;
-    if (!applyUnifiedDiff(diffContent, &detail)) {
+    if (!applyUnifiedDiff(normalizedContent, &detail)) {
         result["error"] = detail.empty() ? "手动 diff 引擎应用失败（通常是上下文不匹配）。建议安装/启用 Git 后再试。" : ("apply_patch 应用失败: " + detail);
         return result;
     }
@@ -1803,6 +1831,259 @@ nlohmann::json AttemptTool::execute(const nlohmann::json& args) {
     }
 
     result["error"] = "action must be get, update, or clear";
+    return result;
+}
+
+// ============================================================================
+// SyntaxCheckTool Implementation
+// ============================================================================
+
+SyntaxCheckTool::SyntaxCheckTool(const std::string& rootPath) : rootPath(fs::u8path(rootPath)) {}
+
+std::string SyntaxCheckTool::getDescription() const {
+    return "Syntax/compile check with minimal token usage. Supports C++, C, Python, ArkTS, TypeScript. "
+           "When modified_only is true (default), only checks modified files (git). "
+           "Parameters: modified_only (bool), max_output_lines (int), errors_only (bool), build_dir (string).";
+}
+
+nlohmann::json SyntaxCheckTool::getSchema() const {
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"modified_only", {
+                {"type", "boolean"},
+                {"description", "If true (default), only check modified/added files (git). Fewer tokens."}
+            }},
+            {"max_output_lines", {
+                {"type", "integer"},
+                {"description", "Max lines to return (default 60). Lower value saves tokens."}
+            }},
+            {"errors_only", {
+                {"type", "boolean"},
+                {"description", "If true, only include lines that look like errors (e.g. contain 'error:'). Further reduces tokens."}
+            }},
+            {"build_dir", {
+                {"type", "string"},
+                {"description", "Build directory for C/C++ (default 'build')."}
+            }}
+        }}
+    };
+}
+
+static bool lineLooksLikeError(const std::string& line) {
+    std::string lower = line;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return lower.find("error:") != std::string::npos ||
+           lower.find("fatal error") != std::string::npos ||
+           lower.find("error ") != std::string::npos;
+}
+
+// Language by extension: cpp, c, py, arkts, ts. Returns empty if not supported.
+static std::string syntaxCheckLang(const std::string& path) {
+    std::string ext;
+    size_t dot = path.rfind('.');
+    if (dot != std::string::npos && dot + 1 < path.size())
+        ext = path.substr(dot);
+    if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".hpp" || ext == ".h") return "cpp";
+    if (ext == ".c") return "c";
+    if (ext == ".py") return "py";
+    if (ext == ".ets") return "arkts";
+    if (ext == ".ts" || ext == ".tsx") return "ts";
+    return "";
+}
+
+static void splitLines(const std::string& out, std::vector<std::string>& lines) {
+    lines.clear();
+    std::string line;
+    for (char c : out) {
+        if (c == '\n' || c == '\r') {
+            if (!line.empty()) { lines.push_back(line); line.clear(); }
+        } else
+            line += c;
+    }
+    if (!line.empty()) lines.push_back(line);
+}
+
+// Keep only lines that contain any of the paths (e.g. "src/foo.cpp" or "foo.cpp").
+static void filterLinesByPaths(std::vector<std::string>& lines, const std::set<std::string>& paths) {
+    if (paths.empty()) return;
+    std::vector<std::string> out;
+    for (const auto& l : lines) {
+        for (const auto& p : paths) {
+            if (l.find(p) != std::string::npos) { out.push_back(l); break; }
+        }
+    }
+    lines = std::move(out);
+}
+
+// Get modified/added files from git (relative paths). Returns empty if not git or error.
+static std::vector<std::string> getGitModifiedFiles(const std::string& prefix) {
+    std::string out;
+    std::set<std::string> paths;
+    execCaptureCoreTools(prefix + "git diff --name-only HEAD 2>/dev/null", out);
+    std::istringstream iss(out);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty()) paths.insert(line);
+    }
+    out.clear();
+    execCaptureCoreTools(prefix + "git diff --name-only --cached 2>/dev/null", out);
+    iss.str(out);
+    iss.clear();
+    while (std::getline(iss, line)) {
+        if (!line.empty()) paths.insert(line);
+    }
+    return std::vector<std::string>(paths.begin(), paths.end());
+}
+
+nlohmann::json SyntaxCheckTool::execute(const nlohmann::json& args) {
+    nlohmann::json result;
+    int maxLines = 60;
+    if (args.contains("max_output_lines") && args["max_output_lines"].is_number_integer()) {
+        int v = args["max_output_lines"].get<int>();
+        if (v > 0 && v <= 500) maxLines = v;
+    }
+    bool errorsOnly = false;
+    if (args.contains("errors_only") && args["errors_only"].is_boolean())
+        errorsOnly = args["errors_only"].get<bool>();
+    bool modifiedOnly = true;
+    if (args.contains("modified_only") && args["modified_only"].is_boolean())
+        modifiedOnly = args["modified_only"].get<bool>();
+    std::string buildDir = "build";
+    if (args.contains("build_dir") && args["build_dir"].is_string() && !args["build_dir"].get<std::string>().empty())
+        buildDir = args["build_dir"].get<std::string>();
+
+    std::string prefix = "cd \"" + rootPath.u8string() + "\" && ";
+    std::vector<std::string> modifiedFiles;
+    if (modifiedOnly) {
+        modifiedFiles = getGitModifiedFiles(prefix);
+        // Filter to supported extensions only
+        std::vector<std::string> supported;
+        for (const auto& p : modifiedFiles) {
+            if (!syntaxCheckLang(p).empty()) supported.push_back(p);
+        }
+        modifiedFiles = std::move(supported);
+    }
+
+    std::vector<std::string> allLines;
+    int globalExit = 0;
+    std::set<std::string> cppPaths, tsPaths;
+
+    if (modifiedOnly && !modifiedFiles.empty()) {
+        for (const auto& p : modifiedFiles) {
+            std::string lang = syntaxCheckLang(p);
+            if (lang == "cpp" || lang == "c") cppPaths.insert(p);
+            else if (lang == "ts") tsPaths.insert(p);
+        }
+    }
+
+    // C/C++: cmake --build; if modified_only and we have cpp paths, filter output to those paths; else full build
+    bool runCpp = !modifiedOnly || !cppPaths.empty() || modifiedFiles.empty();
+    if (runCpp) {
+        std::string out;
+        int code = execCaptureCoreTools(prefix + "cmake --build \"" + buildDir + "\" 2>&1", out);
+        if (code != 0) globalExit = code;
+        std::vector<std::string> lines;
+        splitLines(out, lines);
+        if (modifiedOnly && !cppPaths.empty())
+            filterLinesByPaths(lines, cppPaths);
+        for (const auto& l : lines) allLines.push_back(l);
+    }
+
+    // Python: py_compile per modified .py
+    if (modifiedOnly) {
+        for (const auto& p : modifiedFiles) {
+            if (syntaxCheckLang(p) != "py") continue;
+            std::string out;
+            std::string escaped = p;
+            if (escaped.find('"') != std::string::npos) {
+                std::string e; e.reserve(escaped.size() + 2);
+                e += '"';
+                for (char c : escaped) { if (c == '"' || c == '\\') e += '\\'; e += c; }
+                e += '"'; escaped = e;
+            } else if (escaped.find(' ') != std::string::npos) { escaped = "\"" + escaped + "\""; }
+            int code = execCaptureCoreTools(prefix + "python3 -m py_compile " + escaped + " 2>&1", out);
+            if (code != 0) globalExit = code;
+            std::vector<std::string> lines;
+            splitLines(out, lines);
+            for (const auto& l : lines) allLines.push_back(l);
+        }
+    }
+
+    // TypeScript: tsc --noEmit, then filter by modified .ts/.tsx paths
+    if (modifiedOnly && !tsPaths.empty()) {
+        std::string out;
+        int code = execCaptureCoreTools(prefix + "npx tsc --noEmit 2>&1", out);
+        if (code != 0) globalExit = code;
+        std::vector<std::string> lines;
+        splitLines(out, lines);
+        filterLinesByPaths(lines, tsPaths);
+        for (const auto& l : lines) allLines.push_back(l);
+    } else if (!modifiedOnly) {
+        std::string out;
+        int code = execCaptureCoreTools(prefix + "npx tsc --noEmit 2>&1", out);
+        if (code != 0) globalExit = code;
+        std::vector<std::string> lines;
+        splitLines(out, lines);
+        for (const auto& l : lines) allLines.push_back(l);
+    }
+
+    // ArkTS: try ets2panda per modified .ets
+    if (modifiedOnly) {
+        std::string whichOut;
+#ifdef _WIN32
+        int hasEts = execCaptureCoreTools(prefix + "where ets2panda 2>nul", whichOut);
+#else
+        int hasEts = execCaptureCoreTools(prefix + "which ets2panda 2>/dev/null || command -v ets2panda 2>/dev/null", whichOut);
+#endif
+        for (const auto& p : modifiedFiles) {
+            if (syntaxCheckLang(p) != "arkts") continue;
+            std::string out;
+            std::string escaped = p;
+            if (escaped.find('"') != std::string::npos) {
+                std::string e; e.reserve(escaped.size() + 2);
+                e += '"';
+                for (char c : escaped) { if (c == '"' || c == '\\') e += '\\'; e += c; }
+                e += '"'; escaped = e;
+            } else if (escaped.find(' ') != std::string::npos) { escaped = "\"" + escaped + "\""; }
+            int code = (hasEts == 0 && !whichOut.empty())
+                ? execCaptureCoreTools(prefix + "ets2panda " + escaped + " 2>&1", out)
+                : 1;
+            if (code != 0 && hasEts == 0) globalExit = code;
+            if (!out.empty()) {
+                std::vector<std::string> lines;
+                splitLines(out, lines);
+                for (const auto& l : lines) allLines.push_back(l);
+            }
+        }
+    }
+
+    if (modifiedOnly && modifiedFiles.empty() && runCpp && allLines.empty()) {
+        allLines.push_back("(no modified C/C++/Python/ArkTS/TS files; ran C++ build only, no errors in output)");
+    }
+
+    if (errorsOnly) {
+        std::vector<std::string> filtered;
+        for (const auto& l : allLines) {
+            if (lineLooksLikeError(l)) filtered.push_back(l);
+        }
+        allLines = std::move(filtered);
+    }
+    std::string truncNote;
+    if (allLines.size() > static_cast<size_t>(maxLines)) {
+        allLines.resize(maxLines);
+        truncNote = "(output truncated to " + std::to_string(maxLines) + " lines)\n";
+    }
+    std::string text = truncNote;
+    for (const auto& l : allLines) text += l + "\n";
+
+    result["success"] = (globalExit == 0);
+    result["exit_code"] = globalExit;
+    result["content"] = nlohmann::json::array({
+        nlohmann::json::object({{"type", "text"}, {"text", "Exit: " + std::to_string(globalExit) + "\n\n" + text}})
+    });
+    if (modifiedOnly && !modifiedFiles.empty())
+        result["modified_files_checked"] = modifiedFiles.size();
     return result;
 }
 

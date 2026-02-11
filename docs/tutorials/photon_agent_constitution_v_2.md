@@ -74,7 +74,7 @@ Heuristic file guessing is prohibited.
 ### 3.3 Write Constraints
 
 - **Writes only via apply_patch**: All file create, modify, and delete (source and project content) MUST go through the **apply_patch** tool—there is no other allowed write mechanism. Use run_command for build, test, list, and log viewing (redirects/tee for logs are allowed).
-- **Multi-file in one call**: One `diff_content` may contain multiple files (multiple `diff --git` / `---` / `+++` / `@@` sections); apply_patch applies all of them in a single invocation.
+- **Multi-file in one call**: One `diff_content` may contain multiple files (multiple `diff --git` / `---` / `+++` / `@@` sections); apply_patch applies all of them in a single invocation. When writing multi-file diffs: no blank line between the last hunk line of one file and the next file’s `diff --git` or `---`; every line inside a hunk must start with space, `+`, or `-` (no empty lines); no trailing spaces on lines.
 - **Batch workflow**: When creating or modifying multiple files, prefer a **single** apply_patch with one diff_content that includes all file sections; after applying, use **read** or **search** to verify and analyze the result as a whole.
 - Full-file overwrites are prohibited.
 - All modifications must be expressed as **line-bounded patches** (unified diff format).
@@ -82,7 +82,7 @@ Heuristic file guessing is prohibited.
 
 Direct write operations without a patch representation are invalid.
 
-**Tool contract**: `apply_patch` accepts `diff_content` (unified diff string). The diff MUST contain hunk headers (`@@ ... @@`) so that changes are line-scoped.
+**Tool contract**: `apply_patch` accepts `diff_content` (unified diff string). The diff MUST contain hunk headers (`@@ ... @@`) so that changes are line-scoped. Each hunk line must start with exactly one of ` `, `+`, `-` (no empty lines in hunks); do not add trailing spaces; do not insert a blank line between two file sections.
 
 ---
 

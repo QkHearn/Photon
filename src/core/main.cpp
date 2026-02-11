@@ -804,6 +804,7 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
     toolRegistry.registerTool(std::make_unique<GrepTool>(path));  // 代码搜索：grep，先定位再 read_code_block
     toolRegistry.registerTool(std::make_unique<AttemptTool>(path));  // 用户 attempt：持久化意图与任务状态，防遗忘
+    toolRegistry.registerTool(std::make_unique<SyntaxCheckTool>(path));  // 语法检查：少 token 构建/报错输出
     
     std::cout << GREEN << "  ✔ Registered " << toolRegistry.getToolCount() << " core tools" << RESET << std::endl;
 

@@ -14,6 +14,7 @@ Photon 拥有分层工具架构，包含**核心工具(Core Tools)**和**MCP工�
 | **list_project_files** | 列出目录树，支持 path、max_depth，用于探索结构。 |
 | **grep** | 在项目里按文本/正则搜索，返回 文件:行:内容；不知道在哪个文件时先 grep 再 read_code_block。 |
 | **attempt** | 维护当前用户意图与任务状态（存于 .photon/current_attempt.json）。每轮 get 回忆任务，按 intent/read_scope 推进；update 记录进度或完成；clear 清空以便新需求。 |
+| **syntax_check** | 支持 C++、C、Python、ArkTS、TypeScript；**仅检测修改过的文件**（git，可关）。返回前 N 行或仅错误行，省 token。 |
 
 （另有 skill_activate / skill_deactivate，按需注册后可加载技能。）
 
@@ -29,6 +30,7 @@ Photon 拥有分层工具架构，包含**核心工具(Core Tools)**和**MCP工�
 ### 2. **apply_patch** - 统一补丁应用（仅 unified diff）
 - **功能**: **只接受 Git unified diff**，一次可更新多个文件、多处修改
 - **输入**: `diff_content`（必填），可选 `backup`、`dry_run`
+- **多文件 diff 书写规范**（从源头避免 corrupt/trailing whitespace）：(1) hunk 内每行必须以且仅以 ` `、`+`、`-` 之一开头，**不要出现空行**；(2) 每行**不要有行尾空格**；(3) 多个文件时，上一个文件的最后一行 hunk 后**直接**接下一个文件的 `diff --git` 或 `--- /dev/null`，**中间不要空行**。复杂或多文件补丁建议先 `dry_run: true` 再应用。
 - **Git优先**: 有 Git 时走 `git apply` / `git apply --check`，并把最近补丁保存到 `.photon/patches/last.patch` 供 `undo` 反向应用
 - **无Git回退**: 没有 Git 时使用内置 unified-diff 引擎按 hunk 应用（要求上下文严格匹配）
 
@@ -51,7 +53,13 @@ Photon 拥有分层工具架构，包含**核心工具(Core Tools)**和**MCP工�
 - **功能**: 停用指定的Skill，释放上下文
 - **用途**: 资源管理、上下文清理
 
-### 7. （已移除）
+### 7. **syntax_check** - 少 token 语法/构建检查（多语言 + 仅改动的文件）
+- **支持语言**: C++、C、Python、ArkTS（.ets）、TypeScript（.ts/.tsx）。按扩展名识别。
+- **仅检测修改文件**: 默认 `modified_only: true`，用 `git diff --name-only` 取修改/新增文件，只对这些文件做检查并只保留与之相关的错误行，进一步省 token。C/C++ 仍跑一次 `cmake --build`，输出过滤为仅含修改文件路径的行；Python 对每个修改的 .py 跑 `python3 -m py_compile`；TS 跑 `npx tsc --noEmit` 后过滤；ArkTS 若有 `ets2panda` 则对每个 .ets 检查。
+- **参数**: `modified_only`（默认 true）、`max_output_lines`（默认 60）、`errors_only`（只保留错误行）、`build_dir`（C/C++ 构建目录）
+- **用途**: 改代码后只检查改动文件语法，用较少 token 发现编译/语法问题
+
+### 8. （已移除）
 - `git_diff` 工具已移除，能力统一收敛到 `apply_patch`
 
 ## 🔌 MCP工具 (外部工具)
@@ -102,7 +110,7 @@ Photon 拥有分层工具架构，包含**核心工具(Core Tools)**和**MCP工�
 | **5. 精读要改的段落** | `read_code_block` | `file_path: "…", start_line: 1230, end_line: 1260` | 对准要改的那几行，减少上下文噪音，便于生成精确 diff。 |
 | **6. 写出并应用修改** | `apply_patch` | `diff_content: "--- a/src/tools/CoreTools.cpp\n+++ b/…\n@@ -1234,6 +1234,12 @@\n ..."` | 用**一条** unified diff 描述改动（可多文件、多 hunk）；一次 apply，备份/undo 由工具保证。 |
 | **7. 校验改动** | `read_code_block` | 对刚改的文件再读对应 `symbol_name` 或行范围 | 确认代码和 Call chain 符合预期，没有漏改。 |
-| **8. 构建与测试** | `run_command` | `command: "./build.sh"` 或 `cmake --build build && ./build/agent_tests --gtest_filter=*ApplyPatch*"` | 确保能编过、相关测试通过。 |
+| **8. 构建与测试** | `run_command` 或 **syntax_check** | 快速检查语法：`syntax_check`（可选 `errors_only: true`、`max_output_lines: 40`）省 token；完整构建/测试用 `run_command`（如 `./build.sh`、`./build/agent_tests --gtest_filter=*ApplyPatch*`）。 | 确保能编过、相关测试通过。 |
 | **9. 若失败** | `read_code_block` + `apply_patch` | 根据 run_command 报错或测试失败，再读报错位置、再生成一版 diff 修复 | 小步迭代，每次 diff 都可逆。 |
 
 **小结**：**读懂需求**（拆解 + 定位）→ **读项目**（list → read 摘要 → read 符号+Call chain → 精读行范围）→ **改项目**（apply_patch，优先单次多文件）→ **验证**（read 检查 + run_command 构建/测试）→ 有问题再读、再改。这样「先读懂再改」形成闭环。

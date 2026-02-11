@@ -198,8 +198,25 @@ private:
 };
 
 /**
+ * @brief 语法/构建检查工具（少 token）
+ *
+ * 在项目目录执行构建（如 cmake --build build），仅返回前 N 行输出或仅错误行，
+ * 便于用较少 token 发现编译/语法问题。
+ */
+class SyntaxCheckTool : public ITool {
+public:
+    explicit SyntaxCheckTool(const std::string& rootPath);
+    std::string getName() const override { return "syntax_check"; }
+    std::string getDescription() const override;
+    nlohmann::json getSchema() const override;
+    nlohmann::json execute(const nlohmann::json& args) override;
+private:
+    fs::path rootPath;
+};
+
+/**
  * @brief Skill 激活工具
- * 
+ *
  * 动态激活指定的 Skill,使其能力对 Agent 可用
  */
 class SkillActivateTool : public ITool {
