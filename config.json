@@ -8,8 +8,18 @@
   "agent": {
     "context_threshold": 217000,
     "file_extensions": [
-      ".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json",
-      ".cmake", ".yml", ".yaml", ".ets"
+      ".txt",
+      ".cpp",
+      ".h",
+      ".hpp",
+      ".c",
+      ".py",
+      ".md",
+      ".json",
+      ".cmake",
+      ".yml",
+      ".yaml",
+      ".ets"
     ],
     "use_builtin_tools": true,
     "search_api_key": "",
@@ -20,18 +30,27 @@
     "lsp_server_path": "",
     "lsp_root_uri": "",
     "lsp_servers": [
-      { "name": "clangd", "command": "clangd", "extensions": [".cpp", ".h", ".hpp", ".c"] }
+      {
+        "name": "clangd",
+        "command": "clangd",
+        "extensions": [".cpp", ".h", ".hpp", ".c"]
+      }
     ],
-    "skill_roots": [
-      "~/.photon/skills",
-      "./builtin_skills"
-    ],
+    "skill_roots": ["~/.photon/skills", "./builtin_skills"],
     "tree_sitter_languages": [],
     "symbol_ignore_patterns": [
-      ".github",".photon", "cmake-build-debug", "third_party","tests"
+      ".github",
+      ".photon",
+      "cmake-build-debug",
+      "third_party",
+      "tests",
+      "build"
     ]
   },
   "mcp_servers": [
-    { "name": "puppeteer", "command": "npx -y @modelcontextprotocol/server-puppeteer" }
+    {
+      "name": "puppeteer",
+      "command": "npx -y @modelcontextprotocol/server-puppeteer"
+    }
   ]
 }

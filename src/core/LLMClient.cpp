@@ -61,8 +61,10 @@ std::string LLMClient::chat(const std::string& prompt, const std::string& system
 // LLM Request Adapter: normalizeForKimi
 // ---------------------------------------------------------------------------
 // Kimi 要求 messages[].content 为 []object，即 [{"type":"text","text":"..."}]，
-// 不能是 string 或裸 object。此处统一成数组格式。
+// 且 text 不能为空，否则返回 "Invalid request: text content is empty"。
 // ---------------------------------------------------------------------------
+static const std::string kEmptyContentPlaceholder = " ";  // 空 content 时占位，避免 API 报错
+
 static nlohmann::json normalizeForKimi(const nlohmann::json& messages) {
     if (!messages.is_array()) return messages;
     nlohmann::json out = nlohmann::json::array();
@@ -71,15 +73,24 @@ static nlohmann::json normalizeForKimi(const nlohmann::json& messages) {
         nlohmann::json m = msg;
         if (m.contains("content")) {
             if (m["content"].is_null()) {
-                m["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", ""}})});
+                m["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", kEmptyContentPlaceholder}})});
             } else if (m["content"].is_string()) {
+                std::string s = m["content"].get<std::string>();
+                if (s.empty()) s = kEmptyContentPlaceholder;
                 m["content"] = nlohmann::json::array({
-                    nlohmann::json::object({{"type", "text"}, {"text", m["content"].get<std::string>()}})
+                    nlohmann::json::object({{"type", "text"}, {"text", s}})
                 });
             } else if (!m["content"].is_array() || m["content"].empty()) {
-                m["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", ""}})});
+                m["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", kEmptyContentPlaceholder}})});
+            } else {
+                // 已是 array：确保每个 text 不为空
+                for (auto& part : m["content"]) {
+                    if (part.is_object() && part.contains("text") && part["text"].is_string()) {
+                        std::string t = part["text"].get<std::string>();
+                        if (t.empty()) part["text"] = kEmptyContentPlaceholder;
+                    }
+                }
             }
-            // 已是 array 则保持不动（含 [{"type":"text","text":"..."}]）
         }
         if (m.contains("role") && m["role"] == "tool" && m.contains("name"))
             m.erase("name");

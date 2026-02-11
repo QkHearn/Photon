@@ -705,15 +705,15 @@ ApplyPatchTool::ApplyPatchTool(const std::string& rootPath, bool hasGit)
     : rootPath(fs::u8path(rootPath)), hasGit(hasGit) {}
 
 std::string ApplyPatchTool::getDescription() const {
-    std::string desc = "Git-style unified diff application tool. "
-                      "Only accepts unified diff format - no line-by-line editing. "
-                      "Features: multi-file support, Git优先备份, automatic rollback on failure. "
-                      "Supports: file modifications, additions, deletions via diff patches. ";
+    std::string desc = "Modify project files by applying a unified diff (recommended for all file edits: reversible, trackable). "
+                      "Provide diff_content: each line added with '+' prefix, removed with '-' prefix, unchanged with space. "
+                      "Include at least one hunk header like \"@@ -1,3 +1,4 @@\". "
+                      "Multi-file, backup and rollback supported. ";
     
     if (hasGit) {
-        desc += "Git integration: Uses git stash for backups and git apply when available.";
+        desc += "Uses git stash for backup and git apply when available.";
     } else {
-        desc += "Pure diff mode: Manual diff parsing with file-level backups.";
+        desc += "Pure diff mode with file-level backups.";
     }
     
     return desc;
@@ -725,7 +725,7 @@ nlohmann::json ApplyPatchTool::getSchema() const {
         {"properties", {
             {"diff_content", {
                 {"type", "string"},
-                {"description", "Unified diff content (Git format). Must include diff headers and hunks."}
+                {"description", "Unified diff string. Each line must start with '+', '-' or space, and the diff must contain at least one '@@' hunk header."}
             }},
             {"files", {
                 {"type", "array"},

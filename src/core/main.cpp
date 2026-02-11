@@ -68,34 +68,46 @@ bool g_hasGit = false;
 
 std::string findExecutableInPath(const std::vector<std::string>& names);
 
-// Windows兼容的Git检测函数
+// 检测 Git 是否可用；若未在仓库中但 git 命令存在则自动 git init
 bool checkGitAvailable() {
-#ifdef _WIN32
-    // Windows: 首先检查git命令是否存在
     std::string gitPath = findExecutableInPath({"git"});
     if (gitPath.empty()) {
+#ifdef _WIN32
         std::cout << YELLOW << "  ⚠ Git command not found in PATH" << RESET << std::endl;
         std::cout << GRAY << "    - Run 'where git' to check Git location" << RESET << std::endl;
         std::cout << GRAY << "    - Make sure Git is installed and added to PATH" << RESET << std::endl;
-        return false;
-    }
-    
-    std::cout << GRAY << "  Git found at: " << gitPath << RESET << std::endl;
-    
-    // 检查是否在git仓库中
-    int result = system("git rev-parse --is-inside-work-tree >nul 2>nul");
-    if (result != 0) {
-        std::cout << YELLOW << "  ⚠ Git command found but not in a Git repository" << RESET << std::endl;
-        std::cout << GRAY << "    - Current directory: " << fs::current_path().u8string() << RESET << std::endl;
-        std::cout << GRAY << "    - Run 'git init' to initialize a repository" << RESET << std::endl;
-        return false;
-    }
-    
-    return true;
-#else
-    // Unix/Linux/macOS: 使用原始命令
-    return (system("git rev-parse --is-inside-work-tree >/dev/null 2>&1") == 0);
 #endif
+        return false;
+    }
+
+#ifdef _WIN32
+    std::cout << GRAY << "  Git found at: " << gitPath << RESET << std::endl;
+#endif
+
+    auto inWorkTree = []() {
+#ifdef _WIN32
+        return system("git rev-parse --is-inside-work-tree >nul 2>nul") == 0;
+#else
+        return system("git rev-parse --is-inside-work-tree >/dev/null 2>&1") == 0;
+#endif
+    };
+
+    if (inWorkTree()) return true;
+
+    // 有 git 但当前目录不是仓库 → 自动 git init
+    std::cout << GRAY << "  Not in a Git repo; running 'git init'..." << RESET << std::endl;
+    int initResult = system("git init");
+    if (initResult != 0) {
+#ifdef _WIN32
+        std::cout << YELLOW << "  ⚠ git init failed" << RESET << std::endl;
+#endif
+        return false;
+    }
+    if (inWorkTree()) {
+        std::cout << GRAY << "  (Git repository auto-initialized.)" << RESET << std::endl;
+        return true;
+    }
+    return false;
 }
 
 std::string findExecutableInPath(const std::vector<std::string>& names) {
@@ -827,17 +839,15 @@ int main(int argc, char* argv[]) {
     std::cout << "\n  " << YELLOW << "Shortcuts:" << RESET << std::endl;
     std::cout << GRAY << "  ┌──────────────────────────────────────────────────────────┐" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "tools   " << RESET << GRAY << " List all sensors   " 
-              << "│ " << RESET << BOLD << "undo    " << RESET << GRAY << " Revert change     " << "│" << RESET << std::endl;
+              << "│ " << RESET << BOLD << "undo    " << RESET << GRAY << " Revert change      " << "│" << RESET << std::endl;
     std::cout << GRAY << "  │ " << RESET << BOLD << "patch   " << RESET << GRAY << " Preview last patch " 
-              << "│ " << RESET << BOLD << "        " << RESET << GRAY << "                   " << "│" << RESET << std::endl;
-    std::cout << GRAY << "  │ " << RESET << BOLD << "skills  " << RESET << GRAY << " List active skills " 
-              << "│ " << RESET << BOLD << "lsp     " << RESET << GRAY << " List LSP servers  " << "│" << RESET << std::endl;
-    std::cout << GRAY << "  │ " << RESET << BOLD << "tasks   " << RESET << GRAY << " List sched tasks   " 
-              << "│ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory    " << "│" << RESET << std::endl;
-    std::cout << GRAY << "  │ " << RESET << BOLD << "memory  " << RESET << GRAY << " Show long-term mem " 
-              << "│ " << RESET << BOLD << "clear   " << RESET << GRAY << " Reset context     " << "│" << RESET << std::endl;
-    std::cout << GRAY << "  │ " << RESET << BOLD << "exit    " << RESET << GRAY << " Terminate agent    " 
-              << "│ " << RESET << BOLD << "        " << RESET << GRAY << "                   " << "│" << RESET << std::endl;
+              << "│ " << RESET << BOLD << "skills  " << RESET << GRAY << " List active skills " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "lsp     " << RESET << GRAY << " List LSP servers   " 
+              << "│ " << RESET << BOLD << "tasks   " << RESET << GRAY << " List sched tasks   " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "compress" << RESET << GRAY << " Summary memory     " 
+              << "│ " << RESET << BOLD << "memory  " << RESET << GRAY << " Show long-term mem " << "│" << RESET << std::endl;
+    std::cout << GRAY << "  │ " << RESET << BOLD << "clear   " << RESET << GRAY << " Reset context      " 
+              << "│ " << RESET << BOLD << "exit    " << RESET << GRAY << " Terminate agent    " << "│" << RESET << std::endl;
     std::cout << GRAY << "  └──────────────────────────────────────────────────────────┘" << RESET << std::endl;
 
     // Optimization: Define the core identity as an Autonomous Agent.
