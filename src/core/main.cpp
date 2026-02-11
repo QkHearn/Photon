@@ -66,6 +66,8 @@ const std::string GOLD = "\033[38;5;220m";
 // 全局变量用于存储 Git 状态
 bool g_hasGit = false;
 
+std::string findExecutableInPath(const std::vector<std::string>& names);
+
 // Windows兼容的Git检测函数
 bool checkGitAvailable() {
 #ifdef _WIN32
