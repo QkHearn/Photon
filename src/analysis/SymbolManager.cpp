@@ -588,6 +588,14 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
         }
         for (auto it = callGraphAdj.begin(); it != callGraphAdj.end(); ) {
             if (it->first.rfind(relPath + ":", 0) == 0) {
+                for (const auto& callee : it->second) {
+                    auto revIt = callGraphRev.find(callee);
+                    if (revIt != callGraphRev.end()) {
+                        auto& rev = revIt->second;
+                        rev.erase(std::remove(rev.begin(), rev.end(), it->first), rev.end());
+                        if (rev.empty()) callGraphRev.erase(revIt);
+                    }
+                }
                 it = callGraphAdj.erase(it);
             } else {
                 ++it;
@@ -735,14 +743,29 @@ void SymbolManager::scanFile(const fs::path& filePath, std::vector<Symbol>& loca
             for (const auto& c : calls) {
                 uniq.insert(resolveCalleeCall(c));
             }
-            std::unique_lock<std::shared_mutex> lock(mtx);
-            std::string key = makeSymbolKey(s);
+        std::unique_lock<std::shared_mutex> lock(mtx);
+        std::string key = makeSymbolKey(s);
             symbolCalls[key] = calls;
             callerOutCounts[key] = static_cast<int>(calls.size());
             for (const auto& c : calls) {
                 calleeCounts[c.name] += 1;
             }
-            callGraphAdj[key] = std::vector<std::string>(uniq.begin(), uniq.end());
+            std::vector<std::string> newCallees(uniq.begin(), uniq.end());
+            auto oldIt = callGraphAdj.find(key);
+            if (oldIt != callGraphAdj.end()) {
+                for (const auto& c : oldIt->second) {
+                    auto revIt = callGraphRev.find(c);
+                    if (revIt != callGraphRev.end()) {
+                        auto& rev = revIt->second;
+                        rev.erase(std::remove(rev.begin(), rev.end(), key), rev.end());
+                        if (rev.empty()) callGraphRev.erase(revIt);
+                    }
+                }
+            }
+            callGraphAdj[key] = std::move(newCallees);
+            for (const auto& c : uniq) {
+                callGraphRev[c].push_back(key);
+            }
         }
     }
     localSymbols.insert(localSymbols.end(), extractedAll.begin(), extractedAll.end());
@@ -970,8 +993,15 @@ void SymbolManager::loadCallGraph() {
             }
             if (!tos.empty()) loadedAdj[from] = std::move(tos);
         }
+        std::unordered_map<std::string, std::vector<std::string>> loadedRev;
+        for (const auto& [from, tos] : loadedAdj) {
+            for (const auto& to : tos) {
+                loadedRev[to].push_back(from);
+            }
+        }
         std::unique_lock<std::shared_mutex> lock(mtx);
         callGraphAdj = std::move(loadedAdj);
+        callGraphRev = std::move(loadedRev);
     } catch (...) {}
 }
 
@@ -1079,46 +1109,39 @@ std::optional<SymbolManager::Symbol> SymbolManager::findEnclosingSymbol(const st
 }
 
 std::vector<SymbolManager::CallInfo> SymbolManager::getCallsForSymbol(const Symbol& symbol) {
-    std::unique_lock<std::shared_mutex> lock(mtx);
+    std::shared_lock<std::shared_mutex> lock(mtx);
     auto it = symbolCalls.find(makeSymbolKey(symbol));
     if (it == symbolCalls.end()) return {};
     return it->second;
 }
 
 int SymbolManager::getGlobalCalleeCount(const std::string& calleeName) const {
-    std::unique_lock<std::shared_mutex> lock(mtx);
+    std::shared_lock<std::shared_mutex> lock(mtx);
     auto it = calleeCounts.find(calleeName);
     if (it == calleeCounts.end()) return 0;
     return it->second;
 }
 
 int SymbolManager::getCallerOutDegree(const Symbol& symbol) const {
-    std::unique_lock<std::shared_mutex> lock(mtx);
+    std::shared_lock<std::shared_mutex> lock(mtx);
     auto it = callerOutCounts.find(makeSymbolKey(symbol));
     if (it == callerOutCounts.end()) return 0;
     return it->second;
 }
 
 std::vector<std::string> SymbolManager::getCalleesForSymbol(const Symbol& symbol) const {
-    std::unique_lock<std::shared_mutex> lock(mtx);
+    std::shared_lock<std::shared_mutex> lock(mtx);
     auto it = callGraphAdj.find(makeSymbolKey(symbol));
     if (it == callGraphAdj.end()) return {};
     return it->second;
 }
 
 std::vector<std::string> SymbolManager::getCallerKeysForSymbol(const Symbol& symbol) const {
-    std::unique_lock<std::shared_mutex> lock(mtx);
+    std::shared_lock<std::shared_mutex> lock(mtx);
     std::string key = makeSymbolKey(symbol);
-    std::vector<std::string> callers;
-    for (const auto& [callerKey, calleeKeys] : callGraphAdj) {
-        for (const auto& c : calleeKeys) {
-            if (c == key) {
-                callers.push_back(callerKey);
-                break;
-            }
-        }
-    }
-    return callers;
+    auto it = callGraphRev.find(key);
+    if (it != callGraphRev.end()) return it->second;
+    return {};
 }
 
 std::vector<SymbolManager::CallInfo> SymbolManager::extractCalls(const std::string& relPath, int startLine, int endLine) {

@@ -116,6 +116,8 @@ private:
     std::unordered_map<std::string, int> calleeCounts;
     std::unordered_map<std::string, int> callerOutCounts;
     std::unordered_map<std::string, std::vector<std::string>> callGraphAdj;
+    /** Reverse index: calleeKey -> callerKeys, for O(1) getCallerKeysForSymbol */
+    std::unordered_map<std::string, std::vector<std::string>> callGraphRev;
     std::unordered_map<std::string, LSPClient*> lspByExtension;
     LSPClient* lspFallback = nullptr;
     mutable std::shared_mutex mtx;
