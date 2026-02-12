@@ -795,11 +795,11 @@ ApplyPatchTool::ApplyPatchTool(const std::string& rootPath, bool hasGit)
     : rootPath(fs::u8path(rootPath)), hasGit(hasGit) {}
 
 std::string ApplyPatchTool::getDescription() const {
-    std::string desc = "Modify or create project files by applying a unified diff (recommended for all file edits: reversible, trackable). "
-                      "Provide diff_content: each line added with '+' prefix, removed with '-' prefix, unchanged with space. "
-                      "Include at least one hunk header (e.g. \"@@ -1,3 +1,4 @@\" for edits, \"@@ -0,0 +1,N @@\" for new files). "
-                      "New file: use \"--- /dev/null\" and \"+++ b/path/to/newfile\" with only '+' lines. "
-                      "Multiple files: write one block per file (diff --git / --- / +++ / @@ hunks), then immediately the next block with no blank line between files; inside each hunk every line must start with ' ', '+', or '-' (no empty lines in hunks, no trailing spaces). Use dry_run: true for complex or multi-file diffs first. ";
+    std::string desc = "Modify or create project files by applying a unified diff (reversible, trackable). "
+                      "CRITICAL: diff_content must be valid for git apply. (1) Start each file with exactly: diff --git a/PATH b/PATH (new file: a/dev/null b/PATH). (2) Then --- a/PATH (new: --- /dev/null), then +++ b/PATH, then @@ -... +... @@. (3) Every hunk line must start with exactly one of space, '+', or '-'—no blank lines inside hunks; blank lines in new content must be written as a line with only '+'. "
+                      "Example new file:\ndiff --git a/dev/null b/README.md\n--- /dev/null\n+++ b/README.md\n@@ -0,0 +1,4 @@\n+# Title\n+\n+Line 2\n+\n"
+                      "Example edit:\ndiff --git a/foo.cpp b/foo.cpp\n--- a/foo.cpp\n+++ b/foo.cpp\n@@ -1,3 +1,4 @@\n line1\n-line2\n+line2 changed\n line3\n"
+                      "Multiple files: repeat the block (diff --git / --- / +++ / @@ / lines) with no blank line between files. Use dry_run: true for complex patches first.";
     
     if (hasGit) {
         desc += "Uses git stash for backup and git apply when available.";
@@ -816,7 +816,7 @@ nlohmann::json ApplyPatchTool::getSchema() const {
         {"properties", {
             {"diff_content", {
                 {"type", "string"},
-                {"description", "Unified diff string. Rules: (1) Every line inside a hunk must start with exactly one of: space ' ', '+', or '-'; no empty lines inside hunks. (2) No trailing spaces on any line. (3) Single file: one block with ---/+++/@@ and hunk lines. (4) Multiple files: for each file write 'diff --git a/path b/path', then '--- a/path' (or '--- /dev/null' for new file), then '+++ b/path', then '@@ -... +... @@' and hunk lines; start the next file's 'diff --git' or '--- /dev/null' on the very next line after the last hunk line (no blank line between files). New file: --- /dev/null, +++ b/path, @@ -0,0 +1,N @@, then only '+' lines."}
+                {"description", "Unified diff for git apply. MUST start each file with 'diff --git a/X b/X' (new file: a/dev/null b/X). Then '--- a/X' or '--- /dev/null', '+++ b/X', '@@ -n,m +p,q @@', then lines: each line starts with exactly one of ' ', '+', '-'. No blank lines in hunks—use a line containing only '+' for a blank added line. No trailing spaces. New file example: diff --git a/dev/null b/foo.txt, --- /dev/null, +++ b/foo.txt, @@ -0,0 +1,2 @@, +first line, +."}
             }},
             {"files", {
                 {"type", "array"},
@@ -993,12 +993,14 @@ static std::string stripGitPrefix(const std::string& p) {
     return p;
 }
 
-// Normalize diff so git apply accepts it: strip trailing whitespace per line, and replace
-// empty lines inside hunks with " " (unified diff requires every hunk line to start with ' ', '+', or '-').
+// Normalize diff so git apply accepts it: strip trailing whitespace, fix empty lines in hunks,
+// fix "diff --git /dev/null b/..." -> "diff --git a/dev/null b/...", and add "diff --git" when patch starts with ---/+++ only.
 static std::string normalizePatchForGitApply(const std::string& diffContent) {
     std::string out;
     out.reserve(diffContent.size());
     bool inHunk = false;
+    bool hunkIsNewFile = false;  // @@ -0,0 +... (new-file hunk: empty lines must be "+", not " ")
+    std::string pendingHeader;   // "--- /dev/null\n" when patch starts with --- only; emit with "diff --git" before "+++"
     size_t i = 0;
     while (i < diffContent.size()) {
         size_t lineStart = i;
@@ -1006,13 +1008,37 @@ static std::string normalizePatchForGitApply(const std::string& diffContent) {
         std::string line(diffContent.substr(lineStart, i - lineStart));
         if (i < diffContent.size() && diffContent[i] == '\r') ++i;
         if (i < diffContent.size() && diffContent[i] == '\n') ++i;
-        // Strip trailing spaces/tabs
         while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
-        if (inHunk && line.empty()) line = " ";
-        if (line.size() >= 3 && line.compare(0, 3, "@@ ") == 0 &&
-            line.find(" @@") != std::string::npos) inHunk = true;
+        // git apply requires "diff --git a/old b/new"; model often emits "diff --git /dev/null b/new"
+        if (line.rfind("diff --git ", 0) == 0 && line.size() > 11) {
+            std::string rest = line.substr(11);
+            if (rest.rfind("/dev/null ", 0) == 0 || rest == "/dev/null") {
+                line = "diff --git a/dev/null " + (rest.size() > 10 ? rest.substr(10) : std::string("b/"));
+            } else if (rest.rfind("NUL ", 0) == 0 || rest == "NUL") {
+                line = "diff --git a/NUL " + (rest.size() > 4 ? rest.substr(4) : std::string("b/"));
+            }
+            pendingHeader.clear();
+        }
+        if (line.rfind("--- ", 0) == 0) {
+            inHunk = false;
+            std::string aPath = line.substr(4);
+            if ((aPath == "/dev/null" || aPath == "NUL") && out.empty()) {
+                pendingHeader = line + "\n";
+                // do not append yet; we'll prepend "diff --git" + this when we see "+++"
+            }
+        }
+        if (line.rfind("+++ ", 0) == 0 && line.size() > 4 && !pendingHeader.empty()) {
+            std::string bPath = line.substr(4);
+            out = "diff --git a/dev/null " + bPath + "\n" + pendingHeader + out;
+            pendingHeader.clear();
+        }
+        if (line.size() >= 3 && line.compare(0, 3, "@@ ") == 0 && line.find(" @@") != std::string::npos) {
+            inHunk = true;
+            hunkIsNewFile = (line.find("@@ -0,0 ") == 0);
+        }
         if (line.rfind("--- ", 0) == 0 || line.rfind("diff --git ", 0) == 0) inHunk = false;
         if (inHunk && !line.empty() && line[0] != ' ' && line[0] != '+' && line[0] != '-') inHunk = false;
+        if (inHunk && line.empty()) line = hunkIsNewFile ? "+" : " ";
         out += line;
         out += '\n';
     }

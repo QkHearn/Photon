@@ -82,7 +82,7 @@ Heuristic file guessing is prohibited.
 
 Direct write operations without a patch representation are invalid.
 
-**Tool contract**: `apply_patch` accepts `diff_content` (unified diff string). The diff MUST contain hunk headers (`@@ ... @@`) so that changes are line-scoped. Each hunk line must start with exactly one of ` `, `+`, `-` (no empty lines in hunks); do not add trailing spaces; do not insert a blank line between two file sections.
+**Tool contract**: `apply_patch` accepts `diff_content` (unified diff string). Format is strict for `git apply`: (1) Each file block MUST start with `diff --git a/OLD b/NEW` (for new file use `a/dev/null`). (2) Then `--- a/OLD` (or `--- /dev/null` for new file), then `+++ b/NEW`, then `@@ -... +... @@`, then hunk lines. (3) Every hunk line must start with exactly one of space, `+`, or `-`—no raw blank lines; to add a blank line use a line that is just `+`. No trailing spaces; no blank line between file blocks.
 
 ---
 
