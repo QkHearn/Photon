@@ -1,16 +1,18 @@
 #pragma once
 #include "ITool.h"
+#include "analysis/SymbolManager.h"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <functional>
+#include <memory>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
 // 前向声明
 class SkillManager;
-class SymbolManager;
-struct Symbol;
+class ScanIgnoreRules;
 
 // UTF-8 验证和清理辅助函数
 namespace UTF8Utils {
@@ -145,13 +147,14 @@ private:
 
 /**
  * @brief 列出项目文件工具
- * 
- * 极简设计: 只列出目录结构
- * 不包含任何过滤逻辑 (由 Agent 决定读取哪些文件)
+ *
+ * 列出目录结构；若提供 SymbolManager，对代码文件附加紧凑符号摘要（便于大模型理解项目并节省 token）。
  */
 class ListProjectFilesTool : public ITool {
 public:
-    explicit ListProjectFilesTool(const std::string& rootPath);
+    /** symbolMgr 为 nullptr 时不附加符号；ignoreRules 与符号扫描共用，为空时使用内置跳过规则（. 开头、build 等）。 */
+    explicit ListProjectFilesTool(const std::string& rootPath, SymbolManager* symbolMgr = nullptr, int maxSymbolsPerFile = 8,
+                                  std::shared_ptr<ScanIgnoreRules> ignoreRules = nullptr);
     
     std::string getName() const override { return "list_project_files"; }
     std::string getDescription() const override;
@@ -160,9 +163,21 @@ public:
 
 private:
     fs::path rootPath;
-    
-    // 递归列出目录
-    void listDirectory(const fs::path& dir, nlohmann::json& result, int maxDepth, int currentDepth);
+    SymbolManager* symbolMgr;
+    int maxSymbolsPerFile;
+    std::shared_ptr<ScanIgnoreRules> ignoreRules;
+
+    void listDirectory(const fs::path& dir, nlohmann::json& result, int maxDepth, int currentDepth,
+                      const std::unordered_map<std::string, std::vector<Symbol>>* symbolBatch);
+    void collectCodeFilePaths(const fs::path& dir, std::vector<std::string>& outPaths, int maxDepth, int currentDepth);
+
+    bool loadProjectTreeCache(nlohmann::json& outTree, std::string& outText) const;
+    void saveProjectTreeCache(const nlohmann::json& tree, const std::string& text, int pathMaxDepth) const;
+
+public:
+    /** 初始化时调用：生成根目录列表（含 symbol）并持久化到 .photon/index/project_tree.json；ignoreRules 与扫描共用。 */
+    static void buildAndSaveCache(const std::string& rootPath, SymbolManager* symbolMgr, int maxDepth = 3, int maxSymbolsPerFile = 8,
+                                 std::shared_ptr<ScanIgnoreRules> ignoreRules = nullptr);
 };
 
 /**

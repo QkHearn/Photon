@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <memory>
 #include <filesystem>
 #include <fstream>
 #include <regex>
@@ -49,7 +50,8 @@ public:
     void registerProvider(std::unique_ptr<ISymbolProvider> provider);
     void setFallbackOnEmpty(bool enabled) { fallbackOnEmpty = enabled; }
     void setLSPClients(const std::unordered_map<std::string, LSPClient*>& byExt, LSPClient* fallback);
-    void setIgnorePatterns(const std::vector<std::string>& patterns) { ignorePatterns = patterns; }
+    void setIgnorePatterns(const std::vector<std::string>& patterns);
+    void setIgnoreRules(std::shared_ptr<class ScanIgnoreRules> rules) { ignoreRules = std::move(rules); }
 
     // Start asynchronous full scan
     void startAsyncScan();
@@ -77,6 +79,10 @@ public:
     
     // Try to get file symbols without blocking (returns false if lock unavailable)
     bool tryGetFileSymbols(const std::string& relPath, std::vector<Symbol>& outSymbols);
+
+    /** 批量查询多个文件的符号，一次读锁，list_project_files 等场景加速用 */
+    void getFileSymbolsBatch(const std::vector<std::string>& relPaths,
+                            std::unordered_map<std::string, std::vector<Symbol>>& out);
 
     // Find the most specific symbol that encloses a line
     std::optional<Symbol> findEnclosingSymbol(const std::string& relPath, int line);
@@ -124,7 +130,7 @@ private:
     std::atomic<bool> scanning{false};
     std::thread scanThread;
     bool fallbackOnEmpty = false;
-    std::vector<std::string> ignorePatterns;
+    std::shared_ptr<class ScanIgnoreRules> ignoreRules;
 
     // Real-time watching
     std::atomic<bool> watching{false};

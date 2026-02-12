@@ -27,7 +27,7 @@
       "./builtin_skills"
     ],
     "tree_sitter_languages": [],
-    "symbol_ignore_patterns": []
+    "symbol_ignore_patterns": ["build", "third_party", "\\.github", "node_modules", "dist"]
   },
   "mcp_servers": [
     { "name": "puppeteer", "command": "npx -y @modelcontextprotocol/server-puppeteer" }

@@ -38,6 +38,7 @@ struct Config {
             std::string symbol;
         };
         std::vector<TreeSitterLanguage> treeSitterLanguages;
+        /** 扫描忽略：正则列表（ECMAScript），路径匹配任一则跳过；与 list_project_files 共用。以 . 开头的目录始终不扫描（内置）。字面点用 \\. 如 "\\.git" */
         std::vector<std::string> symbolIgnorePatterns;
     } agent;
 

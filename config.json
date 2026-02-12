@@ -39,12 +39,13 @@
     "skill_roots": ["~/.photon/skills", "./builtin_skills"],
     "tree_sitter_languages": [],
     "symbol_ignore_patterns": [
-      ".github",
-      ".photon",
-      "cmake-build-debug",
+      "(^|/)\\.[^/]*",
+      "build",
       "third_party",
+      "cmake-build-debug",
       "tests",
-      "build"
+      "node_modules",
+      "dist"
     ]
   },
   "mcp_servers": [

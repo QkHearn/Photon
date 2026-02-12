@@ -1,5 +1,6 @@
 #include "CoreTools.h"
 #include "analysis/SymbolManager.h"
+#include "utils/ScanIgnore.h"
 #include <iostream>
 #include <vector>
 #include <cstdio>
@@ -1440,12 +1441,91 @@ nlohmann::json RunCommandTool::execute(const nlohmann::json& args) {
 // ListProjectFilesTool Implementation
 // ============================================================================
 
-ListProjectFilesTool::ListProjectFilesTool(const std::string& rootPath) 
-    : rootPath(fs::u8path(rootPath)) {}
+namespace {
+bool isCodeFileForList(const std::string& filePath) {
+    static const std::vector<std::string> codeExtensions = {
+        ".cpp", ".h", ".hpp", ".cc", ".cxx", ".c", ".py", ".js", ".ts", ".jsx", ".tsx",
+        ".java", ".go", ".rs", ".cs", ".rb", ".php", ".swift", ".kt", ".kts", ".ets"
+    };
+    std::string ext = fs::path(filePath).extension().string();
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return std::find(codeExtensions.begin(), codeExtensions.end(), ext) != codeExtensions.end();
+}
+// 紧凑格式：C:Class F:fn M:method，便于大模型理解且省 token
+std::string formatSymbolsCompact(const std::vector<Symbol>& symbols, int maxCount) {
+    std::string out;
+    char typeChar = 'S';
+    int n = 0;
+    for (const auto& s : symbols) {
+        if (n >= maxCount) break;
+        if (!s.type.empty()) {
+            switch (s.type[0]) {
+                case 'c': typeChar = 'C'; break;  // class
+                case 'f': typeChar = 'F'; break;  // function
+                case 'm': typeChar = 'M'; break;  // method
+                case 's': typeChar = (s.type.size() > 1 && s.type[1] == 't') ? 'S' : 'S'; break;  // struct
+                case 'e': typeChar = 'E'; break;  // enum
+                case 'i': typeChar = 'I'; break;  // interface
+                default: typeChar = 'S'; break;
+            }
+        }
+        if (!out.empty()) out += ' ';
+        out += typeChar;
+        out += ':';
+        out += s.name;
+        ++n;
+    }
+    return out;
+}
+// 从 key "path:line:name" 取出 name（path 可能含 :）
+static std::string symbolKeyToName(const std::string& key) {
+    size_t last = key.rfind(':');
+    if (last == std::string::npos) return key;
+    return key.substr(last + 1);
+}
+// 为 dictionary 生成紧凑调用链：sym→c1,c2 ←caller1；仅前 maxSymbols 个符号，每符号最多 maxCallees/maxCallers 个
+std::string formatCallChainCompact(SymbolManager* symbolMgr, const std::vector<Symbol>& symbols,
+                                  int maxSymbols, int maxCallees, int maxCallers) {
+    if (!symbolMgr || symbols.empty()) return {};
+    std::string out;
+    int symCount = 0;
+    for (const auto& sym : symbols) {
+        if (symCount >= maxSymbols) break;
+        auto callees = symbolMgr->getCalleesForSymbol(sym);
+        auto callerKeys = symbolMgr->getCallerKeysForSymbol(sym);
+        if (callees.empty() && callerKeys.empty()) continue;
+        if (!out.empty()) out += "; ";
+        out += sym.name;
+        int n = 0;
+        for (const auto& c : callees) {
+            if (n >= maxCallees) break;
+            if (n == 0) out += "→";
+            else out += ",";
+            out += symbolKeyToName(c);
+            ++n;
+        }
+        n = 0;
+        for (const auto& k : callerKeys) {
+            if (n >= maxCallers) break;
+            if (n == 0) out += " ←";
+            else out += ",";
+            out += symbolKeyToName(k);
+            ++n;
+        }
+        ++symCount;
+    }
+    return out;
+}
+}  // namespace
+
+ListProjectFilesTool::ListProjectFilesTool(const std::string& rootPath, SymbolManager* symbolMgr, int maxSymbolsPerFile,
+                                           std::shared_ptr<ScanIgnoreRules> ignoreRules)
+    : rootPath(fs::u8path(rootPath)), symbolMgr(symbolMgr), maxSymbolsPerFile(maxSymbolsPerFile), ignoreRules(std::move(ignoreRules)) {}
 
 std::string ListProjectFilesTool::getDescription() const {
     return "List files and directories in the project. "
-           "Parameters: path (string, optional, default '.'), max_depth (int, optional, default 3).";
+           "Code files include compact symbol hints (C:class F:function M:method) to help understand the codebase with fewer tokens. "
+           "Parameters: path (optional, default '.'), max_depth (optional, default 3), include_symbols (optional, default true).";
 }
 
 nlohmann::json ListProjectFilesTool::getSchema() const {
@@ -1459,43 +1539,125 @@ nlohmann::json ListProjectFilesTool::getSchema() const {
             {"max_depth", {
                 {"type", "integer"},
                 {"description", "Maximum depth to recurse (default 3)"}
+            }},
+            {"include_symbols", {
+                {"type", "boolean"},
+                {"description", "Attach symbol hints for code files (default true). Set false to save tokens when only structure is needed."}
             }}
         }}
     };
 }
 
-void ListProjectFilesTool::listDirectory(const fs::path& dir, nlohmann::json& result, int maxDepth, int currentDepth) {
+void ListProjectFilesTool::collectCodeFilePaths(const fs::path& dir, std::vector<std::string>& outPaths, int maxDepth, int currentDepth) {
     if (currentDepth > maxDepth) return;
-    
     try {
         for (const auto& entry : fs::directory_iterator(dir)) {
-            std::string name = entry.path().filename().u8string();
-            
-            // 跳过隐藏文件和常见忽略目录
-            if (name[0] == '.' || name == "node_modules" || name == "build" || name == "dist") {
-                continue;
+            if (ignoreRules) {
+                if (ignoreRules->shouldIgnore(entry.path())) continue;
+            } else {
+                std::string name = entry.path().filename().u8string();
+                if (name[0] == '.' || name == "node_modules" || name == "build" || name == "dist") continue;
             }
-            
+            if (entry.is_regular_file()) {
+                std::string relPath = fs::relative(entry.path(), rootPath).u8string();
+                if (isCodeFileForList(relPath)) outPaths.push_back(relPath);
+            } else if (entry.is_directory() && currentDepth < maxDepth) {
+                collectCodeFilePaths(entry.path(), outPaths, maxDepth, currentDepth + 1);
+            }
+        }
+    } catch (const std::exception& e) { (void)e; }
+}
+
+void ListProjectFilesTool::listDirectory(const fs::path& dir, nlohmann::json& result, int maxDepth, int currentDepth,
+                                        const std::unordered_map<std::string, std::vector<Symbol>>* symbolBatch) {
+    if (currentDepth > maxDepth) return;
+    try {
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (ignoreRules) {
+                if (ignoreRules->shouldIgnore(entry.path())) continue;
+            } else {
+                std::string name = entry.path().filename().u8string();
+                if (name[0] == '.' || name == "node_modules" || name == "build" || name == "dist") continue;
+            }
+
+            std::string name = entry.path().filename().u8string();
             nlohmann::json item;
             item["name"] = name;
-            item["path"] = fs::relative(entry.path(), rootPath).u8string();
+            std::string relPath = fs::relative(entry.path(), rootPath).u8string();
+            item["path"] = relPath;
             item["type"] = entry.is_directory() ? "directory" : "file";
-            
+
             if (entry.is_regular_file()) {
                 item["size"] = entry.file_size();
+                if (symbolBatch) {
+                    auto it = symbolBatch->find(relPath);
+                    if (it != symbolBatch->end() && !it->second.empty()) {
+                        std::string compact = formatSymbolsCompact(it->second, maxSymbolsPerFile);
+                        if (!compact.empty()) item["sym"] = compact;
+                        if (symbolMgr) {
+                            std::string chain = formatCallChainCompact(symbolMgr, it->second, 3, 3, 3);
+                            if (!chain.empty()) item["chain"] = chain;
+                        }
+                    }
+                }
             }
-            
+
             if (entry.is_directory() && currentDepth < maxDepth) {
                 nlohmann::json children = nlohmann::json::array();
-                listDirectory(entry.path(), children, maxDepth, currentDepth + 1);
+                listDirectory(entry.path(), children, maxDepth, currentDepth + 1, symbolBatch);
                 item["children"] = children;
             }
-            
             result.push_back(item);
         }
-    } catch (const std::exception& e) {
-        // 忽略权限错误等
+    } catch (const std::exception& e) { (void)e; }
+}
+
+static fs::path getProjectTreeCachePath(const fs::path& rootPath) {
+    return rootPath / ".photon" / "index" / "project_tree.json";
+}
+
+bool ListProjectFilesTool::loadProjectTreeCache(nlohmann::json& outTree, std::string& outText) const {
+    try {
+        fs::path cachePath = getProjectTreeCachePath(rootPath);
+        if (!fs::exists(cachePath)) return false;
+        std::ifstream f(cachePath);
+        if (!f.is_open()) return false;
+        nlohmann::json j;
+        f >> j;
+        if (!j.is_object() || j.value("version", 0) != 1 || !j.contains("tree") || !j.contains("text")) return false;
+        outTree = j["tree"];
+        outText = j["text"].get<std::string>();
+        return outTree.is_array() && !outText.empty();
+    } catch (...) {
+        return false;
     }
+}
+
+void ListProjectFilesTool::saveProjectTreeCache(const nlohmann::json& tree, const std::string& text, int pathMaxDepth) const {
+    try {
+        fs::path indexDir = rootPath / ".photon" / "index";
+        fs::create_directories(indexDir);
+        fs::path cachePath = getProjectTreeCachePath(rootPath);
+        std::ofstream f(cachePath);
+        if (!f.is_open()) return;
+        nlohmann::json j;
+        j["version"] = 1;
+        j["path"] = ".";
+        j["max_depth"] = pathMaxDepth;
+        j["tree"] = tree;
+        j["text"] = text;
+        f << j.dump();
+    } catch (...) {}
+}
+
+void ListProjectFilesTool::buildAndSaveCache(const std::string& rootPathStr, SymbolManager* symbolMgr, int maxDepth, int maxSymbolsPerFile,
+                                            std::shared_ptr<ScanIgnoreRules> ignoreRules) {
+    ListProjectFilesTool tool(rootPathStr, symbolMgr, maxSymbolsPerFile, std::move(ignoreRules));
+    nlohmann::json res = tool.execute({{"path", "."}, {"max_depth", maxDepth}, {"include_symbols", true}});
+    if (res.contains("error") || !res.contains("tree") || !res.contains("content") || !res["content"].is_array() || res["content"].empty()) return;
+    std::string text = res["content"][0].value("text", "");
+    if (text.empty()) return;
+    tool.saveProjectTreeCache(res["tree"], text, maxDepth);
 }
 
 nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
@@ -1503,6 +1665,18 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
     
     std::string path = args.value("path", ".");
     int maxDepth = args.value("max_depth", 3);
+    bool includeSymbols = args.value("include_symbols", true);
+    
+    // 根目录 + 默认深度 + 需要 symbol 时优先用初始化时生成的持久化缓存
+    if (path == "." && maxDepth == 3 && includeSymbols) {
+        nlohmann::json cachedTree;
+        std::string cachedText;
+        if (loadProjectTreeCache(cachedTree, cachedText)) {
+            result["tree"] = cachedTree;
+            result["content"] = nlohmann::json::array({{{"type", "text"}, {"text", cachedText}}});
+            return result;
+        }
+    }
     
     fs::path fullPath = rootPath / fs::u8path(path);
     
@@ -1516,10 +1690,15 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
         return result;
     }
     
+    std::unordered_map<std::string, std::vector<Symbol>> symbolBatch;
+    if (includeSymbols && symbolMgr) {
+        std::vector<std::string> codePaths;
+        collectCodeFilePaths(fullPath, codePaths, maxDepth, 0);
+        symbolMgr->getFileSymbolsBatch(codePaths, symbolBatch);
+    }
     nlohmann::json tree = nlohmann::json::array();
-    listDirectory(fullPath, tree, maxDepth, 0);
+    listDirectory(fullPath, tree, maxDepth, 0, symbolBatch.empty() ? nullptr : &symbolBatch);
     
-    // 构建可读的树形结构文本
     std::ostringstream treeText;
     treeText << "Project Structure: " << path << "\n\n";
     
@@ -1531,6 +1710,12 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
             
             if (item["type"] == "file" && item.contains("size")) {
                 treeText << " (" << item["size"].get<size_t>() << " bytes)";
+            }
+            if (item.contains("sym")) {
+                treeText << " [" << item["sym"].get<std::string>() << "]";
+            }
+            if (item.contains("chain")) {
+                treeText << " | " << item["chain"].get<std::string>();
             }
             
             treeText << "\n";
@@ -1661,11 +1846,12 @@ nlohmann::json GrepTool::execute(const nlohmann::json& args) {
         cmd += " -- " + patternEsc + " " + searchPath + " 2>&1";
     } else {
 #ifdef _WIN32
-        // Windows has findstr by default; grep usually not in PATH
+        // Windows: findstr (grep usually not in PATH). /s=subdirs /n=line numbers; output file:line:content.
         std::string findstrPattern = pattern;
         for (size_t i = 0; i < findstrPattern.size(); ++i) {
             if (findstrPattern[i] == '"') { findstrPattern.insert(i, "\\"); ++i; }
         }
+        // Use * to match all files (cmd expands in current dir after cd /d)
         cmd = prefix + "findstr /s /n /c:\"" + findstrPattern + "\" * 2>&1";
 #else
         cmd = prefix + "grep -rn ";
@@ -1678,12 +1864,13 @@ nlohmann::json GrepTool::execute(const nlohmann::json& args) {
         result["error"] = out.empty() ? "grep failed" : out;
         return result;
     }
-    // Parse "path:line:content" lines
+    // Parse "path:line:content" lines (strip \r for Windows CRLF output)
     nlohmann::json matches = nlohmann::json::array();
     std::istringstream iss(out);
     std::string line;
     int count = 0;
     while (count < maxResults && std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         std::string p, c;
         int ln = 0;

@@ -87,6 +87,7 @@ enable_testing()
 add_library(agent_lib 
     # Core infrastructure
     src/utils/Logger.cpp
+    src/utils/ScanIgnore.cpp
     src/core/UIManager.cpp
     src/core/LLMClient.cpp 
     src/core/ContextManager.cpp
@@ -154,6 +155,7 @@ add_executable(agent_tests
     tests/test_WriteTool.cpp
     tests/test_GrepTool.cpp
     tests/test_AttemptTool.cpp
+    tests/test_ListProjectFilesTool.cpp
     tests/test_SystemRequirementFlow.cpp
 )
 if(PHOTON_USE_BUNDLED_GTEST)
@@ -172,6 +174,7 @@ if(WIN32)
     target_link_libraries(photon PRIVATE ws2_32 crypt32 bcrypt)
     target_link_libraries(agent_lib PRIVATE ws2_32 crypt32 bcrypt)
     target_link_libraries(agent_tests PRIVATE ws2_32 crypt32 bcrypt)
+    target_compile_definitions(agent_tests PRIVATE PHOTON_WINDOWS=1)
 endif()
 
 # Link pthread if needed

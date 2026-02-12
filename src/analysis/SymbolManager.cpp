@@ -1,6 +1,7 @@
 #include "analysis/SymbolManager.h"
 #include "analysis/providers/TreeSitterSymbolProvider.h"
 #include "analysis/LSPClient.h"
+#include "utils/ScanIgnore.h"
 #include <algorithm>
 #include <fstream>
 #include <iterator>
@@ -1080,6 +1081,18 @@ bool SymbolManager::tryGetFileSymbols(const std::string& relPath, std::vector<Sy
     return true;
 }
 
+void SymbolManager::getFileSymbolsBatch(const std::vector<std::string>& relPaths,
+                                        std::unordered_map<std::string, std::vector<Symbol>>& out) {
+    out.clear();
+    std::shared_lock<std::shared_mutex> lock(mtx);
+    for (const auto& relPath : relPaths) {
+        auto it = fileSymbols.find(relPath);
+        if (it != fileSymbols.end() && !it->second.empty()) {
+            out[relPath] = it->second;
+        }
+    }
+}
+
 std::optional<SymbolManager::Symbol> SymbolManager::findEnclosingSymbol(const std::string& relPath, int line) {
     if (line <= 0) return std::nullopt;
     std::shared_lock<std::shared_mutex> lock(mtx);
@@ -1164,23 +1177,13 @@ std::vector<SymbolManager::CallInfo> SymbolManager::extractCalls(const std::stri
     return allCalls;
 }
 
+void SymbolManager::setIgnorePatterns(const std::vector<std::string>& patterns) {
+    ignoreRules = std::make_shared<ScanIgnoreRules>(patterns);
+}
+
 bool SymbolManager::shouldIgnore(const fs::path& path) {
-    std::string p = path.string();
-    
-    // 使用配置的忽略模式
-    for (const auto& pattern : ignorePatterns) {
-        if (p.find(pattern) != std::string::npos) {
-            return true;
-        }
+    if (!ignoreRules) {
+        ignoreRules = std::make_shared<ScanIgnoreRules>(std::vector<std::string>{});
     }
-    
-    // 如果没有配置，使用默认模式
-    if (ignorePatterns.empty()) {
-        return p.find("node_modules") != std::string::npos || 
-               p.find(".git") != std::string::npos || 
-               p.find("build") != std::string::npos ||
-               p.find(".venv") != std::string::npos;
-    }
-    
-    return false;
+    return ignoreRules->shouldIgnore(path);
 }

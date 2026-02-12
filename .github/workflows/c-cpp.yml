@@ -37,6 +37,14 @@ jobs:
         run: |
           brew install cmake nlohmann-json openssl googletest lcov
 
+      # 缓存 vcpkg 已安装的包，避免每次从源码编译 OpenSSL/GTest（x64-windows-static 无预编译包，首次约 15–30 分钟）
+      - name: Restore vcpkg cache (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-win-x64-static-1
+
       - name: Install Dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
@@ -72,7 +80,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%/scripts/buildsystems/vcpkg.cmake" ^
             -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
             -DPHOTON_ENABLE_TREESITTER=${{ steps.check_ts.outputs.enable_ts }}
-          cmake --build . --config Release
+          cmake --build . --config Release -- /m
 
       - name: Run Unit Tests
         shell: bash

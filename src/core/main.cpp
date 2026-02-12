@@ -36,6 +36,7 @@
 // 新架构: Tools 层
 #include "tools/ToolRegistry.h"
 #include "tools/CoreTools.h"
+#include "utils/ScanIgnore.h"
 // Agent 层: Constitution 校验
 #include "agent/ConstitutionValidator.h"
 #ifdef PHOTON_ENABLE_TREESITTER
@@ -680,12 +681,11 @@ int main(int argc, char* argv[]) {
     fs::path absolutePath = fs::absolute(fs::u8path(path));
     SymbolManager symbolManager(absolutePath.u8string());
     symbolManager.setFallbackOnEmpty(cfg.agent.symbolFallbackOnEmpty);
-    
-    // 设置符号扫描忽略模式
-    if (!cfg.agent.symbolIgnorePatterns.empty()) {
-        symbolManager.setIgnorePatterns(cfg.agent.symbolIgnorePatterns);
-    }
-    
+
+    // 扫描忽略规则（正则）：符号、call graph、list_project_files 共用
+    auto scanIgnoreRules = std::make_shared<ScanIgnoreRules>(cfg.agent.symbolIgnorePatterns);
+    symbolManager.setIgnoreRules(scanIgnoreRules);
+
 #ifdef PHOTON_ENABLE_TREESITTER
     if (cfg.agent.enableTreeSitter) {
         auto treeProvider = std::make_unique<TreeSitterSymbolProvider>();
@@ -710,7 +710,10 @@ int main(int argc, char* argv[]) {
         std::cout << "[Init] Symbol index cache is up-to-date, skipping rebuild" << std::endl;
     }
     std::cout << "[Init] Symbol index ready: " << symbolManager.getSymbolCount() << " symbols" << std::endl;
-    
+
+    // 生成并持久化项目目录树（含 symbol），list_project_files 查询时直接读缓存
+    ListProjectFilesTool::buildAndSaveCache(absolutePath.u8string(), &symbolManager, 3, 8, scanIgnoreRules);
+
     // 启动文件监听
     symbolManager.startWatching(5);
 
@@ -801,7 +804,7 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<ReadCodeBlockTool>(path, &symbolManager, cfg.agent.enableDebug));
     toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path, g_hasGit));  // 统一补丁工具：只接受 unified diff
     toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
-    toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path));
+    toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path, &symbolManager, 8, scanIgnoreRules));
     toolRegistry.registerTool(std::make_unique<GrepTool>(path));  // 代码搜索：grep，先定位再 read_code_block
     toolRegistry.registerTool(std::make_unique<AttemptTool>(path));  // 用户 attempt：持久化意图与任务状态，防遗忘
     {
