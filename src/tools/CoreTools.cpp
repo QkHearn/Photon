@@ -125,12 +125,9 @@ ReadCodeBlockTool::ReadCodeBlockTool(const std::string& rootPath, SymbolManager*
     : rootPath(fs::u8path(rootPath)), symbolMgr(symbolMgr), enableDebug(enableDebug) {}
 
 std::string ReadCodeBlockTool::getDescription() const {
-    return "Read code from a file with intelligent strategies: "
-           "(1) No parameters → returns symbol summary for code files; "
-           "(2) symbol_name specified → returns that symbol's code plus call chain (Calls / Called by) when index is available; "
-           "(3) start_line/end_line specified → returns those lines; "
-           "(4) Otherwise → returns full file. "
-           "Parameters: file_path (required), symbol_name (optional), start_line (optional), end_line (optional).";
+    return "Read code from one or more files. Single file: pass file_path (and optional symbol_name, start_line, end_line). "
+           "Multiple files: pass requests (array of same per-file options, max 20). "
+           "Per-file strategies: (1) symbol_name → that symbol's code + call chain; (2) start_line/end_line → line range; (3) code file with no extra params → symbol summary; (4) else → full file.";
 }
 
 nlohmann::json ReadCodeBlockTool::getSchema() const {
@@ -139,33 +136,84 @@ nlohmann::json ReadCodeBlockTool::getSchema() const {
         {"properties", {
             {"file_path", {
                 {"type", "string"},
-                {"description", "Relative path to the file"}
+                {"description", "Relative path to one file. Omit when using requests for batch read."}
             }},
             {"symbol_name", {
                 {"type", "string"},
-                {"description", "Name of a specific symbol (function, class, method) to read. If provided, only that symbol's code will be returned."}
+                {"description", "Name of a specific symbol (function, class, method) to read."}
             }},
             {"start_line", {
                 {"type", "integer"},
-                {"description", "Starting line number (1-indexed, optional). Use with end_line to read a specific range."}
+                {"description", "Starting line number (1-indexed, optional). Use with end_line for a range."}
             }},
             {"end_line", {
                 {"type", "integer"},
-                {"description", "Ending line number (1-indexed, optional). Use with start_line to read a specific range."}
+                {"description", "Ending line number (1-indexed, optional). Use with start_line for a range."}
+            }},
+            {"requests", {
+                {"type", "array"},
+                {"description", "Batch read: list of read requests; each has file_path (required), optional symbol_name, start_line, end_line. Max 20."},
+                {"items", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"file_path", {{"type", "string"}}},
+                        {"symbol_name", {{"type", "string"}}},
+                        {"start_line", {{"type", "integer"}}},
+                        {"end_line", {{"type", "integer"}}}
+                    }},
+                    {"required", {"file_path"}}
+                }}
             }}
-        }},
-        {"required", {"file_path"}}
+        }}
     };
 }
 
 nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
     nlohmann::json result;
-    
-    if (!args.contains("file_path")) {
-        result["error"] = "Missing required parameter: file_path";
+
+    // Batch mode: requests array
+    if (args.contains("requests") && args["requests"].is_array()) {
+        const auto& requests = args["requests"];
+        const size_t maxItems = 20;
+        if (requests.size() > maxItems) {
+            result["error"] = "Too many requests: max " + std::to_string(maxItems) + ", got " + std::to_string(requests.size());
+            return result;
+        }
+        ReadCodeBlockTool single(rootPath.u8string(), symbolMgr, enableDebug);
+        std::stringstream combined;
+        nlohmann::json items = nlohmann::json::array();
+        for (size_t i = 0; i < requests.size(); ++i) {
+            const auto& req = requests[i];
+            if (!req.is_object() || !req.contains("file_path")) {
+                combined << "--- request[" << (i + 1) << "] invalid (missing file_path) ---\n\n";
+                items.push_back({{"index", static_cast<int>(i)}, {"error", "missing file_path"}});
+                continue;
+            }
+            std::string filePath = req["file_path"].get<std::string>();
+            nlohmann::json one = single.execute(req);
+            items.push_back({{"file_path", filePath}, {"result", one}});
+            if (one.contains("error")) {
+                combined << "--- " << filePath << " (error) ---\n" << one["error"].get<std::string>() << "\n\n";
+            } else if (one.contains("content") && one["content"].is_array() && !one["content"].empty()
+                       && one["content"][0].contains("text") && one["content"][0]["text"].is_string()) {
+                combined << "--- " << filePath << " ---\n" << one["content"][0]["text"].get<std::string>() << "\n\n";
+            } else {
+                combined << "--- " << filePath << " ---\n" << one.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << "\n\n";
+            }
+        }
+        result["items"] = std::move(items);
+        std::string text = combined.str();
+        if (!text.empty() && text.back() == '\n') text.pop_back();
+        result["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", UTF8Utils::sanitize(text)}})});
         return result;
     }
-    
+
+    // Single-file mode
+    if (!args.contains("file_path")) {
+        result["error"] = "Missing parameter: provide file_path (single read) or requests (array, batch read).";
+        return result;
+    }
+
     std::string filePath = args["file_path"].get<std::string>();
     
     // 智能路径处理: 支持相对路径和绝对路径
@@ -1847,30 +1895,33 @@ nlohmann::json GrepTool::execute(const nlohmann::json& args) {
 #endif
     std::string cmd;
     std::string out;
-    // Prefer ripgrep (rg), then grep -rn; on Windows fallback to findstr when grep is missing
+    // 优先级：rg > grep（Git Bash / WSL 等）> Windows findstr
     bool useRg = false;
+    bool useGrep = false;
 #ifdef _WIN32
     { std::string d; if (execCaptureCoreTools("where rg 2>nul", d) == 0 && !d.empty()) useRg = true; }
+    if (!useRg) { std::string d; if (execCaptureCoreTools("where grep 2>nul", d) == 0 && !d.empty()) useGrep = true; }
 #else
     { std::string d; if (execCaptureCoreTools("which rg 2>/dev/null || command -v rg 2>/dev/null", d) == 0 && !d.empty()) useRg = true; }
+    if (!useRg) useGrep = true;  // Unix 通常都有 grep
 #endif
     if (useRg) {
         cmd = prefix + "rg -n --no-heading --color never ";
         if (!include.empty()) cmd += "-g " + shellEscape(include) + " ";
         cmd += " -- " + patternEsc + " " + searchPath + " 2>&1";
+    } else if (useGrep) {
+        cmd = prefix + "grep -rn ";
+        if (!include.empty()) cmd += "--include=" + shellEscape(include) + " ";
+        cmd += " -e " + patternEsc + " " + searchPath + " 2>&1";
     } else {
 #ifdef _WIN32
-        // Windows: findstr (grep usually not in PATH). /s=subdirs /n=line numbers; output file:line:content.
         std::string findstrPattern = pattern;
         for (size_t i = 0; i < findstrPattern.size(); ++i) {
             if (findstrPattern[i] == '"') { findstrPattern.insert(i, "\\"); ++i; }
         }
-        // Use * to match all files (cmd expands in current dir after cd /d)
         cmd = prefix + "findstr /s /n /c:\"" + findstrPattern + "\" * 2>&1";
 #else
-        cmd = prefix + "grep -rn ";
-        if (!include.empty()) cmd += "--include=" + shellEscape(include) + " ";
-        cmd += " -e " + patternEsc + " " + searchPath + " 2>&1";
+        cmd = prefix + "grep -rn -e " + patternEsc + " " + searchPath + " 2>&1";
 #endif
     }
     int code = execCaptureCoreTools(cmd, out);

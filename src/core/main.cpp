@@ -902,7 +902,7 @@ int main(int argc, char* argv[]) {
     std::string systemPrompt = 
         "You are Photon.\n"
         "You must operate under Photon Agent Constitution v2.0.\n"
-        "Before any read or write: plan first—identify entry symbols, affected files, and read scope. Then use list_project_files / grep / read_code_block only within that scope to save tokens.\n"
+        "Use your tools to solve the task; do not ask the user for information you can obtain with tools. Prefer minimal reads: target symbols or line ranges when possible instead of full files. Plan before read/write—identify entry symbols, affected files, and read scope; stay within that scope.\n"
         "Use the attempt tool to avoid forgetting: call attempt(action=get) at the start of a turn to recall current task; call attempt(action=update, intent=..., read_scope=...) when the user gives a new requirement; call attempt(action=update, step_done=...) after completing a step; call attempt(action=clear) when the task is done so the next task starts clean.\n"
         "All behavior is governed by the constitution and validated configuration.\n\n" +
         (constitutionText.empty() ? std::string("") : (std::string("# Constitution v2.0\n\n") + constitutionText + "\n\n")) +
@@ -1689,7 +1689,15 @@ int main(int argc, char* argv[]) {
                             }
                         }
 
-                        Logger::getInstance().action(serverName + "::" + toolName + " " + args.dump());
+                        if (toolName == "apply_patch") {
+                            size_t diffLen = 0;
+                            if (args.contains("diff_content") && args["diff_content"].is_string())
+                                diffLen = args["diff_content"].get<std::string>().size();
+                            Logger::getInstance().action(serverName + "::" + toolName + " (diff_content hidden"
+                                + (diffLen ? ", " + std::to_string(diffLen) + " chars)" : ")"));
+                        } else {
+                            Logger::getInstance().action(serverName + "::" + toolName + " " + args.dump());
+                        }
                         
                         // Human-in-the-loop: Confirmation for risky tools
                         std::string confirm = "y"; // Default to yes for non-risky tools
@@ -1869,6 +1877,22 @@ int main(int argc, char* argv[]) {
                                 result = mcpManager.callTool(serverName, toolName, args);
                                 
                                 if (tempAuth) mcpManager.setAllAuthorized(false);
+                            }
+
+                            if (toolName == "apply_patch") {
+                                if (result.contains("error")) {
+                                    std::cout << RED << "✖ apply_patch: " << result["error"].get<std::string>() << RESET << std::endl;
+                                } else {
+                                    std::string msg = result.value("message", "");
+                                    if (result.contains("affected_files") && result["affected_files"].is_array() && !result["affected_files"].empty()) {
+                                        std::string files;
+                                        for (const auto& f : result["affected_files"])
+                                            files += (files.empty() ? "" : ", ") + f.get<std::string>();
+                                        std::cout << GREEN << "✔ apply_patch: " << files << (msg.empty() ? "" : " — " + msg) << RESET << std::endl;
+                                    } else {
+                                        std::cout << GREEN << "✔ apply_patch: " << (msg.empty() ? "OK" : msg) << RESET << std::endl;
+                                    }
+                                }
                             }
 
                             if (result.contains("error")) {

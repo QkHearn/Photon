@@ -107,6 +107,11 @@ Patches lacking precise line scope (e.g. no `@@` hunks) are invalid.
 
 Plans are internal artifacts and **must not be emitted** unless explicitly requested.
 
+### 4.1 Tools and minimal read
+
+- **Solve with tools**: Use the available tools to obtain information and make changes; do not ask the user for what you can get or do via tools.
+- **Minimal read**: Read only what is necessary for the current step (prefer symbol or line scope over full file when it suffices).
+
 ---
 
 ## 5. Skill System Contract
