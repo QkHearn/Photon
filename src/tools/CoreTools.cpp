@@ -1451,7 +1451,7 @@ bool isCodeFileForList(const std::string& filePath) {
     for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return std::find(codeExtensions.begin(), codeExtensions.end(), ext) != codeExtensions.end();
 }
-// 紧凑格式：C:Class F:fn M:method，便于大模型理解且省 token
+// 紧凑格式：C:Class:L10 F:fn:L42，含行号便于 read_code_block 精确定位
 std::string formatSymbolsCompact(const std::vector<Symbol>& symbols, int maxCount) {
     std::string out;
     char typeChar = 'S';
@@ -1460,12 +1460,12 @@ std::string formatSymbolsCompact(const std::vector<Symbol>& symbols, int maxCoun
         if (n >= maxCount) break;
         if (!s.type.empty()) {
             switch (s.type[0]) {
-                case 'c': typeChar = 'C'; break;  // class
-                case 'f': typeChar = 'F'; break;  // function
-                case 'm': typeChar = 'M'; break;  // method
-                case 's': typeChar = (s.type.size() > 1 && s.type[1] == 't') ? 'S' : 'S'; break;  // struct
-                case 'e': typeChar = 'E'; break;  // enum
-                case 'i': typeChar = 'I'; break;  // interface
+                case 'c': typeChar = 'C'; break;
+                case 'f': typeChar = 'F'; break;
+                case 'm': typeChar = 'M'; break;
+                case 's': typeChar = (s.type.size() > 1 && s.type[1] == 't') ? 'S' : 'S'; break;
+                case 'e': typeChar = 'E'; break;
+                case 'i': typeChar = 'I'; break;
                 default: typeChar = 'S'; break;
             }
         }
@@ -1473,6 +1473,14 @@ std::string formatSymbolsCompact(const std::vector<Symbol>& symbols, int maxCoun
         out += typeChar;
         out += ':';
         out += s.name;
+        if (s.line > 0) {
+            out += ":L";
+            out += std::to_string(s.line);
+            if (s.endLine > 0 && s.endLine != s.line) {
+                out += '-';
+                out += std::to_string(s.endLine);
+            }
+        }
         ++n;
     }
     return out;
@@ -1524,7 +1532,7 @@ ListProjectFilesTool::ListProjectFilesTool(const std::string& rootPath, SymbolMa
 
 std::string ListProjectFilesTool::getDescription() const {
     return "List files and directories in the project. "
-           "Code files show symbols (C=class F=function M=method S=struct E=enum I=interface) and call chain (name→callees ←callers). "
+           "Code files show symbols with line range (e.g. F:main:L42-58) and call chain (name→callees ←callers). "
            "Parameters: path (optional, default '.'), max_depth (optional, default 3), include_symbols (optional, default true).";
 }
 
@@ -1673,7 +1681,7 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
         std::string cachedText;
         if (loadProjectTreeCache(cachedTree, cachedText)) {
             if (cachedText.find("Legend:") == std::string::npos)
-                cachedText = "Legend: C=class F=function M=method S=struct E=enum I=interface. Chain: name→calls ←called_by.\n\n" + cachedText;
+                cachedText = "Legend: C/F/M/S/E/I=type, :L123 or :L123-456=start_line[-end_line]. Chain: name→calls ←called_by.\n\n" + cachedText;
             result["tree"] = cachedTree;
             result["content"] = nlohmann::json::array({{{"type", "text"}, {"text", cachedText}}});
             return result;
@@ -1704,7 +1712,7 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
     std::ostringstream treeText;
     treeText << "Project Structure: " << path << "\n\n";
     if (includeSymbols) {
-        treeText << "Legend: C=class F=function M=method S=struct E=enum I=interface. Chain: name→calls ←called_by.\n\n";
+        treeText << "Legend: C/F/M/S/E/I=type, :L123 or :L123-456=start_line[-end_line]. Chain: name→calls ←called_by.\n\n";
     }
     
     std::function<void(const nlohmann::json&, int)> printTree;
