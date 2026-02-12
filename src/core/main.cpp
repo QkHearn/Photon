@@ -805,7 +805,7 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path, g_hasGit));  // 统一补丁工具：只接受 unified diff
     toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path, &symbolManager, 8, scanIgnoreRules));
-    toolRegistry.registerTool(std::make_unique<GrepTool>(path));  // 代码搜索：grep，先定位再 read_code_block
+    toolRegistry.registerTool(std::make_unique<GrepTool>(path, scanIgnoreRules));  // 代码搜索：grep，与 list 共用忽略规则
     toolRegistry.registerTool(std::make_unique<AttemptTool>(path));  // 用户 attempt：持久化意图与任务状态，防遗忘
     {
         SyntaxCheckTool::LspDiagnosticsFn lspDiagFn = [&lspByExt, &lspFallback](const std::string& relPath) -> std::string {

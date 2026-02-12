@@ -1524,7 +1524,7 @@ ListProjectFilesTool::ListProjectFilesTool(const std::string& rootPath, SymbolMa
 
 std::string ListProjectFilesTool::getDescription() const {
     return "List files and directories in the project. "
-           "Code files include compact symbol hints (C:class F:function M:method) to help understand the codebase with fewer tokens. "
+           "Code files show symbols (C=class F=function M=method S=struct E=enum I=interface) and call chain (name→callees ←callers). "
            "Parameters: path (optional, default '.'), max_depth (optional, default 3), include_symbols (optional, default true).";
 }
 
@@ -1672,6 +1672,8 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
         nlohmann::json cachedTree;
         std::string cachedText;
         if (loadProjectTreeCache(cachedTree, cachedText)) {
+            if (cachedText.find("Legend:") == std::string::npos)
+                cachedText = "Legend: C=class F=function M=method S=struct E=enum I=interface. Chain: name→calls ←called_by.\n\n" + cachedText;
             result["tree"] = cachedTree;
             result["content"] = nlohmann::json::array({{{"type", "text"}, {"text", cachedText}}});
             return result;
@@ -1701,6 +1703,9 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
     
     std::ostringstream treeText;
     treeText << "Project Structure: " << path << "\n\n";
+    if (includeSymbols) {
+        treeText << "Legend: C=class F=function M=method S=struct E=enum I=interface. Chain: name→calls ←called_by.\n\n";
+    }
     
     std::function<void(const nlohmann::json&, int)> printTree;
     printTree = [&](const nlohmann::json& items, int depth) {
@@ -1741,7 +1746,8 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
 // GrepTool Implementation
 // ============================================================================
 
-GrepTool::GrepTool(const std::string& rootPath) : rootPath(fs::u8path(rootPath)) {}
+GrepTool::GrepTool(const std::string& rootPath, std::shared_ptr<ScanIgnoreRules> ignoreRules)
+    : rootPath(fs::u8path(rootPath)), ignoreRules(std::move(ignoreRules)) {}
 
 std::string GrepTool::getDescription() const {
     return "Search project files by text or regex (grep). Returns file, line, and matching line content. "
@@ -1864,7 +1870,7 @@ nlohmann::json GrepTool::execute(const nlohmann::json& args) {
         result["error"] = out.empty() ? "grep failed" : out;
         return result;
     }
-    // Parse "path:line:content" lines (strip \r for Windows CRLF output)
+    // Parse "path:line:content" lines；与 list/扫描共用忽略规则，跳过应忽略的文件
     nlohmann::json matches = nlohmann::json::array();
     std::istringstream iss(out);
     std::string line;
@@ -1876,6 +1882,10 @@ nlohmann::json GrepTool::execute(const nlohmann::json& args) {
         int ln = 0;
         parseGrepLine(line, p, ln, c);
         if (!p.empty() && ln > 0) {
+            if (ignoreRules) {
+                fs::path fullPath = rootPath / fs::u8path(p);
+                if (ignoreRules->shouldIgnore(fullPath)) continue;
+            }
             matches.push_back({{"file", p}, {"line", ln}, {"content", c}});
             ++count;
         }

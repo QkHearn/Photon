@@ -187,13 +187,15 @@ public:
  */
 class GrepTool : public ITool {
 public:
-    explicit GrepTool(const std::string& rootPath);
+    /** ignoreRules 与 list/扫描共用，为空则不过滤结果 */
+    explicit GrepTool(const std::string& rootPath, std::shared_ptr<ScanIgnoreRules> ignoreRules = nullptr);
     std::string getName() const override { return "grep"; }
     std::string getDescription() const override;
     nlohmann::json getSchema() const override;
     nlohmann::json execute(const nlohmann::json& args) override;
 private:
     fs::path rootPath;
+    std::shared_ptr<ScanIgnoreRules> ignoreRules;
 };
 
 /**
