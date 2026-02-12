@@ -16,6 +16,8 @@ static void createFile(const fs::path& p, const std::string& content) {
   std::ofstream f(p);
   ASSERT_TRUE(f.is_open()) << "create " << p.u8string();
   f << content;
+  f.flush();
+  ASSERT_TRUE(f) << "write " << p.u8string();
 }
 
 TEST(GrepTool, RejectsEmptyPattern) {
@@ -67,10 +69,11 @@ TEST(GrepTool, FindsLiteralInCreatedFiles) {
     std::string file = m["file"].get<std::string>();
     int line = m["line"].get<int>();
     std::string content = m["content"].get<std::string>();
-    if (file.find("a.txt") != std::string::npos && line == 2) foundA = true;
+    // 使用 filename 比较，兼容 CI 上返回的完整路径（如 Windows 的 C:\path\a.txt）
+    if (fs::path(file).filename().u8string() == "a.txt" && line == 2) foundA = true;
     EXPECT_TRUE(content.find("PhotonGrepTestToken") != std::string::npos) << content;
   }
-  EXPECT_TRUE(foundA) << "expected match in a.txt line 2";
+  EXPECT_TRUE(foundA) << "expected match in a.txt line 2, got matches: " << matches.dump(2);
 }
 
 TEST(GrepTool, RespectsMaxResults) {

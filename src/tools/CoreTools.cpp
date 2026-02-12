@@ -1640,7 +1640,12 @@ nlohmann::json GrepTool::execute(const nlohmann::json& args) {
         return r;
     };
     std::string patternEsc = shellEscape(pattern);
+#ifdef _WIN32
+    // /d 使 cd 可跨盘符切换，避免 CI 上当前在 D: 而 temp 在 C: 导致找不到文件
+    std::string prefix = "cd /d \"" + rootPath.u8string() + "\" && ";
+#else
     std::string prefix = "cd \"" + rootPath.u8string() + "\" && ";
+#endif
     std::string cmd;
     std::string out;
     // Prefer ripgrep (rg), then grep -rn; on Windows fallback to findstr when grep is missing
