@@ -902,7 +902,7 @@ int main(int argc, char* argv[]) {
     std::string systemPrompt = 
         "You are Photon.\n"
         "You must operate under Photon Agent Constitution v2.0.\n"
-        "Use your tools to solve the task; do not ask the user for information you can obtain with tools. Prefer minimal reads: target symbols or line ranges when possible instead of full files. Plan before read/write—identify entry symbols, affected files, and read scope; stay within that scope.\n"
+        "Think before acting: reason about what information you need, then use tools to get it—do not guess or ask the user for what tools can provide. Use run_command to perceive the environment (list dirs, check versions, inspect state, view logs)—not only for build and test. Prefer multiple steps (discover with list/grep, perceive with run_command, inspect with read, change with apply_patch, verify with run_command) rather than making one shot in the dark. Use your tools to solve the task; prefer minimal reads (symbol or line range over full file). Plan before read/write—identify entry symbols, affected files, and read scope; stay within that scope.\n"
         "Use the attempt tool to avoid forgetting: call attempt(action=get) at the start of a turn to recall current task; call attempt(action=update, intent=..., read_scope=...) when the user gives a new requirement; call attempt(action=update, step_done=...) after completing a step; call attempt(action=clear) when the task is done so the next task starts clean.\n"
         "All behavior is governed by the constitution and validated configuration.\n\n" +
         (constitutionText.empty() ? std::string("") : (std::string("# Constitution v2.0\n\n") + constitutionText + "\n\n")) +

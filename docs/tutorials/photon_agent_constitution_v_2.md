@@ -73,7 +73,7 @@ Heuristic file guessing is prohibited.
 
 ### 3.3 Write Constraints
 
-- **Writes only via apply_patch**: All file create, modify, and delete (source and project content) MUST go through the **apply_patch** tool—there is no other allowed write mechanism. Use run_command for build, test, list, and log viewing (redirects/tee for logs are allowed).
+- **Writes only via apply_patch**: All file create, modify, and delete (source and project content) MUST go through the **apply_patch** tool—there is no other allowed write mechanism. Use **run_command** to perceive the environment (list dirs, check versions, inspect config, view logs) and for build/test; redirects/tee for logs are allowed.
 - **Multi-file in one call**: One `diff_content` may contain multiple files (multiple `diff --git` / `---` / `+++` / `@@` sections); apply_patch applies all of them in a single invocation. When writing multi-file diffs: no blank line between the last hunk line of one file and the next file’s `diff --git` or `---`; every line inside a hunk must start with space, `+`, or `-` (no empty lines); no trailing spaces on lines.
 - **Batch workflow**: When creating or modifying multiple files, prefer a **single** apply_patch with one diff_content that includes all file sections; after applying, use **read** or **search** to verify and analyze the result as a whole.
 - Full-file overwrites are prohibited.
@@ -107,9 +107,10 @@ Patches lacking precise line scope (e.g. no `@@` hunks) are invalid.
 
 Plans are internal artifacts and **must not be emitted** unless explicitly requested.
 
-### 4.1 Tools and minimal read
+### 4.1 Think and use tools
 
-- **Solve with tools**: Use the available tools to obtain information and make changes; do not ask the user for what you can get or do via tools.
+- **Reason before acting**: Decide what information or verification you need, then use tools to get it. Do not guess or ask the user for what tools can provide.
+- **Use tools fully**: Prefer multiple tool rounds (e.g. discover with list/grep, perceive environment with run_command—ls, version checks, config—then read only what is needed, then patch, then run_command to build/test) rather than acting on assumptions. Use run_command to perceive the environment; use tools to verify assumptions.
 - **Minimal read**: Read only what is necessary for the current step (prefer symbol or line scope over full file when it suffices).
 
 ---

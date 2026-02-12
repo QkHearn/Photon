@@ -1449,8 +1449,7 @@ RunCommandTool::RunCommandTool(const std::string& rootPath)
     : rootPath(fs::u8path(rootPath)) {}
 
 std::string RunCommandTool::getDescription() const {
-    return "Execute a shell command in the project directory (build, test, lint, list, logs, etc.). "
-           "For creating or editing project files, use apply_patch instead. "
+    return "Execute a shell command in the project directory. Use it to perceive the environment: list files (ls, dir), check versions (python --version, node -v), inspect config, see running processes, view logs—not only for build and test. Encouraged for discovering project layout, runtime state, and tool availability before acting. For creating or editing project files, use apply_patch instead. "
            "Parameters: command (string), timeout (int, optional, default 30 seconds).";
 }
 
@@ -1460,7 +1459,7 @@ nlohmann::json RunCommandTool::getSchema() const {
         {"properties", {
             {"command", {
                 {"type", "string"},
-                {"description", "Command to execute"}
+                {"description", "Shell command: use to perceive environment (ls, pwd, python --version, node -v, which X) or to build/test (make, pytest, etc.)"}
             }},
             {"timeout", {
                 {"type", "integer"},
