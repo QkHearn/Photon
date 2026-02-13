@@ -11,6 +11,8 @@ struct Config {
         std::string baseUrl;
         std::string model;
         std::string systemRole;
+        /** 单次回复最大 token 数，0 表示不传（用 API 默认）。写大文件时若被截断可调大，如 8192、16384。 */
+        int maxTokens = 0;
     } llm;
 
     struct Agent {
@@ -23,6 +25,7 @@ struct Config {
         bool symbolFallbackOnEmpty = false;
         bool enableLSP = true;  // 是否启用 LSP 功能
         bool enableDebug = false;  // 是否启用调试日志
+        bool enableReadSummary = false;  // 是否在每次 read 后调用 LLM 做摘要（默认关闭，减少延迟）
         std::string lspServerPath;
         std::string lspRootUri;
         struct LSPServer {
@@ -71,6 +74,7 @@ struct Config {
         cfg.llm.baseUrl = j.at("llm").at("base_url").get<std::string>();
         cfg.llm.model = j.at("llm").at("model").get<std::string>();
         cfg.llm.systemRole = j.at("llm").at("system_role").get<std::string>();
+        cfg.llm.maxTokens = j.at("llm").value("max_tokens", 0);
         
         cfg.agent.contextThreshold = j.at("agent").at("context_threshold").get<size_t>();
         cfg.agent.fileExtensions = j.at("agent").at("file_extensions").get<std::vector<std::string>>();
@@ -80,6 +84,7 @@ struct Config {
         cfg.agent.symbolFallbackOnEmpty = j.at("agent").value("symbol_fallback_on_empty", false);
         cfg.agent.enableLSP = j.at("agent").value("enable_lsp", true);
         cfg.agent.enableDebug = j.at("agent").value("enable_debug", false);
+        cfg.agent.enableReadSummary = j.at("agent").value("enable_read_summary", false);
         cfg.agent.lspServerPath = j.at("agent").value("lsp_server_path", "");
         cfg.agent.lspRootUri = j.at("agent").value("lsp_root_uri", "");
         if (j.at("agent").contains("lsp_servers")) {

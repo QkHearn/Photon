@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <future>
 #include <filesystem>
 #ifdef _WIN32
     #define NOMINMAX  // prevent windows.h from defining min/max macros (breaks std::min/std::max)
@@ -616,7 +617,7 @@ int main(int argc, char* argv[]) {
         });
     }
 
-    auto llmClient = std::make_shared<LLMClient>(cfg.llm.apiKey, cfg.llm.baseUrl, cfg.llm.model);
+    auto llmClient = std::make_shared<LLMClient>(cfg.llm.apiKey, cfg.llm.baseUrl, cfg.llm.model, cfg.llm.maxTokens);
     ContextManager contextManager(llmClient, cfg.agent.contextThreshold);
 
     // Initialize MCP Manager and connect all servers
@@ -711,8 +712,13 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "[Init] Symbol index ready: " << symbolManager.getSymbolCount() << " symbols" << std::endl;
 
-    // 生成并持久化项目目录树（含 symbol），list_project_files 查询时直接读缓存
+    // 启动时生成 dictionary；之后 symbol 自动更新（全量/增量）时通过回调同步刷新 dictionary
     ListProjectFilesTool::buildAndSaveCache(absolutePath.u8string(), &symbolManager, 3, 8, scanIgnoreRules);
+    symbolManager.setOnIndexUpdated([path = absolutePath.u8string(), &symbolManager, scanIgnoreRules]() {
+        (void)std::async(std::launch::async, [path, &symbolManager, scanIgnoreRules]() {
+            ListProjectFilesTool::buildAndSaveCache(path, &symbolManager, 3, 8, scanIgnoreRules);
+        });
+    });
 
     // 启动文件监听
     symbolManager.startWatching(5);
@@ -802,7 +808,7 @@ int main(int argc, char* argv[]) {
     // 注册核心工具
     std::cout << CYAN << "  → Registering core tools..." << RESET << std::endl;
     toolRegistry.registerTool(std::make_unique<ReadCodeBlockTool>(path, &symbolManager, cfg.agent.enableDebug));
-    toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path, g_hasGit));  // 统一补丁工具：只接受 unified diff
+    toolRegistry.registerTool(std::make_unique<ApplyPatchTool>(path, g_hasGit));  // 唯一写工具：files[] 直接写入/行号编辑，支持多文件
     toolRegistry.registerTool(std::make_unique<RunCommandTool>(path));
     toolRegistry.registerTool(std::make_unique<ListProjectFilesTool>(path, &symbolManager, 8, scanIgnoreRules));
     toolRegistry.registerTool(std::make_unique<GrepTool>(path, scanIgnoreRules));  // 代码搜索：grep，与 list 共用忽略规则
@@ -902,7 +908,8 @@ int main(int argc, char* argv[]) {
     std::string systemPrompt = 
         "You are Photon.\n"
         "You must operate under Photon Agent Constitution v2.0.\n"
-        "Think before acting: reason about what information you need, then use tools to get it—do not guess or ask the user for what tools can provide. Use run_command to perceive the environment (list dirs, check versions, inspect state, view logs)—not only for build and test. Prefer multiple steps (discover with list/grep, perceive with run_command, inspect with read, change with apply_patch, verify with run_command) rather than making one shot in the dark. Use your tools to solve the task; prefer minimal reads (symbol or line range over full file). Plan before read/write—identify entry symbols, affected files, and read scope; stay within that scope.\n"
+        "**Always think before acting.** In every reply that includes tool_calls, you MUST write a short reasoning block first (2–5 sentences): what you are about to do and why, what you expect to learn or change. This is shown as [Think] and reduces wrong moves. After receiving tool results, briefly reflect (what the result implies, whether to read more or patch, or if you need to correct course) before the next tool_calls or final answer.\n"
+        "Reason about what information you need, then use tools to get it—do not guess or ask the user for what tools can provide. Use run_command to perceive the environment (list dirs, check versions, inspect state, view logs)—not only for build and test. When list_project_files or grep returned symbols and line numbers (:L42, F:name:L10), use read_code_block with symbol_name or start_line/end_line—do not read the full file.\n"
         "Use the attempt tool to avoid forgetting: call attempt(action=get) at the start of a turn to recall current task; call attempt(action=update, intent=..., read_scope=...) when the user gives a new requirement; call attempt(action=update, step_done=...) after completing a step; call attempt(action=clear) when the task is done so the next task starts clean.\n"
         "All behavior is governed by the constitution and validated configuration.\n\n" +
         (constitutionText.empty() ? std::string("") : (std::string("# Constitution v2.0\n\n") + constitutionText + "\n\n")) +
@@ -1069,7 +1076,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::cout << "\n" << gitStatusLine << CYAN << BOLD << "❯ " << RESET << std::flush;
+        std::cout << "\n" << gitStatusLine << CYAN << BOLD << "> " << RESET << std::flush;
         
         if (!std::getline(std::cin, userInput)) break;
         if (userInput.empty()) continue;
@@ -1320,15 +1327,95 @@ int main(int argc, char* argv[]) {
         }
 
         if (userInput == "undo") {
-            // 优先：撤销最近一次 apply_patch 的 unified diff（如果存在）
+            // 撤销最近一次 apply_patch：优先从 backup 恢复（direct 模式），否则 git apply -R
             try {
                 fs::path absolutePath = fs::absolute(fs::u8path(path));
                 fs::path patchDir = absolutePath / ".photon" / "patches";
                 fs::path stackPath = patchDir / "patch_stack.json";
                 fs::path patchPath = patchDir / "last.patch";
+                bool didBackupRestore = false;
 
-                // 如果有栈，优先用栈顶 patch（支持多次 undo）
-                if (fs::exists(stackPath) && fs::is_regular_file(stackPath)) {
+                // direct 模式：从 backups/<stamp>/ 恢复
+                fs::path lastMetaPath = patchDir / "last_patch.json";
+                if (fs::exists(lastMetaPath) && fs::is_regular_file(lastMetaPath)) {
+                    try {
+                        std::ifstream mf(lastMetaPath);
+                        nlohmann::json lastMeta;
+                        mf >> lastMeta;
+                        if (lastMeta.contains("backup_stamp") && lastMeta.contains("affected_files") && lastMeta["affected_files"].is_array()) {
+                            std::string stamp = lastMeta["backup_stamp"].get<std::string>();
+                            fs::path backupDir = patchDir / "backups" / stamp;
+                            std::cout << YELLOW << BOLD << "Reverting last patch (restore from backup): " << RESET << lastMeta["affected_files"].size() << " file(s)" << std::endl;
+                            std::cout << "   " << BOLD << "[y]" << RESET << " Yes  " << BOLD << "[n]" << RESET << " No  " << BOLD << "[v]" << RESET << " View patch" << std::endl;
+                            std::cout << " " << CYAN << BOLD << "> " << RESET << std::flush;
+                            std::string confirm;
+                            std::getline(std::cin, confirm);
+                            std::transform(confirm.begin(), confirm.end(), confirm.begin(), ::tolower);
+                            if (confirm == "v") {
+                                std::string pt;
+                                if (fs::exists(patchDir / "last.patch")) {
+                                    std::ifstream lf(patchDir / "last.patch");
+                                    pt.assign(std::istreambuf_iterator<char>(lf), std::istreambuf_iterator<char>());
+                                }
+                                std::cout << (pt.empty() ? "(empty)" : pt) << std::endl;
+                            }
+                            if (confirm == "y" || confirm == "yes") {
+                                for (const auto& p : lastMeta["affected_files"]) {
+                                    std::string rel = p.get<std::string>();
+                                    fs::path bakPath = backupDir / fs::u8path(rel + ".bak");
+                                    if (fs::exists(bakPath)) {
+                                        std::ifstream bf(bakPath);
+                                        std::string content((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
+                                        fs::path dst = absolutePath / fs::u8path(rel);
+                                        fs::create_directories(dst.parent_path());
+                                        std::ofstream of(dst);
+                                        if (of) of << content;
+                                    }
+                                }
+                                try {
+                                    std::ifstream sf(stackPath);
+                                    nlohmann::json stack;
+                                    sf >> stack;
+                                    if (stack.is_array() && !stack.empty()) {
+                                        stack.erase(stack.end() - 1);
+                                        std::ofstream of(stackPath);
+                                        of << stack.dump(2);
+                                    }
+                                    if (stack.is_array() && !stack.empty()) {
+                                        auto& top = stack.back();
+                                        if (top.contains("patch_path") && top["patch_path"].is_string()) {
+                                            fs::path np = fs::u8path(top["patch_path"].get<std::string>());
+                                            if (fs::exists(np)) {
+                                                std::ifstream in(np);
+                                                std::string c((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                                                std::ofstream out(patchDir / "last.patch");
+                                                out << c;
+                                            }
+                                        }
+                                        if (top.contains("backup_stamp") && top.contains("affected_files")) {
+                                            nlohmann::json lm;
+                                            lm["mode"] = "direct";
+                                            lm["backup_stamp"] = top["backup_stamp"];
+                                            lm["affected_files"] = top["affected_files"];
+                                            lm["patch_path"] = top.value("patch_path", (patchDir / "last.patch").u8string());
+                                            std::ofstream mf2(lastMetaPath);
+                                            mf2 << lm.dump(2);
+                                        }
+                                    } else {
+                                        std::error_code ec;
+                                        fs::remove(patchDir / "last.patch", ec);
+                                        fs::remove(lastMetaPath, ec);
+                                    }
+                                } catch (...) {}
+                                std::cout << GREEN << "✔ Restored from backup." << RESET << std::endl;
+                                didBackupRestore = true;
+                            }
+                        }
+                    } catch (...) {}
+                }
+
+                // 若有栈，last.patch 指向栈顶（供预览）
+                if (!didBackupRestore && fs::exists(stackPath) && fs::is_regular_file(stackPath)) {
                     try {
                         std::ifstream sf(stackPath);
                         nlohmann::json stack;
@@ -1342,7 +1429,7 @@ int main(int argc, char* argv[]) {
                     } catch (...) {}
                 }
 
-                if (g_hasGit && fs::exists(patchPath) && fs::is_regular_file(patchPath)) {
+                if (!didBackupRestore && g_hasGit && fs::exists(patchPath) && fs::is_regular_file(patchPath)) {
                     std::cout << YELLOW << BOLD << "Reverting last patch: " << RESET << patchPath.u8string() << std::endl;
 
                     while (true) {
@@ -1351,7 +1438,7 @@ int main(int argc, char* argv[]) {
                         std::cout << "   " << BOLD << "[y]" << RESET << " Yes  "
                                   << BOLD << "[n]" << RESET << " No  "
                                   << BOLD << "[v]" << RESET << " View Patch" << std::endl;
-                        std::cout << " " << CYAN << BOLD << "❯ " << RESET << std::flush;
+                        std::cout << " " << CYAN << BOLD << "> " << RESET << std::flush;
 
                         std::string confirm;
                         std::getline(std::cin, confirm);
@@ -1492,7 +1579,7 @@ int main(int argc, char* argv[]) {
                     std::cout << "   " << BOLD << "[y]" << RESET << " Yes  " 
                               << BOLD << "[n]" << RESET << " No  " 
                               << BOLD << "[v]" << RESET << " View Diff" << std::endl;
-                    std::cout << " " << CYAN << BOLD << "❯ " << RESET << std::flush;
+                    std::cout << " " << CYAN << BOLD << "> " << RESET << std::flush;
 
                     std::string confirm;
                     std::getline(std::cin, confirm);
@@ -1571,6 +1658,7 @@ int main(int argc, char* argv[]) {
 
             auto& choice = response["choices"][0];
             auto& message = choice["message"];
+            std::string finishReason = choice.value("finish_reason", "");
             
             // Normalize assistant message before appending: Kimi may reject if content is array in request
             nlohmann::json msgToAppend = message;
@@ -1595,19 +1683,179 @@ int main(int argc, char* argv[]) {
                             content += part["text"].get<std::string>();
                     }
                 }
-                if (!content.empty()) {
+                // 跳过空内容或占位符（LLMClient 用占位符替代空 content 以满足 API，不应作为「思考」展示）
+                static const std::string kEmptyPlaceholder = "{\"message\":\"(no output)\"}";
+                bool isEmptyOrPlaceholder = content.empty()
+                    || content == kEmptyPlaceholder
+                    || (content.size() >= 3 && content.front() == '{' && content.find("(no output)") != std::string::npos);
+                if (!isEmptyOrPlaceholder) {
                     if (message.contains("tool_calls") && !message["tool_calls"].is_null()) {
                         Logger::getInstance().thought(renderMarkdown(content));
                     } else {
                         // Final response
-                        std::cout << "\n" << MAGENTA << BOLD << "🐼 Photon " << RESET << GRAY << "❯ " << RESET << renderMarkdown(content) << std::endl;
+                        std::cout << "\n" << MAGENTA << BOLD << "φ Photon " << RESET << GRAY << "> " << RESET << renderMarkdown(content) << std::endl;
                     }
                 }
             }
 
             // 2. Handle Tool Calls
+            // 策略：本轮所有 tool_calls 执行完后，下一轮循环会再次调用 LLM（chatWithTools）。
+            // 若本轮只有 1 个工具 → 一次工具后必有一次 LLM；若本轮有多个工具 → 全部执行后只调一次 LLM，避免 N 次往返。
+            // 当本批 2+ 个工具且已授权全部时，并行执行以缩短耗时。
             if (message.contains("tool_calls") && !message["tool_calls"].is_null()) {
                 continues = true;
+                const auto& toolCallsArray = message["tool_calls"];
+                const bool useParallel = (toolCallsArray.size() >= 2 && authorizeAll);
+
+                auto debugPrintApplyPatch = [&](const nlohmann::json& a) {
+                    if (!cfg.agent.enableDebug) return;
+                    std::cout << GRAY << "[Debug] apply_patch args keys: ";
+                    if (a.is_object()) {
+                        for (auto it = a.begin(); it != a.end(); ++it)
+                            std::cout << (it == a.begin() ? "" : ", ") << it.key();
+                    }
+                    std::cout << RESET << std::endl;
+                    if (!a.contains("files") || !a["files"].is_array()) {
+                        std::cout << GRAY << "[Debug] apply_patch: no 'files' array in args" << RESET << std::endl;
+                        return;
+                    }
+                    for (const auto& f : a["files"]) {
+                        if (!f.is_object()) continue;
+                        std::string path = f.value("path", "");
+                        if (path.empty()) continue;
+                        std::cout << GRAY << "[Debug] apply_patch file: " << path << RESET << std::endl;
+                        if (f.contains("content") && f["content"].is_string()) {
+                            std::string content = f["content"].get<std::string>();
+                            const size_t maxShow = 2000;
+                            if (content.size() > maxShow)
+                                std::cout << GRAY << "[Debug] content (first " << maxShow << " chars):\n" << content.substr(0, maxShow) << "\n... [truncated]" << RESET << std::endl;
+                            else
+                                std::cout << GRAY << "[Debug] content:\n" << content << RESET << std::endl;
+                        }
+                        if (f.contains("edits") && f["edits"].is_array()) {
+                            std::cout << GRAY << "[Debug] edits: " << f["edits"].dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << RESET << std::endl;
+                        }
+                    }
+                };
+
+                if (useParallel) {
+                    // 并行路径：先校验并收集任务，再并行执行，最后按顺序写回 messages
+                    struct OneTask { nlohmann::json toolCall; std::string serverName, toolName, fullName; nlohmann::json args; };
+                    std::vector<nlohmann::json> orderedResults(toolCallsArray.size());
+                    std::vector<std::optional<OneTask>> tasks(toolCallsArray.size());
+                    std::vector<bool> isError(toolCallsArray.size(), false);
+
+                    for (size_t i = 0; i < toolCallsArray.size(); i++) {
+                        const auto& toolCall = toolCallsArray[i];
+                        if (!toolCall.is_object() || !toolCall.contains("function")) {
+                            orderedResults[i] = nlohmann::json::object({{"error", "Invalid tool_call format"}});
+                            isError[i] = true;
+                            continue;
+                        }
+                        const auto& func = toolCall["function"];
+                        if (!func.is_object() || !func.contains("name") || !func.contains("arguments")) {
+                            orderedResults[i] = nlohmann::json::object({{"error", "Invalid function in tool_call"}});
+                            isError[i] = true;
+                            continue;
+                        }
+                        std::string fullName = func["name"].get<std::string>();
+                        std::string argsStr = func["arguments"].is_string() ? func["arguments"].get<std::string>() : func["arguments"].dump();
+                        nlohmann::json args;
+                        try { args = nlohmann::json::parse(argsStr); } catch (...) { args = nlohmann::json::object(); }
+                        size_t pos = fullName.find("__");
+                        std::string serverName = (pos != std::string::npos) ? fullName.substr(0, pos) : "core";
+                        std::string toolName = (pos != std::string::npos) ? fullName.substr(pos + 2) : fullName;
+                        if (toolName.find("::") != std::string::npos)
+                            toolName = toolName.substr(toolName.rfind("::") + 2);
+
+                        if (toolName == "bash_execute" && args.contains("command")) {
+                            std::string cmd = args["command"].get<std::string>();
+                            if (isBashReadCommand(cmd)) {
+                                orderedResults[i] = nlohmann::json::object({{"error", "Bash read commands are disabled. Use read/search instead."}});
+                                isError[i] = true;
+                                continue;
+                            }
+                        }
+                        if (toolName.find("search") != std::string::npos) {
+                            std::string query = args.value("query", "");
+                            if (!query.empty() && recentQueries.count(query)) {
+                                orderedResults[i] = nlohmann::json::object({{"error", "Repetitive search detected. Change strategy."}});
+                                isError[i] = true;
+                                continue;
+                            }
+                            if (!query.empty()) recentQueries.insert(query);
+                        }
+                        auto validation = ConstitutionValidator::validateToolCall(toolName, args);
+                        if (!validation.valid) {
+                            orderedResults[i] = nlohmann::json::object({{"error", "Constitution violation: " + validation.error}});
+                            isError[i] = true;
+                            continue;
+                        }
+                        tasks[i] = OneTask{toolCall, serverName, toolName, fullName, args};
+                    }
+
+                    std::vector<size_t> runIndices;
+                    std::vector<std::future<nlohmann::json>> futures;
+                    for (size_t i = 0; i < tasks.size(); i++) {
+                        if (!tasks[i] || isError[i]) continue;
+                        OneTask t = *tasks[i];
+                        runIndices.push_back(i);
+                        futures.push_back(std::async(std::launch::async, [&toolRegistry, &mcpManager, t]() {
+                            if (toolRegistry.hasTool(t.toolName))
+                                return toolRegistry.executeTool(t.toolName, t.args);
+                            return mcpManager.callTool(t.serverName, t.toolName, t.args);
+                        }));
+                    }
+                    for (size_t j = 0; j < futures.size(); j++)
+                        orderedResults[runIndices[j]] = futures[j].get();
+
+                    for (size_t i = 0; i < toolCallsArray.size(); i++) {
+                        const auto& toolCall = toolCallsArray[i];
+                        nlohmann::json result = orderedResults[i];
+                        std::string toolName = tasks[i] ? (*tasks[i]).toolName : "";
+                        if (cfg.agent.enableDebug && (toolName == "apply_patch" || toolName.find("apply_patch") != std::string::npos)) {
+                            nlohmann::json debugArgs = tasks[i] ? (*tasks[i]).args : nlohmann::json::object();
+                            if (debugArgs.empty() && toolCall.contains("function") && toolCall["function"].contains("arguments")) {
+                                try {
+                                    const auto& fa = toolCall["function"]["arguments"];
+                                    debugArgs = fa.is_string() ? nlohmann::json::parse(fa.get<std::string>()) : fa;
+                                } catch (...) {}
+                            }
+                            debugPrintApplyPatch(debugArgs);
+                        }
+                        if (toolName == "apply_patch" && !result.contains("error")) {
+                            std::string msg = result.value("message", "");
+                            if (result.contains("affected_files") && result["affected_files"].is_array() && !result["affected_files"].empty()) {
+                                std::string files;
+                                for (const auto& f : result["affected_files"])
+                                    files += (files.empty() ? "" : ", ") + f.get<std::string>();
+                                std::cout << GREEN << "✔ apply_patch: " << files << (msg.empty() ? "" : " — " + msg) << RESET << std::endl;
+                            } else
+                                std::cout << GREEN << "✔ apply_patch: " << (msg.empty() ? "OK" : msg) << RESET << std::endl;
+                        }
+                        if (cfg.agent.enableReadSummary && tasks[i] && (toolName == "read" || toolName.rfind("read_", 0) == 0) && !result.contains("error")) {
+                            std::string readText = extractReadText(result);
+                            if (!readText.empty() && !isReadRejection(readText)) {
+                                std::string key = buildReadKey((*tasks[i]).args);
+                                std::string summaryPrompt = "请对以下 read 结果做 1-3 条要点摘要，保留文件路径/范围或标签：\n" + (readText.size() > 6000 ? readText.substr(0, 6000) : readText);
+                                std::string summary = llmClient->summarize(summaryPrompt);
+                                storeReadSummary(key, summary);
+                            }
+                        }
+                        std::string textContent;
+                        try {
+                            if (result.contains("content") && result["content"].is_array() && !result["content"].empty()) {
+                                const auto& first = result["content"][0];
+                                textContent = first.contains("text") && first["text"].is_string() ? first["text"].get<std::string>() : first.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                            } else if (result.contains("error"))
+                                textContent = result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                            else
+                                textContent = result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                        } catch (...) { textContent = "[Tool result serialization failed]"; }
+                        nlohmann::json contentArray = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", textContent}})});
+                        messages.push_back({{"role", "tool"}, {"tool_call_id", toolCall["id"]}, {"content", contentArray}});
+                    }
+                } else {
                 for (auto& toolCall : message["tool_calls"]) {
                     // 安全检查: 确保 toolCall 是对象且包含 function
                     if (!toolCall.is_object() || !toolCall.contains("function")) {
@@ -1654,10 +1902,11 @@ int main(int argc, char* argv[]) {
                         serverName = fullName.substr(0, pos);
                         toolName = fullName.substr(pos + 2);
                     } else {
-                        // 新的 CoreTools 没有 server__ 前缀
                         serverName = "core";
                         toolName = fullName;
                     }
+                    if (toolName.find("::") != std::string::npos)
+                        toolName = toolName.substr(toolName.rfind("::") + 2);
 
                         if (toolName == "bash_execute" && args.contains("command")) {
                             std::string cmd = args["command"];
@@ -1690,11 +1939,20 @@ int main(int argc, char* argv[]) {
                         }
 
                         if (toolName == "apply_patch") {
-                            size_t diffLen = 0;
-                            if (args.contains("diff_content") && args["diff_content"].is_string())
-                                diffLen = args["diff_content"].get<std::string>().size();
-                            Logger::getInstance().action(serverName + "::" + toolName + " (diff_content hidden"
-                                + (diffLen ? ", " + std::to_string(diffLen) + " chars)" : ")"));
+                            if (cfg.agent.enableDebug) {
+                                Logger::getInstance().action(serverName + "::" + toolName + " " + args.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+                            } else {
+                                size_t diffLen = 0;
+                                if (args.contains("diff_content") && args["diff_content"].is_string())
+                                    diffLen = args["diff_content"].get<std::string>().size();
+                                if (args.contains("files") && args["files"].is_array()) {
+                                    size_t nFiles = args["files"].size();
+                                    Logger::getInstance().action(serverName + "::" + toolName + " (files content hidden, " + std::to_string(nFiles) + " file(s))");
+                                } else {
+                                    Logger::getInstance().action(serverName + "::" + toolName + " (diff_content hidden"
+                                        + (diffLen ? ", " + std::to_string(diffLen) + " chars)" : ")"));
+                                }
+                            }
                         } else {
                             Logger::getInstance().action(serverName + "::" + toolName + " " + args.dump());
                         }
@@ -1713,7 +1971,7 @@ int main(int argc, char* argv[]) {
                                           << BOLD << "[n]" << RESET << " No  " 
                                           << BOLD << "[a]" << RESET << " All  " 
                                           << BOLD << "[v]" << RESET << " View Diff" << std::endl;
-                                std::cout << " " << CYAN << BOLD << "❯ " << RESET << std::flush;
+                                std::cout << " " << CYAN << BOLD << "> " << RESET << std::flush;
                                 
                                 std::string input;
                                 std::getline(std::cin, input);
@@ -1868,6 +2126,8 @@ int main(int argc, char* argv[]) {
                             if (toolRegistry.hasTool(toolName)) {
                                 // 使用新的 ToolRegistry
                                 std::cout << GRAY << "  [Using CoreTools::" << toolName << "]" << RESET << std::endl;
+                                if (cfg.agent.enableDebug && (toolName == "apply_patch" || toolName.find("apply_patch") != std::string::npos))
+                                    debugPrintApplyPatch(args);
                                 result = toolRegistry.executeTool(toolName, args);
                             } else {
                                 // 回退到旧的 MCP 系统 (外部工具 / 遗留工具)
@@ -1912,16 +2172,13 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                             
-                            if ((toolName == "read" || toolName.rfind("read_", 0) == 0) && !result.contains("error")) {
+                            if (cfg.agent.enableReadSummary && (toolName == "read" || toolName.rfind("read_", 0) == 0) && !result.contains("error")) {
                                 std::string readText = extractReadText(result);
                                 if (!readText.empty() && !isReadRejection(readText)) {
                                     const size_t kMaxSummaryInput = 6000;
-                                    if (readText.size() > kMaxSummaryInput) {
-                                        readText = readText.substr(0, kMaxSummaryInput);
-                                    }
+                                    if (readText.size() > kMaxSummaryInput) readText = readText.substr(0, kMaxSummaryInput);
                                     std::string key = buildReadKey(args);
-                                    std::string summaryPrompt =
-                                        "请对以下 read 结果做 1-3 条要点摘要，保留文件路径/范围或标签：\n" + readText;
+                                    std::string summaryPrompt = "请对以下 read 结果做 1-3 条要点摘要，保留文件路径/范围或标签：\n" + readText;
                                     std::string summary = llmClient->summarize(summaryPrompt);
                                     storeReadSummary(key, summary);
                                 }
@@ -1965,10 +2222,17 @@ int main(int argc, char* argv[]) {
                             });
                         }
                 }
+                }  // end else (sequential tool loop)
                 continues = true;
             } else {
                 // No more tool calls, we are done
                 continues = false;
+            }
+
+            // 若因长度被截断，告知模型并强制下一轮继续
+            if (finishReason == "length" || finishReason == "max_tokens") {
+                messages.push_back({{"role", "user"}, {"content", "[SYSTEM]: 你的上一条回复因长度限制被截断。请从断点处继续：若还有未完成的 tool_calls，请只补全并输出剩余部分；若在输出正文，请接着写。"}});
+                continues = true;
             }
 
             if (iteration >= max_iterations && continues) {
@@ -1976,7 +2240,7 @@ int main(int argc, char* argv[]) {
                 std::cout << GRAY << "   Maximum thinking steps (" << max_iterations << ") reached." << RESET << std::endl;
                 std::cout << "   " << BOLD << "[y]" << RESET << " Continue (20 steps)  " 
                           << BOLD << "[n]" << RESET << " Stop" << std::endl;
-                std::cout << " " << CYAN << BOLD << "❯ " << RESET << std::flush;
+                std::cout << " " << CYAN << BOLD << "> " << RESET << std::flush;
 
                 std::string confirm;
                 std::getline(std::cin, confirm);

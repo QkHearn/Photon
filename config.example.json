@@ -8,8 +8,20 @@
   "agent": {
     "context_threshold": 217000,
     "file_extensions": [
-      ".txt", ".cpp", ".h", ".hpp", ".c", ".py", ".md", ".json",
-      ".cmake", ".yml", ".yaml"
+      ".txt", ".md", ".json", ".yml", ".yaml", ".toml", ".xml", ".html", ".htm",
+      ".css", ".scss", ".sass", ".less",
+      ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".inc",
+      ".py", ".pyi", ".pyw",
+      ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".astro",
+      ".java", ".kt", ".kts", ".go", ".rs", ".cs", ".vb", ".fs", ".fsi", ".fsx",
+      ".rb", ".php", ".swift", ".scala", ".lua", ".r", ".R", ".pl", ".pm",
+      ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".cmd",
+      ".zig", ".dart", ".ex", ".exs", ".erl", ".hrl", ".clj", ".cljs", ".cljc",
+      ".hs", ".ml", ".mli", ".groovy", ".m", ".mm", ".nim", ".d", ".pas",
+      ".f", ".f90", ".f95", ".rkt", ".scm", ".coffee", ".sol", ".vy",
+      ".tf", ".hcl", ".bicep", ".proto", ".graphql", ".gql", ".sql", ".prisma",
+      ".cmake", ".rst", ".tex", ".adb", ".v", ".sv", ".vhd", ".vhdl", ".cr", ".purs", ".gd", ".ets",
+      ".lock", ".ini", ".cfg", ".conf", ".env", ".gitignore", ".editorconfig"
     ],
     "use_builtin_tools": true,
     "search_api_key": "",
@@ -17,6 +29,7 @@
     "symbol_fallback_on_empty": false,
     "enable_lsp": true,
     "enable_debug": false,
+    "enable_read_summary": false,
     "lsp_server_path": "",
     "lsp_root_uri": "",
     "lsp_servers": [

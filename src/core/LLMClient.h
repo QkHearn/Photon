@@ -4,9 +4,10 @@
 
 class LLMClient {
 public:
-    LLMClient(const std::string& apiKey, 
-              const std::string& baseUrl = "https://api.openai.com/v1", 
-              const std::string& model = "gpt-4o-mini");
+    LLMClient(const std::string& apiKey,
+              const std::string& baseUrl = "https://api.openai.com/v1",
+              const std::string& model = "gpt-4o-mini",
+              int maxTokens = 0);
     virtual ~LLMClient() = default;
     
     virtual std::string chat(const std::string& prompt, const std::string& systemRole = "");
@@ -23,6 +24,7 @@ private:
     std::string host;
     int port;
     std::string pathPrefix;
+    int maxTokens;
 
     void parseBaseUrl(const std::string& url);
 };

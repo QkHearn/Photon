@@ -12,8 +12,8 @@ static const std::string RED = "\033[31m";
 static const std::string YELLOW = "\033[33m";
 static const std::string RESET = "\033[0m";
 
-LLMClient::LLMClient(const std::string& apiKey, const std::string& baseUrl, const std::string& model) 
-    : apiKey(apiKey), baseUrl(baseUrl), modelName(model) {
+LLMClient::LLMClient(const std::string& apiKey, const std::string& baseUrl, const std::string& model, int maxTokens)
+    : apiKey(apiKey), baseUrl(baseUrl), modelName(model), maxTokens(maxTokens) {
     parseBaseUrl(baseUrl);
 }
 
@@ -110,6 +110,9 @@ nlohmann::json LLMClient::chatWithTools(const nlohmann::json& messages, const nl
         {"model", modelName},
         {"messages", normalizeForKimi(messages)}
     };
+    if (maxTokens > 0) {
+        body["max_tokens"] = maxTokens;
+    }
 
     if (!tools.empty()) {
         body["tools"] = tools;

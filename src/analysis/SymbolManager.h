@@ -3,13 +3,13 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include <functional>
 #include <filesystem>
 #include <fstream>
 #include <regex>
 #include <thread>
 #include <mutex>
 #include <shared_mutex>
-#include <memory>
 #include <atomic>
 #include <unordered_map>
 #include <optional>
@@ -52,6 +52,9 @@ public:
     void setLSPClients(const std::unordered_map<std::string, LSPClient*>& byExt, LSPClient* fallback);
     void setIgnorePatterns(const std::vector<std::string>& patterns);
     void setIgnoreRules(std::shared_ptr<class ScanIgnoreRules> rules) { ignoreRules = std::move(rules); }
+
+    /** 当符号索引更新后调用（全量扫描或 watch 增量更新）；用于同步刷新 dictionary 等。可设为 nullptr 禁用。 */
+    void setOnIndexUpdated(std::function<void()> cb) { onIndexUpdated = std::move(cb); }
 
     // Start asynchronous full scan
     void startAsyncScan();
@@ -137,6 +140,8 @@ private:
     std::atomic<bool> stopWatch{false};
     std::thread watchThread;
     int watchInterval = 5;
+
+    std::function<void()> onIndexUpdated;
 
     void performScan();
     void watchLoop();

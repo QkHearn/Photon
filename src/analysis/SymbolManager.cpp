@@ -288,6 +288,7 @@ void SymbolManager::performScan() {
         std::cout << "[SymbolManager] Index saved" << std::endl;
     }
     scanning = false;
+    if (onIndexUpdated) onIndexUpdated();
 }
 
 void SymbolManager::startWatching(int intervalSeconds) {
@@ -410,6 +411,7 @@ void SymbolManager::checkFileChanges() {
         
         if (!filesToUpdate.empty() || !filesToRemove.empty()) {
             saveIndex();
+            if (onIndexUpdated) onIndexUpdated();
         }
     } catch (...) {}
 }

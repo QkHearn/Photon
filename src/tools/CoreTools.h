@@ -127,6 +127,22 @@ private:
 };
 
 /**
+ * @brief 直接写文件工具
+ *
+ * 用于新建文件或整文件替换。当 apply_patch 因 diff 格式频繁失败时，优先用 write 可减少错误。
+ */
+class WriteTool : public ITool {
+public:
+    explicit WriteTool(const std::string& rootPath);
+    std::string getName() const override { return "write"; }
+    std::string getDescription() const override;
+    nlohmann::json getSchema() const override;
+    nlohmann::json execute(const nlohmann::json& args) override;
+private:
+    fs::path rootPath;
+};
+
+/**
  * @brief 运行命令工具
  * 
  * 极简设计: 只执行命令,不做任何过滤

@@ -14,6 +14,7 @@
 #include <regex>
 #include <ctime>
 #include <cctype>
+#include <cstring>
 #include <sstream>
 
 // Windows compatibility
@@ -21,6 +22,11 @@
     #define popen _popen
     #define pclose _pclose
 #endif
+
+// 读取工具 debug 计时：返回自 t0 起的毫秒数
+static int64_t readDebugMs(const std::chrono::steady_clock::time_point& t0) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+}
 
 // ============================================================================
 // UTF-8 Utilities
@@ -125,9 +131,7 @@ ReadCodeBlockTool::ReadCodeBlockTool(const std::string& rootPath, SymbolManager*
     : rootPath(fs::u8path(rootPath)), symbolMgr(symbolMgr), enableDebug(enableDebug) {}
 
 std::string ReadCodeBlockTool::getDescription() const {
-    return "Read code from one or more files. Single file: pass file_path (and optional symbol_name, start_line, end_line). "
-           "Multiple files: pass requests (array of same per-file options, max 20). "
-           "Per-file strategies: (1) symbol_name → that symbol's code + call chain; (2) start_line/end_line → line range; (3) code file with no extra params → symbol summary; (4) else → full file.";
+    return "Read code from files. Content is returned with line numbers (1|, 2|, ...). REQUIRED: every read must specify scope—either symbol_name OR start_line (and optional end_line). Full file: start_line=1, end_line=9999. If you need 2+ files, use ONE call with requests: [{file_path, symbol_name or start_line/end_line}, ...]; do NOT call read_code_block multiple times. Per-file: symbol_name → that symbol; start_line/end_line → line range with N| prefix.";
 }
 
 nlohmann::json ReadCodeBlockTool::getSchema() const {
@@ -136,23 +140,23 @@ nlohmann::json ReadCodeBlockTool::getSchema() const {
         {"properties", {
             {"file_path", {
                 {"type", "string"},
-                {"description", "Relative path to one file. Omit when using requests for batch read."}
+                {"description", "Relative path. Single-file only; for 2+ files use requests. Required with symbol_name or start_line/end_line."}
             }},
             {"symbol_name", {
                 {"type", "string"},
-                {"description", "Name of a specific symbol (function, class, method) to read."}
+                {"description", "Required (or use start_line/end_line). Name of symbol to read."}
             }},
             {"start_line", {
                 {"type", "integer"},
-                {"description", "Starting line number (1-indexed, optional). Use with end_line for a range."}
+                {"description", "Required (or use symbol_name). 1-based start line; use with end_line for range. Full file: start_line=1, end_line=9999."}
             }},
             {"end_line", {
                 {"type", "integer"},
-                {"description", "Ending line number (1-indexed, optional). Use with start_line for a range."}
+                {"description", "Optional. 1-based end line for range."}
             }},
             {"requests", {
                 {"type", "array"},
-                {"description", "Batch read: list of read requests; each has file_path (required), optional symbol_name, start_line, end_line. Max 20."},
+                {"description", "Batch read 2+ files in one call. Each item: file_path (required) and either symbol_name or start_line/end_line (required). Max 20."},
                 {"items", {
                     {"type", "object"},
                     {"properties", {
@@ -170,6 +174,7 @@ nlohmann::json ReadCodeBlockTool::getSchema() const {
 
 nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
     nlohmann::json result;
+    auto tExecuteStart = std::chrono::steady_clock::now();
 
     // Batch mode: requests array
     if (args.contains("requests") && args["requests"].is_array()) {
@@ -189,6 +194,13 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
                 items.push_back({{"index", static_cast<int>(i)}, {"error", "missing file_path"}});
                 continue;
             }
+            bool hasScope = (req.contains("symbol_name") && !req["symbol_name"].is_null() && req["symbol_name"].is_string() && !req["symbol_name"].get<std::string>().empty())
+                || req.contains("start_line") || req.contains("end_line");
+            if (!hasScope) {
+                combined << "--- request[" << (i + 1) << "] invalid (missing symbol_name or start_line/end_line) ---\n\n";
+                items.push_back({{"index", static_cast<int>(i)}, {"error", "Each read must include symbol_name or start_line/end_line."}});
+                continue;
+            }
             std::string filePath = req["file_path"].get<std::string>();
             nlohmann::json one = single.execute(req);
             items.push_back({{"file_path", filePath}, {"result", one}});
@@ -205,6 +217,7 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
         std::string text = combined.str();
         if (!text.empty() && text.back() == '\n') text.pop_back();
         result["content"] = nlohmann::json::array({nlohmann::json::object({{"type", "text"}, {"text", UTF8Utils::sanitize(text)}})});
+        if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] batch total: " << readDebugMs(tExecuteStart) << " ms (" << requests.size() << " requests)" << std::endl;
         return result;
     }
 
@@ -237,21 +250,28 @@ nlohmann::json ReadCodeBlockTool::execute(const nlohmann::json& args) {
         return result;
     }
     
-    // 智能策略选择
     bool hasSymbolName = args.contains("symbol_name") && !args["symbol_name"].is_null();
     bool hasLineRange = args.contains("start_line") || args.contains("end_line");
-    
+    if (!hasSymbolName && !hasLineRange) {
+        result["error"] = "Must specify symbol_name or start_line/end_line for read scope.";
+        return result;
+    }
+
     // 策略 1: 指定了 symbol_name → 返回符号代码
     if (hasSymbolName) {
         std::string symbolName = args["symbol_name"].get<std::string>();
-        return readSymbolCode(filePath, symbolName);
+        nlohmann::json out = readSymbolCode(filePath, symbolName);
+        if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] execute(symbol_name) total: " << readDebugMs(tExecuteStart) << " ms" << std::endl;
+        return out;
     }
     
     // 策略 2: 指定了行范围 → 返回指定行
     if (hasLineRange) {
         int startLine = args.value("start_line", 1);
         int endLine = args.value("end_line", -1);
-        return readLineRange(filePath, startLine, endLine);
+        nlohmann::json out = readLineRange(filePath, startLine, endLine);
+        if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] execute(start_line/end_line) total: " << readDebugMs(tExecuteStart) << " ms" << std::endl;
+        return out;
     }
     
     // 策略 3: 无参数 + 代码文件 + SymbolManager 可用 → 返回符号摘要
@@ -467,9 +487,9 @@ nlohmann::json ReadCodeBlockTool::generateSymbolSummary(const std::string& fileP
     }
     
     summary << "\n💡 **Next Steps**:\n";
-    summary << "  - Use `read_code_block` with `symbol_name` to view specific symbols\n";
-    summary << "  - Use `view_symbol` tool for detailed symbol information\n";
-    summary << "  - Use `read_code_block` with `start_line`/`end_line` for specific ranges\n";
+    summary << "  - Use `read_code_block` with `symbol_name` to view specific symbols (content will have line numbers 1|, 2|, ...)\n";
+    summary << "  - Use `read_code_block` with `start_line`/`end_line` for a range (returns lines with 1|, 2|, ...)\n";
+    summary << "  - Omit symbol_name and use `start_line=1, end_line=N` to read full file with line numbers\n";
     
     // 返回格式化的摘要（清理 UTF-8 避免 JSON 报错）
     nlohmann::json contentItem;
@@ -577,7 +597,8 @@ nlohmann::json ReadCodeBlockTool::generateSymbolSummaryNonBlocking(const std::st
 
 nlohmann::json ReadCodeBlockTool::readSymbolCode(const std::string& filePath, const std::string& symbolName) {
     nlohmann::json result;
-    
+    auto t0 = std::chrono::steady_clock::now();
+
     if (!symbolMgr) {
         result["error"] = "SymbolManager not available";
         return result;
@@ -613,17 +634,22 @@ nlohmann::json ReadCodeBlockTool::readSymbolCode(const std::string& filePath, co
     } catch (...) {
         normalizedPath = filePath;
     }
-    
+    if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] readSymbolCode path_normalize: " << readDebugMs(t0) << " ms" << std::endl;
+
+    auto t1 = std::chrono::steady_clock::now();
     // 查找符号
     auto symbols = symbolMgr->getFileSymbols(normalizedPath);
+    if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] getFileSymbols: " << readDebugMs(t1) << " ms (symbols=" << symbols.size() << ")" << std::endl;
+
     const Symbol* targetSymbol = nullptr;
-    
+    auto t2 = std::chrono::steady_clock::now();
     for (const auto& sym : symbols) {
         if (sym.name == symbolName) {
             targetSymbol = &sym;
             break;
         }
     }
+    if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] symbol_lookup: " << readDebugMs(t2) << " ms" << std::endl;
     
     if (!targetSymbol) {
         result["error"] = "Symbol '" + symbolName + "' not found in " + filePath;
@@ -642,12 +668,16 @@ nlohmann::json ReadCodeBlockTool::readSymbolCode(const std::string& filePath, co
     }
     
     // 读取符号对应的行范围
+    auto t3 = std::chrono::steady_clock::now();
     result = readLineRange(filePath, targetSymbol->line, targetSymbol->endLine);
+    if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] readLineRange(symbol): " << readDebugMs(t3) << " ms" << std::endl;
     if (result.contains("error")) return result;
 
     // 附加调用链信息（Calls / Called by），便于分析调用关系
+    auto t4 = std::chrono::steady_clock::now();
     auto callees = symbolMgr->getCalleesForSymbol(*targetSymbol);
     auto callers = symbolMgr->getCallerKeysForSymbol(*targetSymbol);
+    if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] getCallees/getCallers: " << readDebugMs(t4) << " ms" << std::endl;
     if (!callees.empty() || !callers.empty()) {
         std::ostringstream chain;
         chain << "\n\n--- Call chain ---\n";
@@ -686,6 +716,7 @@ nlohmann::json ReadCodeBlockTool::readSymbolCode(const std::string& filePath, co
 
 nlohmann::json ReadCodeBlockTool::readLineRange(const std::string& filePath, int startLine, int endLine) {
     nlohmann::json result;
+    auto t0 = std::chrono::steady_clock::now();
     
     // 智能路径处理: 支持相对路径和绝对路径
     fs::path inputPath = fs::u8path(filePath);
@@ -700,13 +731,12 @@ nlohmann::json ReadCodeBlockTool::readLineRange(const std::string& filePath, int
     // 读取文件（二进制模式以处理编码问题）
     if (enableDebug) std::cout << "[ReadCodeBlock] Opening file: " << fullPath.string() << std::endl;
     
+    auto t1 = std::chrono::steady_clock::now();
     std::ifstream file(fullPath, std::ios::binary);
     if (!file.is_open()) {
         result["error"] = "Failed to open file: " + filePath;
         return result;
     }
-    
-    if (enableDebug) std::cout << "[ReadCodeBlock] Reading lines..." << std::endl;
     
     std::vector<std::string> lines;
     std::string line;
@@ -716,15 +746,10 @@ nlohmann::json ReadCodeBlockTool::readLineRange(const std::string& filePath, int
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
-        
-        if (enableDebug && lineNum <= 3) {
-            std::cout << "[ReadCodeBlock] Line " << lineNum << " length: " << line.size() << std::endl;
-        }
         lines.push_back(line);
     }
     file.close();
-    
-    if (enableDebug) std::cout << "[ReadCodeBlock] Read " << lines.size() << " lines" << std::endl;
+    if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] readLineRange open+read_lines: " << readDebugMs(t1) << " ms (lines=" << lines.size() << ")" << std::endl;
     
     int totalLines = static_cast<int>(lines.size());
     
@@ -742,26 +767,24 @@ nlohmann::json ReadCodeBlockTool::readLineRange(const std::string& filePath, int
     }
     
     // 构建内容
-    if (enableDebug) std::cout << "[ReadCodeBlock] Building content for lines " << startLine << "-" << endLine << std::endl;
-    
+    auto t2 = std::chrono::steady_clock::now();
     std::ostringstream content;
     for (int i = startLine - 1; i < endLine; ++i) {
         content << (i + 1) << "|" << lines[i];
         if (i < endLine - 1) content << "\n";
     }
     
-    // 构建最终内容
+    // 构建最终内容（每行前带行号 N|，便于 apply_patch 精确定位）
     std::string finalContent = "File: " + filePath + "\n" +
-                               "Lines: " + std::to_string(startLine) + "-" + std::to_string(endLine) + 
-                               " (Total: " + std::to_string(totalLines) + ")\n\n" +
+                               "Lines: " + std::to_string(startLine) + "-" + std::to_string(endLine) +
+                               " (Total: " + std::to_string(totalLines) + "). Line prefix N| = line number.\n\n" +
                                content.str();
-    
-    if (enableDebug) {
-        std::cout << "[ReadCodeBlock] Final content size: " << finalContent.size() << std::endl;
-    }
+    if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] readLineRange build_content: " << readDebugMs(t2) << " ms" << std::endl;
     
     // 始终清理无效 UTF-8
+    auto t3 = std::chrono::steady_clock::now();
     std::string cleanContent = UTF8Utils::sanitize(finalContent);
+    if (enableDebug) std::cout << "[ReadCodeBlock] [TIMING] readLineRange sanitize: " << readDebugMs(t3) << " ms, total readLineRange: " << readDebugMs(t0) << " ms" << std::endl;
     
     nlohmann::json contentItem;
     contentItem["type"] = "text";
@@ -795,46 +818,303 @@ ApplyPatchTool::ApplyPatchTool(const std::string& rootPath, bool hasGit)
     : rootPath(fs::u8path(rootPath)), hasGit(hasGit) {}
 
 std::string ApplyPatchTool::getDescription() const {
-    std::string desc = "Modify or create project files by applying a unified diff (reversible, trackable). "
-                      "CRITICAL: diff_content must be valid for git apply. (1) Start each file with exactly: diff --git a/PATH b/PATH (new file: a/dev/null b/PATH). (2) Then --- a/PATH (new: --- /dev/null), then +++ b/PATH, then @@ -... +... @@. (3) Every hunk line must start with exactly one of space, '+', or '-'—no blank lines inside hunks; blank lines in new content must be written as a line with only '+'. "
-                      "Example new file:\ndiff --git a/dev/null b/README.md\n--- /dev/null\n+++ b/README.md\n@@ -0,0 +1,4 @@\n+# Title\n+\n+Line 2\n+\n"
-                      "Example edit:\ndiff --git a/foo.cpp b/foo.cpp\n--- a/foo.cpp\n+++ b/foo.cpp\n@@ -1,3 +1,4 @@\n line1\n-line2\n+line2 changed\n line3\n"
-                      "Multiple files: repeat the block (diff --git / --- / +++ / @@ / lines) with no blank line between files. Use dry_run: true for complex patches first.";
-    
-    if (hasGit) {
-        desc += "Uses git stash for backup and git apply when available.";
-    } else {
-        desc += "Pure diff mode with file-level backups.";
-    }
-    
-    return desc;
+    return "Modify or create project files by direct write or line-based edit (no diff format). "
+           "Accepts files: array of { path, content? | edits? }. "
+           "Per file: (1) content = full file content (create or replace); (2) edits = line-based: [ { start_line (required), end_line? (optional), content (required) } ] — replace lines start_line..end_line (1-based). "
+           "Supports multiple files in one call. Backups saved for undo; use 'patch' to preview last change, 'undo' to revert.";
 }
 
 nlohmann::json ApplyPatchTool::getSchema() const {
     return {
         {"type", "object"},
         {"properties", {
-            {"diff_content", {
-                {"type", "string"},
-                {"description", "Unified diff for git apply. MUST start each file with 'diff --git a/X b/X' (new file: a/dev/null b/X). Then '--- a/X' or '--- /dev/null', '+++ b/X', '@@ -n,m +p,q @@', then lines: each line starts with exactly one of ' ', '+', '-'. No blank lines in hunks—use a line containing only '+' for a blank added line. No trailing spaces. New file example: diff --git a/dev/null b/foo.txt, --- /dev/null, +++ b/foo.txt, @@ -0,0 +1,2 @@, +first line, +."}
-            }},
             {"files", {
                 {"type", "array"},
-                {"items", {{"type", "string"}}},
-                {"description", "Optional: specific files to apply diff to. If not provided, applies to all files in diff."}
+                {"description", "List of file changes. Each item: path (required), content (optional, full file body), or edits (optional, line-based). edits: [ { start_line (int, required), end_line (int, optional), content (string, required) } ]. Line numbers 1-based."},
+                {"items", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"path", {{"type", "string"}, {"description", "Project-relative file path."}}},
+                        {"content", {{"type", "string"}, {"description", "Full file content (create or replace entire file)."}}},
+                        {"edits", {
+                            {"type", "array"},
+                            {"description", "Line-based edits. Each item MUST have start_line (required) and content; end_line optional. Replace lines [start_line, end_line] with content."},
+                            {"items", {
+                                {"type", "object"},
+                                {"properties", {
+                                    {"start_line", {{"type", "integer"}, {"description", "Required. 1-based start line."}}},
+                                    {"end_line", {{"type", "integer"}, {"description", "Optional. 1-based end line; omit to replace only start_line."}}},
+                                    {"content", {{"type", "string"}, {"description", "Required. Replacement content."}}}
+                                }},
+                                {"required", {"start_line", "content"}}
+                            }}
+                        }}
+                    }},
+                    {"required", {"path"}}
+                }}
             }},
-            {"backup", {
-                {"type", "boolean"},
-                {"description", "Whether to create backup before applying diff (default: true)"}
-            }},
-            {"dry_run", {
-                {"type", "boolean"},
-                {"description", "If true, only validate diff (git apply --check), do not write. Recommend setting true first for complex patches to avoid apply errors (default: false)."}
-            }}
+            {"backup", {{"type", "boolean"}, {"description", "Create backup before writing for undo (default: true)."}}}
         }},
-        {"required", {"diff_content"}}
+        {"required", {"files"}}
     };
 }
+
+// Generate unified diff from old/new line arrays (for last.patch preview).
+static std::string generateUnifiedDiffFromContents(const std::string& relPath,
+    const std::vector<std::string>& oldLines, const std::vector<std::string>& newLines) {
+    std::ostringstream out;
+    out << "diff --git a/" << relPath << " b/" << relPath << "\n";
+    out << "--- a/" << relPath << "\n+++ b/" << relPath << "\n";
+    int oc = static_cast<int>(oldLines.size());
+    int nc = static_cast<int>(newLines.size());
+    out << "@@ -1," << oc << " +1," << nc << " @@\n";
+    for (const auto& line : oldLines) out << "-" << line << "\n";
+    for (const auto& line : newLines) out << "+" << line << "\n";
+    return out.str();
+}
+
+// Split content into lines (no trailing newline on last if missing).
+static std::vector<std::string> splitLines(const std::string& s) {
+    std::vector<std::string> out;
+    std::istringstream iss(s);
+    std::string line;
+    while (std::getline(iss, line)) out.push_back(line);
+    return out;
+}
+
+static std::string joinLines(const std::vector<std::string>& lines) {
+    std::ostringstream o;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i) o << "\n";
+        o << lines[i];
+    }
+    return o.str();
+}
+
+nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
+    nlohmann::json result;
+    if (!args.contains("files") || !args["files"].is_array() || args["files"].empty()) {
+        result["error"] = "apply_patch 需要 files 数组，每项含 path 以及 content 或 edits。";
+        return result;
+    }
+
+    const bool doBackup = args.value("backup", true);
+    fs::path patchDir = rootPath / ".photon" / "patches";
+    fs::create_directories(patchDir);
+
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ts;
+    { struct tm t; memset(&t, 0, sizeof(t));
+#ifdef _WIN32
+      localtime_s(&t, &in_time_t);
+#else
+      localtime_r(&in_time_t, &t);
+#endif
+      ts << std::put_time(&t, "%Y%m%d_%H%M%S"); }
+    std::string stamp = ts.str();
+    fs::path backupDir = patchDir / "backups" / stamp;
+    if (doBackup) fs::create_directories(backupDir);
+
+    std::vector<std::string> affected;
+    std::string fullDiffText;  // for last.patch
+
+    for (const auto& item : args["files"]) {
+        if (!item.is_object() || !item.contains("path")) continue;
+        std::string relPath = item["path"].get<std::string>();
+        if (relPath.empty()) continue;
+
+        fs::path fullPath = rootPath / fs::u8path(relPath);
+        std::error_code ec;
+        fs::path canonRoot = fs::canonical(rootPath, ec);
+        if (ec) { result["error"] = "项目根目录无效"; return result; }
+        fs::path canonPath = fullPath.is_absolute() ? fullPath : (canonRoot / fullPath);
+        std::string canonStr = canonPath.u8string();
+        std::string rootStr = canonRoot.u8string();
+        if (canonStr.size() < rootStr.size() || canonStr.compare(0, rootStr.size(), rootStr) != 0 ||
+            (canonStr.size() > rootStr.size() && canonStr[rootStr.size()] != '/' && canonStr[rootStr.size()] != '\\')) {
+            result["error"] = "路径必须在项目内: " + relPath;
+            return result;
+        }
+
+        std::string oldContent;
+        if (fs::exists(canonPath) && fs::is_regular_file(canonPath)) {
+            std::ifstream in(canonPath, std::ios::binary);
+            oldContent.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        std::vector<std::string> oldLines = splitLines(oldContent);
+
+        std::string newContent;
+        if (item.contains("content") && item["content"].is_string()) {
+            newContent = item["content"].get<std::string>();
+        } else if (item.contains("edits") && item["edits"].is_array()) {
+            std::vector<std::string> lines = oldLines;
+            for (const auto& ed : item["edits"]) {
+                if (!ed.is_object() || !ed.contains("start_line") || !ed.contains("content")) {
+                    result["error"] = "edits 中每项必须包含 start_line 和 content（开始行数必填）。";
+                    return result;
+                }
+                int start = ed["start_line"].get<int>();
+                int end = ed.value("end_line", start);
+                std::string repl = ed["content"].is_string() ? ed["content"].get<std::string>() : "";
+                std::vector<std::string> replLines = splitLines(repl);
+                if (start < 1) start = 1;
+                if (end < start) end = start;
+                size_t uStart = static_cast<size_t>(start) - 1;
+                size_t uEnd = static_cast<size_t>(end);
+                if (uStart > lines.size()) uStart = lines.size();
+                if (uEnd > lines.size()) uEnd = lines.size();
+                lines.erase(lines.begin() + uStart, lines.begin() + uEnd);
+                lines.insert(lines.begin() + uStart, replLines.begin(), replLines.end());
+            }
+            newContent = joinLines(lines);
+        } else {
+            result["error"] = "每个文件需提供 content（全文）或 edits（行号编辑）: " + relPath;
+            return result;
+        }
+
+        if (doBackup && !oldContent.empty()) {
+            fs::path bakPath = backupDir / fs::u8path(relPath + ".bak");
+            fs::create_directories(bakPath.parent_path(), ec);
+            std::ofstream bf(bakPath);
+            if (bf) bf << oldContent;
+        }
+
+        fs::create_directories(canonPath.parent_path(), ec);
+        std::ofstream of(canonPath, std::ios::binary);
+        if (!of) {
+            result["error"] = "无法写入: " + relPath;
+            return result;
+        }
+        of << newContent;
+        if (!of) {
+            result["error"] = "写入失败: " + relPath;
+            return result;
+        }
+
+        affected.push_back(relPath);
+        std::vector<std::string> newLines = splitLines(newContent);
+        fullDiffText += generateUnifiedDiffFromContents(relPath, oldLines, newLines);
+    }
+
+    if (affected.empty()) {
+        result["error"] = "未应用任何文件（请检查 path/content 或 edits）。";
+        return result;
+    }
+
+    fs::path stackPath = patchDir / "patch_stack.json";
+    nlohmann::json stack = nlohmann::json::array();
+    try {
+        if (fs::exists(stackPath) && fs::is_regular_file(stackPath)) {
+            std::ifstream sf(stackPath);
+            if (sf.is_open()) sf >> stack;
+        }
+    } catch (...) {}
+    if (!stack.is_array()) stack = nlohmann::json::array();
+    stack.push_back({
+        {"timestamp", static_cast<long long>(std::time(nullptr))},
+        {"backup_stamp", stamp},
+        {"affected_files", affected},
+        {"patch_path", (patchDir / "last.patch").u8string()}
+    });
+    { std::ofstream sf(stackPath); sf << stack.dump(2); }
+
+    { std::ofstream lf(patchDir / "last.patch"); lf << fullDiffText; }
+    {
+        nlohmann::json lastMeta;
+        lastMeta["mode"] = "direct";
+        lastMeta["backup_stamp"] = stamp;
+        lastMeta["affected_files"] = affected;
+        lastMeta["patch_path"] = (patchDir / "last.patch").u8string();
+        std::ofstream mf(patchDir / "last_patch.json");
+        mf << lastMeta.dump(2);
+    }
+
+    result["success"] = true;
+    result["affected_files"] = affected;
+    result["message"] = "已直接写入 " + std::to_string(affected.size()) + " 个文件。使用 patch 预览、undo 撤销。";
+    return result;
+}
+
+// ============================================================================
+// WriteTool Implementation (kept for backward compat; prefer apply_patch with files[])
+// ============================================================================
+
+WriteTool::WriteTool(const std::string& rootPath) : rootPath(fs::u8path(rootPath)) {}
+
+std::string WriteTool::getDescription() const {
+    return "Create or overwrite a file with exact content (path + content). "
+           "Prefer this over apply_patch for new files or when replacing most of a file—avoids diff format errors. "
+           "Use apply_patch only for small, localized edits (a few lines). "
+           "Parameters: path (required, project-relative), content (required, full file content).";
+}
+
+nlohmann::json WriteTool::getSchema() const {
+    return {
+        {"type", "object"},
+        {"properties", {
+            {"path", {{"type", "string"}, {"description", "Project-relative file path (e.g. src/foo.cpp)."}}},
+            {"content", {{"type", "string"}, {"description", "Exact file content to write (full file)."}}}
+        }},
+        {"required", {"path", "content"}}
+    };
+}
+
+nlohmann::json WriteTool::execute(const nlohmann::json& args) {
+    nlohmann::json result;
+    if (!args.contains("path") || !args.contains("content")) {
+        result["error"] = "write requires path and content.";
+        return result;
+    }
+    std::string relPath = args["path"].get<std::string>();
+    std::string content = args["content"].is_string() ? args["content"].get<std::string>() : args["content"].dump();
+    fs::path fullPath = rootPath / fs::u8path(relPath);
+    std::error_code ec;
+    fs::path canonicalRoot = fs::canonical(rootPath, ec);
+    if (ec) {
+        result["error"] = "Project root not found.";
+        return result;
+    }
+    fs::path canonicalFile = fs::weakly_canonical(fullPath, ec);
+    if (ec) {
+        canonicalFile = fullPath;
+        if (canonicalFile.is_relative()) canonicalFile = canonicalRoot / canonicalFile;
+    }
+    std::string canonStr = canonicalFile.u8string();
+    std::string rootStr = canonicalRoot.u8string();
+    if (canonStr.size() < rootStr.size() || canonStr.compare(0, rootStr.size(), rootStr) != 0 ||
+        (canonStr.size() > rootStr.size() && canonStr[rootStr.size()] != '/' && canonStr[rootStr.size()] != '\\')) {
+        result["error"] = "path must be inside project root.";
+        return result;
+    }
+    ec.clear();
+    fs::create_directories(canonicalFile.parent_path(), ec);
+    if (ec) {
+        result["error"] = "Failed to create parent directories: " + ec.message();
+        return result;
+    }
+    try {
+        std::ofstream f(canonicalFile, std::ios::binary);
+        if (!f) {
+            result["error"] = "Could not open file for writing: " + relPath;
+            return result;
+        }
+        f << content;
+        if (!f) {
+            result["error"] = "Write failed (disk full or permission): " + relPath;
+            return result;
+        }
+    } catch (const std::exception& e) {
+        result["error"] = std::string("Write failed: ") + e.what();
+        return result;
+    }
+    result["content"] = nlohmann::json::array({{{"type", "text"}, {"text", "Wrote " + relPath + " (" + std::to_string(content.size()) + " bytes)."}}});
+    return result;
+}
+
+// ============================================================================
+// ApplyPatchTool helpers (sanitizePathComponent, backupRelativePathFor, ...)
+// ============================================================================
 
 static fs::path sanitizePathComponent(fs::path p) {
     // Keep it simple and filesystem-friendly.
@@ -1009,11 +1289,12 @@ static std::string normalizePatchForGitApply(const std::string& diffContent) {
         if (i < diffContent.size() && diffContent[i] == '\r') ++i;
         if (i < diffContent.size() && diffContent[i] == '\n') ++i;
         while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
-        // git apply requires "diff --git a/old b/new"; model often emits "diff --git /dev/null b/new"
+        // git apply requires "diff --git a/old b/new"; model often emits "diff --git /dev/null b/new" or "dev/null"
         if (line.rfind("diff --git ", 0) == 0 && line.size() > 11) {
             std::string rest = line.substr(11);
-            if (rest.rfind("/dev/null ", 0) == 0 || rest == "/dev/null") {
-                line = "diff --git a/dev/null " + (rest.size() > 10 ? rest.substr(10) : std::string("b/"));
+            if (rest.rfind("/dev/null ", 0) == 0 || rest == "/dev/null" || rest.rfind("dev/null ", 0) == 0 || rest == "dev/null") {
+                size_t skip = 10;  // "/dev/null " or "dev/null " (9 chars + space) -> "b/..."
+                line = "diff --git a/dev/null " + (rest.size() > skip ? rest.substr(skip) : std::string("b/"));
             } else if (rest.rfind("NUL ", 0) == 0 || rest == "NUL") {
                 line = "diff --git a/NUL " + (rest.size() > 4 ? rest.substr(4) : std::string("b/"));
             }
@@ -1022,9 +1303,12 @@ static std::string normalizePatchForGitApply(const std::string& diffContent) {
         if (line.rfind("--- ", 0) == 0) {
             inHunk = false;
             std::string aPath = line.substr(4);
+            if (aPath == "dev/null") aPath = "/dev/null";  // avoid git "dev/null: No such file or directory"
             if ((aPath == "/dev/null" || aPath == "NUL") && out.empty()) {
-                pendingHeader = line + "\n";
-                // do not append yet; we'll prepend "diff --git" + this when we see "+++"
+                pendingHeader = "--- /dev/null\n";
+                continue;  // do not append; we prepend with "diff --git" when we see "+++"
+            } else if (aPath == "/dev/null" || aPath == "NUL") {
+                line = "--- /dev/null";
             }
         }
         if (line.rfind("+++ ", 0) == 0 && line.size() > 4 && !pendingHeader.empty()) {
@@ -1047,6 +1331,38 @@ static std::string normalizePatchForGitApply(const std::string& diffContent) {
 
 static bool isDevNull(const std::string& p) {
     return p == "/dev/null" || p == "NUL";
+}
+
+// When git apply reports "corrupt patch at line N", append that line's content so we can confirm what the model sent.
+static void appendCorruptLineInfo(std::string& errMsg, const std::string& patchContent) {
+    const std::string prefix = "at line ";
+    size_t pos = errMsg.find(prefix);
+    if (pos == std::string::npos) return;
+    pos += prefix.size();
+    unsigned lineNo = 0;
+    while (pos < errMsg.size() && std::isdigit(static_cast<unsigned char>(errMsg[pos]))) {
+        lineNo = lineNo * 10 + (errMsg[pos] - '0');
+        ++pos;
+    }
+    if (lineNo == 0) return;
+    size_t start = 0;
+    for (unsigned i = 1; i < lineNo; ++i) {
+        start = patchContent.find('\n', start);
+        if (start == std::string::npos) return;
+        ++start;
+    }
+    if (start >= patchContent.size()) return;
+    size_t end = patchContent.find('\n', start);
+    std::string lineContent = (end == std::string::npos) ? patchContent.substr(start) : patchContent.substr(start, end - start);
+    if (lineContent.size() > 100) lineContent = lineContent.substr(0, 100) + "...";
+    errMsg += " [line ";
+    errMsg += std::to_string(lineNo);
+    errMsg += " content: \"";
+    for (char c : lineContent) {
+        if (c == '"' || c == '\\') errMsg += '\\';
+        errMsg += c;
+    }
+    errMsg += "\"]";
 }
 
 std::vector<ApplyPatchTool::FileDiff> ApplyPatchTool::parseUnifiedDiff(const std::string& diffContent) {
@@ -1259,188 +1575,6 @@ std::string ApplyPatchTool::generateUnifiedDiff(const std::vector<std::string>& 
     return "";
 }
 
-nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
-    nlohmann::json result;
-
-    if (!args.contains("diff_content") || !args["diff_content"].is_string()) {
-        result["error"] = "apply_patch 只接受 unified diff 更新。请提供参数 diff_content。";
-        return result;
-    }
-
-    const std::string diffContent = args["diff_content"].get<std::string>();
-    const std::string normalizedContent = normalizePatchForGitApply(diffContent);
-    const bool backup = args.value("backup", true);
-    const bool dryRun = args.value("dry_run", false);
-
-    auto fileDiffs = parseUnifiedDiff(normalizedContent);
-    if (fileDiffs.empty()) {
-        result["error"] = "diff_content 无效：未解析到任何文件补丁（diff --git / --- / +++ / @@）。";
-        return result;
-    }
-
-    std::vector<std::string> affected;
-    affected.reserve(fileDiffs.size());
-    for (const auto& fd : fileDiffs) {
-        std::string p = fd.isDeleted ? fd.oldFile : fd.newFile;
-        if (p.empty()) p = fd.oldFile;
-        p = stripGitPrefix(p);
-        if (!p.empty()) affected.push_back(p);
-    }
-
-    // 保存 patch 历史（支持多次 undo）：每次 apply_patch 生成一个独立 patch 文件，并维护栈
-    fs::path patchDir = rootPath / ".photon" / "patches";
-    fs::create_directories(patchDir);
-    auto now = std::chrono::system_clock::now();
-    auto in_time_t = std::chrono::system_clock::to_time_t(now);
-    std::stringstream ts;
-    {
-        struct tm time_info;
-#ifdef _WIN32
-        localtime_s(&time_info, &in_time_t);
-#else
-        localtime_r(&in_time_t, &time_info);
-#endif
-        ts << std::put_time(&time_info, "%Y%m%d_%H%M%S");
-    }
-    std::string stamp = ts.str();
-
-    fs::path patchPath = patchDir / ("patch_" + stamp + ".patch");
-    {
-        std::ofstream pf(patchPath);
-        pf << normalizedContent;
-    }
-    {
-        nlohmann::json meta;
-        meta["timestamp"] = static_cast<long long>(std::time(nullptr));
-        meta["affected_files"] = affected;
-        meta["patch_path"] = patchPath.u8string();
-        meta["has_git"] = hasGit;
-        std::ofstream mf(patchDir / ("patch_" + stamp + ".json"));
-        mf << meta.dump(2);
-    }
-
-    // 更新 patch_stack.json
-    fs::path stackPath = patchDir / "patch_stack.json";
-    nlohmann::json stack = nlohmann::json::array();
-    try {
-        if (fs::exists(stackPath) && fs::is_regular_file(stackPath)) {
-            std::ifstream sf(stackPath);
-            if (sf.is_open()) {
-                sf >> stack;
-            }
-        }
-    } catch (...) {
-        stack = nlohmann::json::array();
-    }
-    if (!stack.is_array()) stack = nlohmann::json::array();
-    stack.push_back({
-        {"timestamp", static_cast<long long>(std::time(nullptr))},
-        {"patch_path", patchPath.u8string()},
-        {"affected_files", affected}
-    });
-    {
-        std::ofstream sf(stackPath);
-        sf << stack.dump(2);
-    }
-
-    // 兼容：始终写一份 last.patch 指向最新补丁（供 patch/undo 旧逻辑和快速预览）
-    {
-        std::ofstream lf(patchDir / "last.patch");
-        lf << normalizedContent;
-    }
-    {
-        nlohmann::json lastMeta;
-        lastMeta["timestamp"] = static_cast<long long>(std::time(nullptr));
-        lastMeta["affected_files"] = affected;
-        lastMeta["patch_path"] = patchPath.u8string();
-        std::ofstream mf(patchDir / "last_patch.json");
-        mf << lastMeta.dump(2);
-    }
-
-    if (hasGit) {
-        std::string out;
-        std::string prefix = "cd \"" + rootPath.u8string() + "\" && ";
-
-        if (dryRun) {
-            int code = execCaptureCoreTools(prefix + "git apply --whitespace=fix --check \"" + patchPath.u8string() + "\" 2>&1", out);
-            result["success"] = (code == 0);
-            result["dry_run"] = true;
-            result["affected_files"] = affected;
-            if (code != 0) result["error"] = out.empty() ? "git apply --check 失败" : out;
-            else result["message"] = "Dry-run OK（git apply --check）";
-            return result;
-        }
-
-        if (backup) {
-            std::string status;
-            execCaptureCoreTools(prefix + "git status --porcelain 2>&1", status);
-            if (!status.empty()) {
-                std::string stashOut;
-                execCaptureCoreTools(prefix + "git stash push -u -m \"photon-apply_patch-backup\" 2>&1", stashOut);
-                result["git_backup"] = "stash";
-            } else {
-                result["git_backup"] = "none(clean)";
-            }
-        }
-
-        out.clear();
-        int code = execCaptureCoreTools(prefix + "git apply --whitespace=fix \"" + patchPath.u8string() + "\" 2>&1", out);
-        if (code != 0) {
-            // 补丁是「新增文件」但工作区已有同名文件时，git apply 会报 "already exists in working directory"。
-            // 回退到内置引擎：按 diff 内容写入/覆盖文件，便于 LLM 重试或覆盖已存在文件。
-            bool alreadyExists = (out.find("already exists in working directory") != std::string::npos);
-            if (alreadyExists) {
-                std::string detail;
-                if (applyUnifiedDiff(normalizedContent, &detail)) {
-                    result["success"] = true;
-                    result["affected_files"] = affected;
-                    result["message"] = "目标文件已存在，已通过内置引擎覆盖应用补丁。可使用 undo 撤销。";
-                    result["git_fallback"] = "already_exists";
-                    return result;
-                }
-            }
-            result["error"] = out.empty() ? "git apply 失败" : out;
-            return result;
-        }
-
-        result["success"] = true;
-        result["affected_files"] = affected;
-        result["message"] = "已通过 git apply 应用补丁。可使用 undo 撤销上一次补丁。";
-        return result;
-    }
-
-    if (dryRun) {
-        result["success"] = true;
-        result["dry_run"] = true;
-        result["affected_files"] = affected;
-        result["message"] = "无 Git 时 dry_run 仅做基础解析（建议启用 Git 以获得严格 check）。";
-        return result;
-    }
-
-    if (backup) {
-        for (const auto& fd : fileDiffs) {
-            if (fd.isNewFile) continue;
-            std::string p = stripGitPrefix(fd.oldFile.empty() ? fd.newFile : fd.oldFile);
-            if (p.empty()) continue;
-            fs::path fp = fs::u8path(p);
-            if (!fp.is_absolute()) fp = rootPath / fp;
-            if (!fs::exists(fp)) continue;
-            try { createLocalBackup(p); } catch (...) {}
-        }
-    }
-
-    std::string detail;
-    if (!applyUnifiedDiff(normalizedContent, &detail)) {
-        result["error"] = detail.empty() ? "手动 diff 引擎应用失败（通常是上下文不匹配）。建议安装/启用 Git 后再试。" : ("apply_patch 应用失败: " + detail);
-        return result;
-    }
-
-    result["success"] = true;
-    result["affected_files"] = affected;
-    result["message"] = "已通过手动 unified-diff 引擎应用补丁。可使用 undo 尝试撤销上一次补丁。";
-    return result;
-}
-
 // ============================================================================
 // RunCommandTool Implementation
 // ============================================================================
@@ -1449,7 +1583,7 @@ RunCommandTool::RunCommandTool(const std::string& rootPath)
     : rootPath(fs::u8path(rootPath)) {}
 
 std::string RunCommandTool::getDescription() const {
-    return "Execute a shell command in the project directory. Use it to perceive the environment: list files (ls, dir), check versions (python --version, node -v), inspect config, see running processes, view logs—not only for build and test. Encouraged for discovering project layout, runtime state, and tool availability before acting. For creating or editing project files, use apply_patch instead. "
+    return "Execute a shell command in the project directory. Use it to perceive the environment: list files (ls, dir), check versions (python --version, node -v), inspect config, see running processes, view logs—not only for build and test. Encouraged for discovering project layout, runtime state, and tool availability before acting. For creating or editing project files, use apply_patch (small edits) or write (new file or full content). "
            "Parameters: command (string), timeout (int, optional, default 30 seconds).";
 }
 
@@ -1606,6 +1740,7 @@ ListProjectFilesTool::ListProjectFilesTool(const std::string& rootPath, SymbolMa
 std::string ListProjectFilesTool::getDescription() const {
     return "List files and directories in the project. "
            "Code files show symbols with line range (e.g. F:main:L42-58) and call chain (name→callees ←callers). "
+           "When reading next, use these: pass symbol_name or start_line/end_line to read_code_block instead of full file; use read_code_block with requests array to read multiple files in one call. "
            "Parameters: path (optional, default '.'), max_depth (optional, default 3), include_symbols (optional, default true).";
 }
 
@@ -1748,13 +1883,14 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
     int maxDepth = args.value("max_depth", 3);
     bool includeSymbols = args.value("include_symbols", true);
     
-    // 根目录 + 默认深度 + 需要 symbol 时优先用初始化时生成的持久化缓存
+    // 根目录 + 默认深度 + 需要 symbol 时优先读持久化缓存（无缓存则本次构建并写回，实现按需更新）
     if (path == "." && maxDepth == 3 && includeSymbols) {
         nlohmann::json cachedTree;
         std::string cachedText;
         if (loadProjectTreeCache(cachedTree, cachedText)) {
             if (cachedText.find("Legend:") == std::string::npos)
-                cachedText = "Legend: C/F/M/S/E/I=type, :L123 or :L123-456=start_line[-end_line]. Chain: name→calls ←called_by.\n\n" + cachedText;
+                cachedText = "Legend: C/F/M/S/E/I=type, :L123 or :L123-456=start_line[-end_line]. Chain: name→calls ←called_by. "
+                             "Files without [sym] have no symbol index; read_code_block returns content with line numbers (1|, 2|, ...).\n\n" + cachedText;
             result["tree"] = cachedTree;
             result["content"] = nlohmann::json::array({{{"type", "text"}, {"text", cachedText}}});
             return result;
@@ -1785,7 +1921,8 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
     std::ostringstream treeText;
     treeText << "Project Structure: " << path << "\n\n";
     if (includeSymbols) {
-        treeText << "Legend: C/F/M/S/E/I=type, :L123 or :L123-456=start_line[-end_line]. Chain: name→calls ←called_by.\n\n";
+        treeText << "Legend: C/F/M/S/E/I=type, :L123 or :L123-456=start_line[-end_line]. Chain: name→calls ←called_by. "
+                    "Files without [sym] have no symbol index (e.g. .html); use read_code_block to get content with line numbers (1|, 2|, ...).\n\n";
     }
     
     std::function<void(const nlohmann::json&, int)> printTree;
@@ -1814,9 +1951,13 @@ nlohmann::json ListProjectFilesTool::execute(const nlohmann::json& args) {
     
     printTree(tree, 0);
     
+    std::string treeTextStr = treeText.str();
+    if (path == "." && maxDepth == 3 && includeSymbols)
+        saveProjectTreeCache(tree, treeTextStr, maxDepth);
+    
     nlohmann::json contentItem;
     contentItem["type"] = "text";
-    contentItem["text"] = treeText.str();
+    contentItem["text"] = treeTextStr;
     
     result["content"] = nlohmann::json::array({contentItem});
     result["tree"] = tree;
