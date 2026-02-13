@@ -937,6 +937,8 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
         fs::path canonPath = canonRoot / relPathNorm;
         std::string canonStr = canonPath.u8string();
         std::string rootStr = canonRoot.u8string();
+        while (!rootStr.empty() && (rootStr.back() == '/' || rootStr.back() == '\\'))
+            rootStr.pop_back();
         if (canonStr.size() < rootStr.size() || canonStr.compare(0, rootStr.size(), rootStr) != 0 ||
             (canonStr.size() > rootStr.size() && canonStr[rootStr.size()] != '/' && canonStr[rootStr.size()] != '\\')) {
             result["error"] = "路径必须在项目内: " + relPath;

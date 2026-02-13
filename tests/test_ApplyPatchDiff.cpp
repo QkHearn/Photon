@@ -9,7 +9,7 @@
 namespace fs = std::filesystem;
 
 static std::string readAll(const fs::path& p) {
-  std::ifstream f(p);
+  std::ifstream f(p, std::ios::binary);
   std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
   return s;
 }
@@ -22,7 +22,7 @@ TEST(ApplyPatchTool, AppliesUnifiedDiffToFile_NoGit) {
 
   fs::path file = root / "a.txt";
   {
-    std::ofstream out(file);
+    std::ofstream out(file, std::ios::binary);
     out << "line1\n";
     out << "line2\n";
     out << "line3\n";

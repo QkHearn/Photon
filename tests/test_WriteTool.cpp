@@ -16,7 +16,7 @@ namespace fs = std::filesystem;
 
 static std::string readAll(const fs::path& p) {
   std::string s;
-  std::ifstream f(p);
+  std::ifstream f(p, std::ios::binary);
   if (f) s.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
   return s;
 }
@@ -71,7 +71,7 @@ TEST(WriteTool, ApplyPatchInsertsLinesAndWritesFile) {
 
   fs::path f = root / "doc.txt";
   {
-    std::ofstream out(f);
+    std::ofstream out(f, std::ios::binary);
     out << "A\nB\nC\n";
   }
 
@@ -103,7 +103,7 @@ TEST(WriteTool, ApplyPatchReplaceAndDeleteLines) {
 
   fs::path f = root / "t.txt";
   {
-    std::ofstream out(f);
+    std::ofstream out(f, std::ios::binary);
     out << "old1\nold2\nold3\n";
   }
 
