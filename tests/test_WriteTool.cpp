@@ -1,7 +1,7 @@
 /**
  * 写入工具（apply_patch）与 Constitution 3.3 校验的集成测试。
- * 确保：1）ConstitutionValidator 对 apply_patch 的 diff_content 校验正确；
- *       2）ApplyPatchTool 能正确应用 unified diff 并写入文件。
+ * 确保：1）ConstitutionValidator 对 apply_patch 的 files 校验正确；
+ *       2）ApplyPatchTool 能正确按 files[]（content/edits）写入文件。
  */
 #include <gtest/gtest.h>
 #include <filesystem>
@@ -15,8 +15,9 @@
 namespace fs = std::filesystem;
 
 static std::string readAll(const fs::path& p) {
+  std::string s;
   std::ifstream f(p);
-  std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  if (f) s.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
   return s;
 }
 
@@ -24,14 +25,12 @@ static std::string readAll(const fs::path& p) {
 
 TEST(WriteTool, ConstitutionAcceptsValidDiffContent) {
   nlohmann::json args;
-  args["diff_content"] =
-      "diff --git a/README.md b/README.md\n"
-      "--- a/README.md\n"
-      "+++ b/README.md\n"
-      "@@ -1,3 +1,5 @@\n"
-      " line1\n"
-      "+line2_added\n"
-      " line3\n";
+  args["files"] = nlohmann::json::array({
+    nlohmann::json::object({
+      {"path", "README.md"},
+      {"content", "line1\nline2_added\nline3\n"}
+    })
+  });
   auto res = ConstitutionValidator::validateToolCall("apply_patch", args);
   EXPECT_TRUE(res.valid) << res.error;
 }
@@ -41,23 +40,25 @@ TEST(WriteTool, ConstitutionRejectsMissingDiffContent) {
   args["backup"] = true;
   auto res = ConstitutionValidator::validateToolCall("apply_patch", args);
   EXPECT_FALSE(res.valid);
-  EXPECT_TRUE(res.error.find("diff_content") != std::string::npos);
+  EXPECT_TRUE(res.error.find("files") != std::string::npos);
 }
 
 TEST(WriteTool, ConstitutionRejectsEmptyDiffContent) {
   nlohmann::json args;
-  args["diff_content"] = "";
+  args["files"] = nlohmann::json::array();
   auto res = ConstitutionValidator::validateToolCall("apply_patch", args);
   EXPECT_FALSE(res.valid);
-  EXPECT_TRUE(res.error.find("non-empty") != std::string::npos || res.error.size() > 0);
+  EXPECT_TRUE(res.error.find("files") != std::string::npos || res.error.size() > 0);
 }
 
 TEST(WriteTool, ConstitutionRejectsDiffWithoutHunkHeaders) {
   nlohmann::json args;
-  args["diff_content"] = "just some text\nno hunk headers here\n";
+  args["files"] = nlohmann::json::array({
+    nlohmann::json::object({{"path", "x.txt"}})
+  });
   auto res = ConstitutionValidator::validateToolCall("apply_patch", args);
   EXPECT_FALSE(res.valid);
-  EXPECT_TRUE(res.error.find("@@") != std::string::npos || res.error.find("unified diff") != std::string::npos);
+  EXPECT_TRUE(res.error.find("content") != std::string::npos || res.error.find("edits") != std::string::npos);
 }
 
 // --- ApplyPatchTool: 实际写入行为 ---
@@ -74,22 +75,16 @@ TEST(WriteTool, ApplyPatchInsertsLinesAndWritesFile) {
     out << "A\nB\nC\n";
   }
 
-  // 在 B 后插入两行
-  const std::string diff =
-      "diff --git a/doc.txt b/doc.txt\n"
-      "--- a/doc.txt\n"
-      "+++ b/doc.txt\n"
-      "@@ -1,3 +1,5 @@\n"
-      " A\n"
-      " B\n"
-      "+X\n"
-      "+Y\n"
-      " C\n";
-
   nlohmann::json args;
-  args["diff_content"] = diff;
+  args["files"] = nlohmann::json::array({
+    nlohmann::json::object({
+      {"path", "doc.txt"},
+      {"edits", nlohmann::json::array({
+        nlohmann::json::object({{"start_line", 2}, {"end_line", 2}, {"content", "B\nX\nY\n"}})
+      })}
+    })
+  });
   args["backup"] = false;
-  args["dry_run"] = false;
 
   ApplyPatchTool tool(root.u8string(), false);
   auto res = tool.execute(args);
@@ -112,22 +107,16 @@ TEST(WriteTool, ApplyPatchReplaceAndDeleteLines) {
     out << "old1\nold2\nold3\n";
   }
 
-  const std::string diff =
-      "diff --git a/t.txt b/t.txt\n"
-      "--- a/t.txt\n"
-      "+++ b/t.txt\n"
-      "@@ -1,3 +1,2 @@\n"
-      "-old1\n"
-      "-old2\n"
-      "+new1\n"
-      " old3\n";
+  nlohmann::json args;
+  args["files"] = nlohmann::json::array({
+    nlohmann::json::object({
+      {"path", "t.txt"},
+      {"content", "new1\nold3\n"}
+    })
+  });
+  args["backup"] = false;
 
   ApplyPatchTool tool(root.u8string(), false);
-  nlohmann::json args;
-  args["diff_content"] = diff;
-  args["backup"] = false;
-  args["dry_run"] = false;
-
   auto res = tool.execute(args);
   ASSERT_FALSE(res.contains("error")) << res.dump(2);
   ASSERT_TRUE(res.value("success", false)) << res.dump(2);

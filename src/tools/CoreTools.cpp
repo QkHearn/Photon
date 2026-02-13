@@ -924,11 +924,17 @@ nlohmann::json ApplyPatchTool::execute(const nlohmann::json& args) {
         std::string relPath = item["path"].get<std::string>();
         if (relPath.empty()) continue;
 
-        fs::path fullPath = rootPath / fs::u8path(relPath);
         std::error_code ec;
         fs::path canonRoot = fs::canonical(rootPath, ec);
         if (ec) { result["error"] = "项目根目录无效"; return result; }
-        fs::path canonPath = fullPath.is_absolute() ? fullPath : (canonRoot / fullPath);
+        fs::path relPathNorm = fs::path(relPath).lexically_normal();
+        if (!relPathNorm.empty() && relPathNorm.has_root_path())
+            relPathNorm = relPathNorm.relative_path();
+        if (relPathNorm.string().find("..") != std::string::npos) {
+            result["error"] = "路径必须在项目内: " + relPath;
+            return result;
+        }
+        fs::path canonPath = canonRoot / relPathNorm;
         std::string canonStr = canonPath.u8string();
         std::string rootStr = canonRoot.u8string();
         if (canonStr.size() < rootStr.size() || canonStr.compare(0, rootStr.size(), rootStr) != 0 ||
